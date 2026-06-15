@@ -1,0 +1,50 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Machine-specific generated files (the notebook writes these at runtime;
+# they contain local absolute paths and must not be committed —
+# see examples/calibration_session_config.example.json for the schema)
+calibration_session_config.json
+reduction_session_config.json
+last_preflight.json
+handoff_for_next_notebook.json
+master_metadata.json
+
+# Generated run outputs (the notebooks write these at runtime)
+notebooks/data/
+notebooks/figures/
+notebooks/metadata/
+notebooks/logs/
+/notebooks/previews
+
+# Logs and editor settings
+logs/
+*.log
+worker_gen*.json
+.vscode/
+.idea/
+.DS_Store
+
+**/data/processed/
+**/data/raw/
+**/figures/
+**/metadata/
+**/accepted_calibrations/
+*.tif
+*.tiff
+*.edf
+*.npy
+*.npz
+*.csv

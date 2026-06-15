@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bulkxrd"
+# Keep in sync with VERSION in bulkxrd/core/config.py.
+version = "0.1.0"
+description = "Notebook-controlled workflow for powder XRD: calibration review (pyFAI-based), dataset reduction, and analysis"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "rmaples3" },
+]
+keywords = ["XRD", "powder diffraction", "calibration", "pyFAI", "high pressure"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+# Core runtime dependencies (mirrors REQUIRED_IMPORTS in bulkxrd/core/env.py).
+# tkinter is also required but ships with the Python interpreter itself.
+dependencies = [
+    "numpy",
+    "Pillow",
+    "matplotlib",
+    "pyFAI",
+    "fabio",
+    "h5py",
+]
+
+[project.optional-dependencies]
+# Extra image-format readers (mirrors OPTIONAL_IMPORTS in bulkxrd/core/env.py)
+io = ["tifffile"]
+
+[project.scripts]
+bulkxrd = "bulkxrd.app:main"
+bulkxrd-calib-gui = "bulkxrd.calib.run_gui:main"
+bulkxrd-reduce-gui = "bulkxrd.reduce.run_gui:main"
+bulkxrd-inspect = "bulkxrd.core.inspect:main"
+
+[tool.setuptools.packages.find]
+include = ["bulkxrd*"]

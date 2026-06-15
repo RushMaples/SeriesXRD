@@ -1,0 +1,23 @@
+# Conda environment for the bulkxrd workflow.
+# pyFAI and its compiled dependencies install most reliably from conda-forge
+# (this matches the conda-forge package names used in bulkxrd/core/env.py).
+#
+# Create with:  conda env create -f environment.yml
+# Activate:     conda activate bulkxrd
+name: bulkxrd
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10
+  - numpy
+  - pillow
+  - matplotlib
+  - pyfai
+  - fabio
+  - tk
+  # optional image-format readers
+  - tifffile
+  - imageio
+  - h5py
+  # notebook front-end
+  - jupyterlab

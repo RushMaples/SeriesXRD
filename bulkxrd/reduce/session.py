@@ -1,0 +1,75 @@
+"""Reduction session-config seeding (dependency-light: stdlib + core only).
+
+Replaces the old notebook ``configure_session`` helper now that the unified
+app is the entry point. Safe to import without numpy/pyFAI/Tk.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Dict
+
+from ..core.config import (
+    read_json, write_json, print_status, default_workspace_paths,
+    default_python_exe, load_session_config,
+)
+from ..core.handoff import find_latest_handoff
+
+CONFIG_FILENAME = "reduction_session_config.json"
+
+_DEFAULTS = {
+    "session_name": "reduction",
+    "file_patterns": "*.tif;*.tiff;*.edf;*.cbf;*.mar3450;*.h5",
+    "recursive": False,
+    "npt_1d": "1500",
+    "unit": "2th_deg",
+    "method": "csr",
+    "polarization_factor": "",
+    "robust_1d": True,
+    "save_cakes": False,
+    "npt_radial": "500",
+    "npt_azimuthal": "360",
+    "cake_every": "1",
+    "num_workers": "0",
+    "handoff_file": "",
+    "dataset_dir": "",
+}
+
+
+def reduction_config_path(workspace_dir: "str | Path") -> Path:
+    return Path(workspace_dir).expanduser().resolve() / CONFIG_FILENAME
+
+
+def seed_reduction_config(workspace_dir: "str | Path") -> Path:
+    """Create/refresh the reduction config in a workspace and return its path.
+
+    Pre-fills shared paths from the workspace's calibration config (if present)
+    and auto-locates the newest calibration handoff under the accepted-output
+    tree. Existing user-set keys are never overwritten.
+    """
+    ws = Path(workspace_dir).expanduser().resolve()
+    cfg_path = reduction_config_path(ws)
+    cfg = read_json(cfg_path)
+
+    calib_cfg = load_session_config(ws)  # falls back to defaults if absent
+    paths = default_workspace_paths(ws)
+    seed = dict(_DEFAULTS)
+    seed.update({
+        "workspace_root": str(ws),
+        "backend_dir": calib_cfg.backend_dir or str(Path(__file__).resolve().parents[1]),
+        "python_exe": calib_cfg.python_exe or default_python_exe(),
+        "processed_root": calib_cfg.processed_root or paths["processed_root"],
+        "logs_root": calib_cfg.logs_root or paths["logs_root"],
+    })
+    for k, v in seed.items():
+        cfg.setdefault(k, v)
+
+    if not cfg.get("handoff_file"):
+        search_root = calib_cfg.accepted_output_root or paths["accepted_output_root"]
+        latest = find_latest_handoff(search_root)
+        if latest:
+            cfg["handoff_file"] = str(latest)
+            print_status(f"Auto-found latest calibration handoff: {latest}")
+
+    cfg["session_config_path"] = str(cfg_path)
+    write_json(cfg_path, cfg)
+    return cfg_path
