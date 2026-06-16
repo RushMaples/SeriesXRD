@@ -7,6 +7,7 @@ Workflow left-to-right across tabs:
     4 Run        — launch the crash-isolated worker, watch progress + log
     5 Review     — single-frame QC: traces + fitted peaks + contamination curve
     6 Heatmap    — scatter of peak positions across all frames (Step-3 precursor)
+    7 Phases     — reference-phase library: bundled + user phases, import CIFs, toggle candidates
 
 Same supervision model as reduce/gui.py: heavy computation runs in
 analysis/worker.py as a subprocess; this process never imports numpy/h5py
@@ -180,6 +181,7 @@ class AnalysisApp:
             ("4 Run",        self._tab_run),
             ("5 Review",     self._tab_review),
             ("6 Heatmap",    self._tab_heatmap),
+            ("7 Phases",     self._tab_phases),
         ]:
             frame = ttk.Frame(self.nb, padding=10)
             builder(frame)
@@ -1106,6 +1108,400 @@ class AnalysisApp:
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
         self._heatmap_canvas = canvas
+
+    # ------------------------------------------------------------------
+    # Tab 7 — Phases (reference-phase library)
+    # ------------------------------------------------------------------
+
+    def _phases_workspace(self) -> Path:
+        """Return the workspace dir for the user phase library."""
+        ws = self.config.get("workspace_root")
+        if ws:
+            return Path(ws)
+        return self.config_path.parent
+
+    def _tab_phases(self, frame):
+        tk, ttk = self.tk, self.ttk
+
+        # Controls row
+        ctrl = ttk.Frame(frame)
+        ctrl.pack(fill="x", pady=(0, 4))
+        ttk.Button(ctrl, text="Import CIF…", command=self.import_cif_clicked).pack(
+            side="left", padx=4)
+        ttk.Button(ctrl, text="Add phase…",
+                   command=lambda: self._phase_dialog(None)).pack(
+            side="left", padx=4)
+        ttk.Button(ctrl, text="Edit…", command=self.edit_phase_clicked).pack(
+            side="left", padx=4)
+        ttk.Button(ctrl, text="Remove", command=self.remove_phase_clicked).pack(
+            side="left", padx=4)
+        ttk.Button(ctrl, text="Refresh", command=self.load_phases_table).pack(
+            side="left", padx=4)
+        self._phases_status = ttk.Label(ctrl, text="", foreground=MUTED)
+        self._phases_status.pack(side="right", padx=8)
+
+        # pymatgen availability hint
+        self._phases_pymatgen_label = ttk.Label(frame, text="", foreground=MUTED,
+                                                wraplength=800, justify="left")
+        self._phases_pymatgen_label.pack(fill="x", padx=4, pady=(0, 2))
+
+        # Treeview with scrollbar
+        tree_frame = ttk.Frame(frame)
+        tree_frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+
+        cols = ("enabled", "name", "category", "spacegroup", "K0", "K0p", "source")
+        self.phases_tree = ttk.Treeview(tree_frame, columns=cols, show="headings",
+                                        selectmode="browse")
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical",
+                            command=self.phases_tree.yview)
+        self.phases_tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self.phases_tree.pack(side="left", fill="both", expand=True)
+
+        self.phases_tree.heading("enabled",     text="✓")
+        self.phases_tree.heading("name",        text="Name")
+        self.phases_tree.heading("category",    text="Category")
+        self.phases_tree.heading("spacegroup",  text="Space group")
+        self.phases_tree.heading("K0",          text="K0 (GPa)")
+        self.phases_tree.heading("K0p",         text="K0'")
+        self.phases_tree.heading("source",      text="Source/Origin")
+
+        self.phases_tree.column("enabled",    width=36,  minwidth=32,  anchor="center", stretch=False)
+        self.phases_tree.column("name",       width=140, minwidth=80)
+        self.phases_tree.column("category",   width=80,  minwidth=60)
+        self.phases_tree.column("spacegroup", width=100, minwidth=60)
+        self.phases_tree.column("K0",         width=80,  minwidth=50,  anchor="center")
+        self.phases_tree.column("K0p",        width=60,  minwidth=40,  anchor="center")
+        self.phases_tree.column("source",     width=260, minwidth=100)
+
+        self.phases_tree.tag_configure("user", foreground=ACCENT)
+
+        self.phases_tree.bind("<Button-1>", self._phases_tree_click)
+        self.phases_tree.bind("<Double-1>", self.edit_phase_clicked)
+
+        self._phases_by_name: "Dict[str, Any]" = {}
+
+        self.load_phases_table()
+
+    def load_phases_table(self):
+        from .phases import list_phases, pymatgen_available
+        ws = self._phases_workspace()
+        phases = list_phases(ws)
+        self._phases_by_name = {p.name: p for p in phases}
+
+        enabled_set = set(str(n) for n in self.config.get("candidate_phases", []))
+
+        # Clear and repopulate
+        self.phases_tree.delete(*self.phases_tree.get_children())
+        for p in phases:
+            eos = p.eos or {}
+            k0_val = eos.get("K0")
+            k0p_val = eos.get("K0p")
+            k0_str = f"{k0_val:g}" if k0_val is not None else "—"
+            k0p_str = f"{k0p_val:g}" if k0p_val is not None else "—"
+            if p.builtin:
+                origin = p.source or "bundled"
+            else:
+                origin = "(user)" if not p.source else f"(user) {p.source}"
+            enabled_mark = "✓" if p.name in enabled_set else ""
+            tags = () if p.builtin else ("user",)
+            self.phases_tree.insert(
+                "", "end", iid=p.name,
+                values=(enabled_mark, p.name, p.category,
+                        p.space_group or "—", k0_str, k0p_str, origin),
+                tags=tags,
+            )
+
+        n_total = len(phases)
+        n_user = sum(1 for p in phases if not p.builtin)
+        n_builtin = n_total - n_user
+        n_enabled = len([n for n in enabled_set if n in self._phases_by_name])
+        if hasattr(self, "_phases_status"):
+            self._phases_status.configure(
+                text=(f"{n_total} phases ({n_user} user, {n_builtin} bundled)"
+                      f"  ·  {n_enabled} enabled"))
+
+        if hasattr(self, "_phases_pymatgen_label"):
+            if pymatgen_available():
+                self._phases_pymatgen_label.configure(
+                    text="pymatgen available — CIF auto-parsing and pattern simulation enabled.",
+                    foreground=MUTED)
+            else:
+                self._phases_pymatgen_label.configure(
+                    text=("pymatgen not installed — CIF auto-parsing & pattern simulation "
+                          "disabled (pip install pymatgen). You can still add phases manually."),
+                    foreground=WARN)
+
+    def _phases_tree_click(self, event):
+        col = self.phases_tree.identify_column(event.x)
+        if col == "#1":
+            row = self.phases_tree.identify_row(event.y)
+            if row:
+                self._toggle_phase_enabled(row)
+        # Otherwise let normal selection happen (no return / no break needed)
+
+    def _toggle_phase_enabled(self, name: str):
+        enabled = list(self.config.get("candidate_phases", []))
+        enabled_strs = [str(n) for n in enabled]
+        if name in enabled_strs:
+            enabled_strs.remove(name)
+        else:
+            enabled_strs.append(name)
+        self.config["candidate_phases"] = sorted(set(enabled_strs))
+        self.save_config(silent=True)
+        # Update just this row's enabled cell
+        mark = "✓" if name in self.config["candidate_phases"] else ""
+        try:
+            self.phases_tree.set(name, "enabled", mark)
+        except Exception:
+            pass
+        # Refresh status count
+        enabled_set = set(self.config["candidate_phases"])
+        n_enabled = len([n for n in enabled_set if n in self._phases_by_name])
+        n_total = len(self._phases_by_name)
+        n_user = sum(1 for p in self._phases_by_name.values() if not p.builtin)
+        n_builtin = n_total - n_user
+        if hasattr(self, "_phases_status"):
+            self._phases_status.configure(
+                text=(f"{n_total} phases ({n_user} user, {n_builtin} bundled)"
+                      f"  ·  {n_enabled} enabled"))
+        self.log(f"Phase '{name}' {'enabled' if mark else 'disabled'} as candidate.")
+
+    def _phase_dialog(self, existing):
+        """Add (existing=None) or Edit (existing=Phase) a user phase."""
+        from .phases import Phase, upsert_user_phase, CATEGORIES
+        tk, ttk = self.tk, self.ttk
+
+        title = "Edit phase" if existing else "Add phase"
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.configure(bg=BG)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(True, True)
+
+        def _f(s):
+            """Parse float leniently; return None on blank/invalid."""
+            try:
+                v = str(s).strip()
+                return float(v) if v else None
+            except (ValueError, TypeError):
+                return None
+
+        pad = {"padx": 6, "pady": 3}
+
+        content = ttk.Frame(dlg, padding=10)
+        content.pack(fill="both", expand=True)
+
+        row = 0
+        # Name
+        ttk.Label(content, text="Name").grid(row=row, column=0, sticky="w", **pad)
+        v_name = tk.StringVar(value=existing.name if existing else "")
+        ttk.Entry(content, textvariable=v_name, width=36).grid(
+            row=row, column=1, columnspan=3, sticky="we", **pad)
+        row += 1
+
+        # Formula
+        ttk.Label(content, text="Formula").grid(row=row, column=0, sticky="w", **pad)
+        v_formula = tk.StringVar(value=existing.formula if existing else "")
+        ttk.Entry(content, textvariable=v_formula, width=36).grid(
+            row=row, column=1, columnspan=3, sticky="we", **pad)
+        row += 1
+
+        # Category
+        ttk.Label(content, text="Category").grid(row=row, column=0, sticky="w", **pad)
+        v_category = tk.StringVar(
+            value=(existing.category if existing else "marker"))
+        ttk.Combobox(content, textvariable=v_category,
+                     values=list(CATEGORIES), state="readonly", width=16).grid(
+            row=row, column=1, sticky="w", **pad)
+        row += 1
+
+        # Space group
+        ttk.Label(content, text="Space group").grid(row=row, column=0, sticky="w", **pad)
+        v_sg = tk.StringVar(value=existing.space_group if existing else "")
+        ttk.Entry(content, textvariable=v_sg, width=20).grid(
+            row=row, column=1, sticky="w", **pad)
+        row += 1
+
+        # Lattice — six small entries in one row
+        ttk.Label(content, text="Lattice (Å, °)").grid(
+            row=row, column=0, sticky="w", **pad)
+        lat_frame = ttk.Frame(content)
+        lat_frame.grid(row=row, column=1, columnspan=3, sticky="w", **pad)
+        lat_keys = ("a", "b", "c", "alpha", "beta", "gamma")
+        lat_defaults = {"alpha": "90", "beta": "90", "gamma": "90"}
+        lat_vars: "Dict[str, tk.StringVar]" = {}
+        for i, k in enumerate(lat_keys):
+            ex_val = ""
+            if existing and existing.lattice:
+                v_raw = existing.lattice.get(k)
+                ex_val = f"{v_raw:g}" if v_raw is not None else ""
+            if not ex_val:
+                ex_val = lat_defaults.get(k, "")
+            ttk.Label(lat_frame, text=k).grid(row=0, column=i * 2, sticky="e",
+                                               padx=(6 if i else 0, 1))
+            sv = tk.StringVar(value=ex_val)
+            ttk.Entry(lat_frame, textvariable=sv, width=8).grid(
+                row=0, column=i * 2 + 1, padx=(0, 4))
+            lat_vars[k] = sv
+        row += 1
+
+        # EOS
+        ttk.Label(content, text="EOS  V0 (Å³)").grid(
+            row=row, column=0, sticky="w", **pad)
+        eos_frame = ttk.Frame(content)
+        eos_frame.grid(row=row, column=1, columnspan=3, sticky="w", **pad)
+        ex_eos = (existing.eos or {}) if existing else {}
+        eos_keys = ("V0", "K0", "K0p")
+        eos_labels = ("V0 (Å³)", "K0 (GPa)", "K0'")
+        eos_vars: "Dict[str, tk.StringVar]" = {}
+        for i, (k, lbl) in enumerate(zip(eos_keys, eos_labels)):
+            v_raw = ex_eos.get(k)
+            ex_val = f"{v_raw:g}" if v_raw is not None else ""
+            ttk.Label(eos_frame, text=lbl).grid(row=0, column=i * 2,
+                                                 sticky="e", padx=(6 if i else 0, 1))
+            sv = tk.StringVar(value=ex_val)
+            ttk.Entry(eos_frame, textvariable=sv, width=10).grid(
+                row=0, column=i * 2 + 1, padx=(0, 4))
+            eos_vars[k] = sv
+        row += 1
+
+        # Source
+        ttk.Label(content, text="Source").grid(row=row, column=0, sticky="w", **pad)
+        v_source = tk.StringVar(value=existing.source if existing else "")
+        ttk.Entry(content, textvariable=v_source, width=50).grid(
+            row=row, column=1, columnspan=3, sticky="we", **pad)
+        row += 1
+
+        # Notes
+        ttk.Label(content, text="Notes").grid(row=row, column=0, sticky="nw", **pad)
+        notes_text = tk.Text(content, width=50, height=3, bg=BG2, fg=FG,
+                             insertbackground=FG, relief="flat", wrap="word")
+        notes_text.grid(row=row, column=1, columnspan=3, sticky="we", **pad)
+        if existing and existing.notes:
+            notes_text.insert("1.0", existing.notes)
+        row += 1
+
+        content.columnconfigure(1, weight=1)
+
+        # Buttons
+        btn_frame = ttk.Frame(content)
+        btn_frame.grid(row=row, column=0, columnspan=4, sticky="e", pady=(8, 0))
+
+        def _save():
+            name = v_name.get().strip()
+            if not name:
+                self.messagebox.showerror("Validation", "Name is required.",
+                                          parent=dlg)
+                return
+
+            lattice = {}
+            for k in lat_keys:
+                fv = _f(lat_vars[k].get())
+                if fv is not None:
+                    lattice[k] = fv
+
+            eos: "Dict[str, Any]" = {"type": "BM3"}
+            for k in eos_keys:
+                fv = _f(eos_vars[k].get())
+                if fv is not None:
+                    eos[k] = fv
+
+            notes = notes_text.get("1.0", "end-1c")
+
+            phase = Phase(
+                name=name,
+                formula=v_formula.get().strip(),
+                category=v_category.get(),
+                space_group=v_sg.get().strip(),
+                lattice=lattice,
+                atoms=(existing.atoms if existing else []),
+                eos=eos,
+                axial_eos=(existing.axial_eos if existing else {}),
+                amorphous=(existing.amorphous if existing else False),
+                cif_path=(existing.cif_path if existing else ""),
+                source=v_source.get().strip(),
+                notes=notes,
+            )
+            try:
+                upsert_user_phase(self._phases_workspace(), phase)
+            except Exception as e:
+                self.messagebox.showerror("Save failed", repr(e), parent=dlg)
+                return
+            dlg.destroy()
+            self.load_phases_table()
+            action = "updated" if existing else "added"
+            self.log(f"Phase '{name}' {action}.")
+
+        ttk.Button(btn_frame, text="Save", command=_save).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Cancel",
+                   command=dlg.destroy).pack(side="left", padx=4)
+
+    def edit_phase_clicked(self, event=None):
+        sel = self.phases_tree.selection()
+        if not sel:
+            self.messagebox.showinfo("Edit phase", "Select a phase to edit.")
+            return
+        name = sel[0]
+        phase = self._phases_by_name.get(name)
+        if phase is None:
+            self.messagebox.showinfo("Edit phase", f"Phase '{name}' not found.")
+            return
+        self._phase_dialog(phase)
+
+    def remove_phase_clicked(self):
+        from .phases import remove_user_phase
+        sel = self.phases_tree.selection()
+        if not sel:
+            self.messagebox.showinfo("Remove phase", "Select a phase to remove.")
+            return
+        name = sel[0]
+        if not self.messagebox.askyesno(
+                "Remove phase",
+                f"Remove user phase '{name}'? This cannot be undone."):
+            return
+        ws = self._phases_workspace()
+        removed = remove_user_phase(ws, name)
+        if not removed:
+            self.messagebox.showinfo(
+                "Remove phase",
+                f"'{name}' is a bundled phase and cannot be deleted.\n"
+                "Use Edit to create a user override.")
+            return
+        # Drop from candidate_phases if present
+        enabled = list(self.config.get("candidate_phases", []))
+        if name in enabled:
+            enabled.remove(name)
+            self.config["candidate_phases"] = sorted(set(enabled))
+            self.save_config(silent=True)
+        self.log(f"Phase '{name}' removed.")
+        self.load_phases_table()
+
+    def import_cif_clicked(self):
+        from .phases import import_cif, pymatgen_available
+        path = self.filedialog.askopenfilename(
+            title="Import CIF",
+            filetypes=[("CIF", "*.cif"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        ws = self._phases_workspace()
+        try:
+            phase = import_cif(ws, path)
+        except Exception as e:
+            self.messagebox.showerror("Import CIF failed", repr(e))
+            return
+        self.log(f"CIF imported: {path} -> phase '{phase.name}'")
+        self.load_phases_table()
+        if not pymatgen_available():
+            self.messagebox.showinfo(
+                "CIF imported",
+                "The CIF was stored but could not be auto-parsed (pymatgen is not "
+                "installed). Install pymatgen for automatic lattice/structure parsing, "
+                "or fill in the lattice and EOS fields manually below.")
+        # Always open the edit dialog so the user can fill in / verify the EOS
+        self._phase_dialog(self._phases_by_name.get(phase.name, phase))
 
     # ------------------------------------------------------------------
     # Lifecycle

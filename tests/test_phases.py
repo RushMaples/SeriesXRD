@@ -1,0 +1,117 @@
+"""Reference-phase library: registry, EOS math, and (optional) pymatgen paths.
+
+The registry, merge/override semantics, and Birch-Murnaghan math are pure stdlib
+and always tested. CIF parsing and pattern simulation are tested only when
+pymatgen is installed (the feature degrades gracefully otherwise).
+"""
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from bulkxrd.analysis import phases as ph
+
+
+def test_bundled():
+    lib = ph.load_bundled()
+    assert lib, "bundled baseline is empty"
+    for name in ("Au", "Pt", "Cu", "MgO", "NaCl-B1", "Re", "Ne"):
+        assert name in lib, f"missing bundled phase {name}"
+    au = lib["Au"]
+    assert au.builtin and au.category == "marker"
+    assert au.has_structure() and au.has_eos()
+    assert abs(au.eos["V0"] - au.lattice["a"] ** 3) < 0.1  # FCC conventional cell
+    meta = ph.bundled_meta()
+    assert "disclaimer" in meta
+
+
+def test_user_override_and_merge():
+    with tempfile.TemporaryDirectory() as td:
+        # No user library yet -> merged == bundled.
+        lib0 = ph.load_library(td)
+        assert "Au" in lib0 and lib0["Au"].builtin
+
+        # Add a brand-new user phase.
+        custom = ph.Phase(name="MyStd", category="marker",
+                          space_group="Fm-3m",
+                          lattice={"a": 4.0, "b": 4.0, "c": 4.0,
+                                   "alpha": 90.0, "beta": 90.0, "gamma": 90.0},
+                          eos={"type": "BM3", "V0": 64.0, "K0": 150.0, "K0p": 4.5})
+        ph.upsert_user_phase(td, custom)
+        lib1 = ph.load_library(td)
+        assert "MyStd" in lib1 and not lib1["MyStd"].builtin
+
+        # Override a bundled phase by name -> shadows, loses builtin flag.
+        ph.upsert_user_phase(td, ph.Phase(name="Au", category="marker",
+                                          eos={"type": "BM3", "V0": 67.8,
+                                               "K0": 170.0, "K0p": 6.0}))
+        lib2 = ph.load_library(td)
+        assert lib2["Au"].eos["K0"] == 170.0 and not lib2["Au"].builtin
+
+        # Removing a user entry works; removing a bundled (now-shadow) returns
+        # True because the override lives in the user file.
+        assert ph.remove_user_phase(td, "MyStd") is True
+        assert "MyStd" not in ph.load_library(td)
+        assert ph.remove_user_phase(td, "Au") is True
+        assert ph.load_library(td)["Au"].builtin  # back to bundled
+        # A purely bundled name that was never overridden can't be removed.
+        assert ph.remove_user_phase(td, "Pt") is False
+
+        # list_phases groups by category, returns Phase objects.
+        names = [p.name for p in ph.list_phases(td)]
+        assert "Au" in names and len(names) == len(ph.load_bundled())
+
+
+def test_birch_murnaghan_roundtrip():
+    V0, K0, K0p = 67.85, 167.0, 5.0
+    assert abs(ph.volume_at_pressure(0.0, V0, K0, K0p) - V0) < 1e-6
+    for P in (5.0, 30.0, 100.0, 300.0):
+        V = ph.volume_at_pressure(P, V0, K0, K0p)
+        assert 0 < V < V0, f"V not compressed at {P} GPa"
+        P_back = ph.birch_murnaghan_pressure(V, V0, K0, K0p)
+        assert abs(P_back - P) < 1e-3, f"roundtrip off at {P}: got {P_back}"
+
+
+def test_compress_lattice():
+    au = ph.load_bundled()["Au"]
+    a0 = au.lattice["a"]
+    at0 = ph.compress_lattice(au, 0.0)
+    assert abs(at0["a"] - a0) < 1e-6
+    at100 = ph.compress_lattice(au, 100.0)
+    assert at100["a"] < a0  # compresses under pressure
+    # isotropic: a/b/c scale by the same factor
+    assert abs(at100["a"] - at100["b"]) < 1e-9
+
+
+def test_pymatgen_paths():
+    if not ph.pymatgen_available():
+        print("  (pymatgen not installed — skipping CIF/simulate tests)")
+        return
+    # Simulate a bundled phase: should yield peaks with positive intensities.
+    au = ph.load_bundled()["Au"]
+    pat = ph.simulate_pattern(au, 0.4133, two_theta_min=0.0, two_theta_max=30.0)
+    assert pat and all(p["intensity"] >= 0 for p in pat)
+    assert pat == sorted(pat, key=lambda p: p["two_theta"])
+    # Round-trip a CIF through import_cif using a generated CIF.
+    from pymatgen.core import Lattice, Structure
+    s = Structure.from_spacegroup("Fm-3m", Lattice.cubic(4.0782), ["Au"], [[0, 0, 0]])
+    with tempfile.TemporaryDirectory() as td:
+        cif = Path(td) / "au.cif"
+        s.to(filename=str(cif))
+        imported = ph.import_cif(td, cif, name="Au-test", category="marker")
+        assert imported.space_group and imported.lattice.get("a")
+        assert Path(imported.cif_path).is_file()
+        assert "Au-test" in ph.load_library(td)
+
+
+def main() -> None:
+    test_bundled()
+    test_user_override_and_merge()
+    test_birch_murnaghan_roundtrip()
+    test_compress_lattice()
+    test_pymatgen_paths()
+    print("PHASES TEST OK")
+
+
+if __name__ == "__main__":
+    main()

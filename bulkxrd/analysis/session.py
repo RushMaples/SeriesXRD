@@ -35,6 +35,9 @@ _DEFAULTS = {
     "window_factor": "3.0",
     "max_chi2": "25.0",
     "propagate_seeds": True,
+    # Step 3 prep — candidate phases (names from the reference-phase library)
+    # enabled for compound identification. Edited on the GUI's Phases tab.
+    "candidate_phases": [],
 }
 
 

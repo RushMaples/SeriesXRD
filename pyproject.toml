@@ -35,6 +35,10 @@ dependencies = [
 [project.optional-dependencies]
 # Extra image-format readers (mirrors OPTIONAL_IMPORTS in bulkxrd/core/env.py)
 io = ["tifffile"]
+# Crystallography backend for the reference-phase library: CIF parsing and
+# powder-pattern simulation (peak positions + intensities). Optional — the
+# phase registry, EOS math, and bundled baseline work without it.
+phases = ["pymatgen"]
 
 [project.scripts]
 bulkxrd = "bulkxrd.app:main"
@@ -45,3 +49,7 @@ bulkxrd-inspect = "bulkxrd.core.inspect:main"
 
 [tool.setuptools.packages.find]
 include = ["bulkxrd*"]
+
+[tool.setuptools.package-data]
+# Ship the bundled reference-phase baseline with the package.
+"bulkxrd.analysis.refdata" = ["*.json"]

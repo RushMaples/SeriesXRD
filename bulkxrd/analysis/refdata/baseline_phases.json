@@ -1,0 +1,161 @@
+{
+  "_meta": {
+    "schema_version": "1",
+    "description": "Bundled baseline of common high-pressure (DAC) reference phases: pressure markers, gasket materials, and pressure media. Each entry carries a 3rd-order Birch-Murnaghan EOS (V0 in Angstrom^3, K0 in GPa, K0p dimensionless) and, where the structure is simple, the space group + ambient lattice + asymmetric-unit atoms so peak positions and relative intensities can be simulated.",
+    "disclaimer": "These are reference STARTING values compiled from common high-pressure literature at ~300 K. Reported EOS parameters vary between studies (and are correlated, especially K0 vs K0'). Verify K0/K0' against the standard and analysis protocol you actually use before quantitative pressure determination. User entries in the workspace shadow these by name.",
+    "lattice_units": "Angstrom, degrees",
+    "eos_units": "V0 Angstrom^3, K0 GPa"
+  },
+  "phases": [
+    {
+      "name": "Au",
+      "formula": "Au",
+      "category": "marker",
+      "space_group": "Fm-3m",
+      "lattice": {"a": 4.0782, "b": 4.0782, "c": 4.0782, "alpha": 90.0, "beta": 90.0, "gamma": 90.0},
+      "atoms": [{"element": "Au", "x": 0.0, "y": 0.0, "z": 0.0, "occ": 1.0}],
+      "eos": {"type": "BM3", "V0": 67.847, "K0": 167.0, "K0p": 5.0},
+      "source": "Anderson, Isaak & Yamamoto (1989), J. Appl. Phys. 65, 1534.",
+      "notes": "Classic FCC pressure marker; many alternative scales exist (e.g. Tsuchiya 2003, Fei 2007, Dorogokupets & Dewaele 2007)."
+    },
+    {
+      "name": "Pt",
+      "formula": "Pt",
+      "category": "marker",
+      "space_group": "Fm-3m",
+      "lattice": {"a": 3.9231, "b": 3.9231, "c": 3.9231, "alpha": 90.0, "beta": 90.0, "gamma": 90.0},
+      "atoms": [{"element": "Pt", "x": 0.0, "y": 0.0, "z": 0.0, "occ": 1.0}],
+      "eos": {"type": "BM3", "V0": 60.383, "K0": 277.0, "K0p": 5.08},
+      "source": "Holmes, Gathers & Bassett (1989), J. Appl. Phys. 66, 2962.",
+      "notes": "FCC. Stiff and chemically inert; good high-pressure marker. See also Dorogokupets & Dewaele (2007)."
+    },
+    {
+      "name": "Cu",
+      "formula": "Cu",
+      "category": "marker",
+      "space_group": "Fm-3m",
+      "lattice": {"a": 3.6149, "b": 3.6149, "c": 3.6149, "alpha": 90.0, "beta": 90.0, "gamma": 90.0},
+      "atoms": [{"element": "Cu", "x": 0.0, "y": 0.0, "z": 0.0, "occ": 1.0}],
+      "eos": {"type": "BM3", "V0": 47.241, "K0": 133.0, "K0p": 5.01},
+      "source": "Dewaele, Loubeyre & Mezouar (2004), Phys. Rev. B 70, 094112.",
+      "notes": "FCC."
+    },
+    {
+      "name": "Ag",
+      "formula": "Ag",
+      "category": "marker",
+      "space_group": "Fm-3m",
+      "lattice": {"a": 4.0857, "b": 4.0857, "c": 4.0857, "alpha": 90.0, "beta": 90.0, "gamma": 90.0},
+      "atoms": [{"element": "Ag", "x": 0.0, "y": 0.0, "z": 0.0, "occ": 1.0}],
+      "eos": {"type": "BM3", "V0": 68.204, "K0": 100.0, "K0p": 6.0},
+      "source": "Dewaele, Loubeyre & Mezouar (2004), Phys. Rev. B 70, 094112.",
+      "notes": "FCC."
+    },
+    {
+      "name": "W",
+      "formula": "W",
+      "category": "marker",
+      "space_group": "Im-3m",
+      "lattice": {"a": 3.1652, "b": 3.1652, "c": 3.1652, "alpha": 90.0, "beta": 90.0, "gamma": 90.0},
+      "atoms": [{"element": "W", "x": 0.0, "y": 0.0, "z": 0.0, "occ": 1.0}],
+      "eos": {"type": "BM3", "V0": 31.708, "K0": 308.0, "K0p": 4.2},
+      "source": "Dewaele, Loubeyre & Mezouar (2004), Phys. Rev. B 70, 094112.",
+      "notes": "BCC. Also frequently used as a gasket material."
+    },
+    {
+      "name": "Mo",
+      "formula": "Mo",
+      "category": "marker",
+      "space_group": "Im-3m",
+      "lattice": {"a": 3.1470, "b": 3.1470, "c": 3.1470, "alpha": 90.0, "beta": 90.0, "gamma": 90.0},
+      "atoms": [{"element": "Mo", "x": 0.0, "y": 0.0, "z": 0.0, "occ": 1.0}],
+      "eos": {"type": "BM3", "V0": 31.166, "K0": 261.0, "K0p": 4.5},
+      "source": "Dewaele, Loubeyre & Mezouar (2004), Phys. Rev. B 70, 094112.",
+      "notes": "BCC."
+    },
+    {
+      "name": "MgO",
+      "formula": "MgO",
+      "category": "marker",
+      "space_group": "Fm-3m",
+      "lattice": {"a": 4.2117, "b": 4.2117, "c": 4.2117, "alpha": 90.0, "beta": 90.0, "gamma": 90.0},
+      "atoms": [
+        {"element": "Mg", "x": 0.0, "y": 0.0, "z": 0.0, "occ": 1.0},
+        {"element": "O", "x": 0.5, "y": 0.5, "z": 0.5, "occ": 1.0}
+      ],
+      "eos": {"type": "BM3", "V0": 74.706, "K0": 160.2, "K0p": 4.15},
+      "source": "Speziale, Zha, Duffy, Hemley & Mao (2001), J. Geophys. Res. 106, 515.",
+      "notes": "Periclase, rocksalt (B1) structure. Common internal standard, stable to very high P."
+    },
+    {
+      "name": "NaCl-B1",
+      "formula": "NaCl",
+      "category": "marker",
+      "space_group": "Fm-3m",
+      "lattice": {"a": 5.6402, "b": 5.6402, "c": 5.6402, "alpha": 90.0, "beta": 90.0, "gamma": 90.0},
+      "atoms": [
+        {"element": "Na", "x": 0.0, "y": 0.0, "z": 0.0, "occ": 1.0},
+        {"element": "Cl", "x": 0.5, "y": 0.5, "z": 0.5, "occ": 1.0}
+      ],
+      "eos": {"type": "BM3", "V0": 179.43, "K0": 23.8, "K0p": 5.07},
+      "source": "Brown (1999), J. Appl. Phys. 86, 5801 (Decker-type scale).",
+      "notes": "Rocksalt (B1) phase. Transforms to the CsCl-type B2 phase near ~30 GPa (room T) — this entry is only valid below the transition. Also widely used as a soft pressure medium."
+    },
+    {
+      "name": "Re",
+      "formula": "Re",
+      "category": "gasket",
+      "space_group": "P6_3/mmc",
+      "lattice": {"a": 2.7609, "b": 2.7609, "c": 4.4576, "alpha": 90.0, "beta": 90.0, "gamma": 120.0},
+      "atoms": [{"element": "Re", "x": 0.3333333, "y": 0.6666667, "z": 0.25, "occ": 1.0}],
+      "eos": {"type": "BM3", "V0": 29.43, "K0": 350.0, "K0p": 4.5},
+      "source": "Anzellini et al. (2014); Dubrovinsky et al.",
+      "notes": "HCP. The most common DAC gasket; its rings nearly always appear in the pattern, so it is useful both as a contaminant to recognize and as a secondary marker."
+    },
+    {
+      "name": "Ne",
+      "formula": "Ne",
+      "category": "medium",
+      "space_group": "Fm-3m",
+      "lattice": {"a": 4.464, "b": 4.464, "c": 4.464, "alpha": 90.0, "beta": 90.0, "gamma": 90.0},
+      "atoms": [{"element": "Ne", "x": 0.0, "y": 0.0, "z": 0.0, "occ": 1.0}],
+      "eos": {"type": "BM3", "V0": 88.967, "K0": 1.16, "K0p": 8.23},
+      "source": "Dewaele, Datchi, Loubeyre & Mezouar (2008), Phys. Rev. B 77, 094106.",
+      "notes": "Solid Ne (FCC) above ~4.8 GPa. Excellent quasi-hydrostatic medium; V0/K0 are EOS-fit extrapolations to zero pressure, not the ambient solid."
+    },
+    {
+      "name": "Ar",
+      "formula": "Ar",
+      "category": "medium",
+      "space_group": "Fm-3m",
+      "lattice": {"a": 5.300, "b": 5.300, "c": 5.300, "alpha": 90.0, "beta": 90.0, "gamma": 90.0},
+      "atoms": [{"element": "Ar", "x": 0.0, "y": 0.0, "z": 0.0, "occ": 1.0}],
+      "eos": {"type": "BM3", "V0": 148.88, "K0": 2.7, "K0p": 7.2},
+      "source": "Ross, Mao, Bell & Xu (1986); Dewaele et al. (2008).",
+      "notes": "Solid Ar (FCC). Quasi-hydrostatic medium; EOS parameters are zero-pressure extrapolations."
+    },
+    {
+      "name": "He",
+      "formula": "He",
+      "category": "medium",
+      "space_group": "",
+      "lattice": {},
+      "atoms": [],
+      "eos": {"type": "BM3", "V0": 0.0, "K0": 0.0, "K0p": 0.0},
+      "amorphous": false,
+      "source": "Loubeyre et al. (1993), Phys. Rev. Lett. 71, 2272.",
+      "notes": "Best hydrostatic medium available, but extremely compressible and a weak X-ray scatterer (Z=2) — its Bragg signal is usually negligible. Structure/EOS intentionally left blank here; fill in from Loubeyre (1993) if you need to model it."
+    },
+    {
+      "name": "Stainless steel (gasket)",
+      "formula": "Fe-Cr-Ni",
+      "category": "gasket",
+      "space_group": "",
+      "lattice": {},
+      "atoms": [],
+      "eos": {},
+      "source": "",
+      "notes": "Common gasket alloy (e.g. 301/304). Polycrystalline BCC/FCC mixture with composition-dependent lattice; no single clean EOS is bundled. Listed so its rings can be flagged as a known contaminant; supply a CIF/EOS if you need quantitative treatment."
+    }
+  ]
+}

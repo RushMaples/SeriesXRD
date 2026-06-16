@@ -39,6 +39,21 @@ from .review import (
     review_analysis,
 )
 from .session import seed_analysis_config, analysis_config_path
+from .phases import (
+    Phase,
+    load_bundled,
+    load_library,
+    list_phases,
+    upsert_user_phase,
+    remove_user_phase,
+    import_cif,
+    parse_cif,
+    simulate_pattern,
+    pymatgen_available,
+    birch_murnaghan_pressure,
+    volume_at_pressure,
+    compress_lattice,
+)
 
 __all__ = [
     "snip_baseline", "spot_residual", "contamination_score",
@@ -48,4 +63,8 @@ __all__ = [
     "inspect_analysis", "frame_data", "peak_map", "structure_report",
     "review_analysis",
     "seed_analysis_config", "analysis_config_path",
+    "Phase", "load_bundled", "load_library", "list_phases",
+    "upsert_user_phase", "remove_user_phase", "import_cif", "parse_cif",
+    "simulate_pattern", "pymatgen_available",
+    "birch_murnaghan_pressure", "volume_at_pressure", "compress_lattice",
 ]

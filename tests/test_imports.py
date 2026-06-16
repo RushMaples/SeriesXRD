@@ -18,6 +18,7 @@ mods = [
     'bulkxrd.analysis', 'bulkxrd.analysis.background', 'bulkxrd.analysis.peaks',
     'bulkxrd.analysis.review', 'bulkxrd.analysis.session',
     'bulkxrd.analysis.worker', 'bulkxrd.analysis.gui', 'bulkxrd.analysis.run_gui',
+    'bulkxrd.analysis.phases', 'bulkxrd.analysis.refdata',
 ]
 for m in mods:
     importlib.import_module(m)
