@@ -16,6 +16,8 @@ mods = [
     'bulkxrd.reduce.worker', 'bulkxrd.reduce.gui', 'bulkxrd.reduce.run_gui',
     'bulkxrd.app',
     'bulkxrd.analysis', 'bulkxrd.analysis.background', 'bulkxrd.analysis.peaks',
+    'bulkxrd.analysis.review', 'bulkxrd.analysis.session',
+    'bulkxrd.analysis.worker', 'bulkxrd.analysis.gui', 'bulkxrd.analysis.run_gui',
 ]
 for m in mods:
     importlib.import_module(m)

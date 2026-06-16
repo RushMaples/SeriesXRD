@@ -24,6 +24,7 @@ classifiers = [
 # tkinter is also required but ships with the Python interpreter itself.
 dependencies = [
     "numpy",
+    "scipy",
     "Pillow",
     "matplotlib",
     "pyFAI",
@@ -39,6 +40,7 @@ io = ["tifffile"]
 bulkxrd = "bulkxrd.app:main"
 bulkxrd-calib-gui = "bulkxrd.calib.run_gui:main"
 bulkxrd-reduce-gui = "bulkxrd.reduce.run_gui:main"
+bulkxrd-analysis-gui = "bulkxrd.analysis.run_gui:main"
 bulkxrd-inspect = "bulkxrd.core.inspect:main"
 
 [tool.setuptools.packages.find]

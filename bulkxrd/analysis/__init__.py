@@ -31,10 +31,21 @@ from .peaks import (
     fit_dataset,
     run_peak_fitting,
 )
+from .review import (
+    inspect_analysis,
+    frame_data,
+    peak_map,
+    structure_report,
+    review_analysis,
+)
+from .session import seed_analysis_config, analysis_config_path
 
 __all__ = [
     "snip_baseline", "spot_residual", "contamination_score",
     "separate_background", "run_background_separation",
     "pseudo_voigt", "pseudo_voigt_area", "mad_sigma", "detect_peaks",
     "fit_pattern", "fit_dataset", "run_peak_fitting",
+    "inspect_analysis", "frame_data", "peak_map", "structure_report",
+    "review_analysis",
+    "seed_analysis_config", "analysis_config_path",
 ]
