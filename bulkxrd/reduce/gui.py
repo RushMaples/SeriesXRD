@@ -737,6 +737,10 @@ class ReductionApp:
             ax2.set_ylabel("azimuth (deg)")
             _style_ax(ax2)
         canvas = FigureCanvasTkAgg(fig, master=self.review_plot_frame)
+        # Tiny requested size so the canvas doesn't pin the notebook/window to the
+        # figure size (which made plots load larger than the pane); fill+expand
+        # grows it to the pane and matplotlib redraws at the allocated size.
+        canvas.get_tk_widget().configure(width=10, height=10)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
         self._review_canvas = canvas
