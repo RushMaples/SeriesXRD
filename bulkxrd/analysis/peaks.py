@@ -30,10 +30,13 @@ drives a whole analysis HDF5 written by Step 1.
 """
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+
+from .parallel import resolve_workers, chunk_ranges
 
 
 # Rejection flags (bitwise-OR-able).
@@ -317,6 +320,36 @@ SCHEMA_VERSION = "1"
 _PEAK_COLS = ("center", "amplitude", "fwhm", "eta", "area", "chi2", "flag")
 
 
+def _peaks_chunk(payload):
+    """Worker: fit a contiguous chunk of frames with internal seed propagation.
+
+    Returns ``(counts, frames_local, cols)`` where ``frames_local`` are indices
+    within the chunk (the parent offsets them to global frame indices). Excluded
+    frames are skipped (count 0) and do not seed their neighbours.
+    """
+    radial, clean_c, excluded_c, min_snr, window_factor, max_chi2, propagate = payload
+    m = clean_c.shape[0]
+    counts = [0] * m
+    frames_local: List[int] = []
+    cols: Dict[str, list] = {c: [] for c in _PEAK_COLS}
+    seeds: Optional[List[float]] = None
+    for j in range(m):
+        if excluded_c[j]:
+            continue
+        peaks = fit_pattern(radial, clean_c[j], min_snr=min_snr,
+                            window_factor=window_factor, max_chi2=max_chi2,
+                            seed_centers=seeds, keep_flagged=True)
+        counts[j] = len(peaks)
+        for p in peaks:
+            frames_local.append(j)
+            for c in _PEAK_COLS:
+                cols[c].append(p[c])
+        if propagate:
+            good = [p["center"] for p in peaks if p["flag"] == FLAG_OK]
+            seeds = good if good else seeds
+    return counts, frames_local, cols
+
+
 def run_peak_fitting(
     analysis_h5: "str | Path",
     out_h5: "Optional[str | Path]" = None,
@@ -325,6 +358,7 @@ def run_peak_fitting(
     window_factor: float = 3.0,
     max_chi2: float = 25.0,
     propagate_seeds: bool = True,
+    num_workers: int = 1,
 ) -> Dict[str, Any]:
     """Fit peaks for every frame of a Step-1 analysis HDF5 and store the result.
 
@@ -348,17 +382,15 @@ def run_peak_fitting(
     manifest dict; prints ``[PEAKS] <done> <total>`` progress.
     """
     import h5py  # type: ignore
+    import os
     import shutil
 
     src = Path(analysis_h5).expanduser().resolve()
     if not src.is_file():
         raise FileNotFoundError(f"Analysis HDF5 not found: {src}")
     dst = Path(out_h5).expanduser().resolve() if out_h5 else src
-    if dst != src:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
 
-    with h5py.File(str(dst), "r") as h5:
+    with h5py.File(str(src), "r") as h5:
         bg = h5.get("background")
         if bg is None or "clean" not in bg:
             raise ValueError(
@@ -368,44 +400,67 @@ def run_peak_fitting(
         radial = np.asarray(h5["radial"][:], dtype=float) if "radial" in h5 else \
             np.arange(clean.shape[1], dtype=float)
         unit = str(h5.attrs.get("unit", ""))
+        frames = h5.get("frames")
+        excluded = (np.asarray(frames["excluded"][:], dtype=bool)
+                    if frames is not None and "excluded" in frames else None)
 
     n = clean.shape[0]
-    print(f"[PEAKS] fitting {n} frames, radial[{radial.size}] unit={unit or '?'} "
-          f"min_snr={min_snr} window={window_factor}", flush=True)
+    if excluded is None or excluded.size != n:
+        excluded = np.zeros(n, dtype=bool)
+    workers = resolve_workers(num_workers)
+    print(f"[PEAKS] fitting {n} frames ({int(excluded.sum())} excluded), "
+          f"radial[{radial.size}] unit={unit or '?'} min_snr={min_snr} "
+          f"window={window_factor} workers={workers}", flush=True)
 
     counts = np.zeros(n, dtype="i4")
     cols: Dict[str, list] = {c: [] for c in _PEAK_COLS}
     frame_idx: list = []
-    seeds: Optional[List[float]] = None
-    for i in range(n):
-        peaks = fit_pattern(radial, clean[i], min_snr=min_snr,
-                            window_factor=window_factor, max_chi2=max_chi2,
-                            seed_centers=seeds, keep_flagged=True)
-        counts[i] = len(peaks)
-        for p in peaks:
-            frame_idx.append(i)
-            for c in _PEAK_COLS:
-                cols[c].append(p[c])
-        if propagate_seeds:
-            good = [p["center"] for p in peaks if p["flag"] == FLAG_OK]
-            seeds = good if good else seeds
-        if (i + 1) % 25 == 0 or i + 1 == n:
-            print(f"[PEAKS] {i + 1} {n}", flush=True)
+
+    def _absorb(a, result):
+        cc, fl, cols_c = result
+        counts[a:a + len(cc)] = cc
+        frame_idx.extend(x + a for x in fl)
+        for c in _PEAK_COLS:
+            cols[c].extend(cols_c[c])
+
+    if workers > 1 and n > 1:
+        ranges = chunk_ranges(n, workers)
+        payloads = [(radial, clean[a:b], excluded[a:b], min_snr, window_factor,
+                     max_chi2, propagate_seeds) for a, b in ranges]
+        done = 0
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            for (a, b), result in zip(ranges, ex.map(_peaks_chunk, payloads)):
+                _absorb(a, result)
+                done += (b - a)
+                print(f"[PEAKS] {done} {n}", flush=True)
+    else:
+        _absorb(0, _peaks_chunk((radial, clean, excluded, min_snr, window_factor,
+                                 max_chi2, propagate_seeds)))
+        print(f"[PEAKS] {n} {n}", flush=True)
 
     P = int(counts.sum())
-    with h5py.File(str(dst), "r+") as o:
-        if "peaks" in o:
-            del o["peaks"]
-        gp = o.create_group("peaks")
-        gp.attrs.update({"schema_version": SCHEMA_VERSION, "min_snr": float(min_snr),
-                         "window_factor": float(window_factor),
-                         "max_chi2": float(max_chi2),
-                         "propagate_seeds": bool(propagate_seeds)})
-        gp.create_dataset("counts", data=counts)
-        gp.create_dataset("frame", data=np.asarray(frame_idx, dtype="i4"))
-        for c in _PEAK_COLS:
-            dt = "i4" if c == "flag" else "f8"
-            gp.create_dataset(c, data=np.asarray(cols[c], dtype=dt))
+    tmp = dst.with_name(dst.name + ".tmp")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, tmp)
+    try:
+        with h5py.File(str(tmp), "r+") as o:
+            if "peaks" in o:
+                del o["peaks"]
+            gp = o.create_group("peaks")
+            gp.attrs.update({"schema_version": SCHEMA_VERSION, "min_snr": float(min_snr),
+                             "window_factor": float(window_factor),
+                             "max_chi2": float(max_chi2),
+                             "propagate_seeds": bool(propagate_seeds)})
+            gp.create_dataset("counts", data=counts)
+            gp.create_dataset("frame", data=np.asarray(frame_idx, dtype="i4"))
+            for c in _PEAK_COLS:
+                dt = "i4" if c == "flag" else "f8"
+                gp.create_dataset(c, data=np.asarray(cols[c], dtype=dt))
+        os.replace(tmp, dst)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink()
+        raise
 
     n_good = int(np.sum(np.asarray(cols["flag"], dtype=int) == FLAG_OK)) if P else 0
     manifest = {

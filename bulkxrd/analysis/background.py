@@ -27,10 +27,14 @@ Pure-numpy logic (no pyFAI). ``separate_background`` works on a single pattern;
 """
 from __future__ import annotations
 
+import re
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
+
+from .parallel import resolve_workers, chunk_ranges
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +151,34 @@ def separate_background(intensity, intensity_robust,
 SCHEMA_VERSION = "1"
 
 
+def _parse_wavelength(poni_text: str) -> float:
+    """Extract the wavelength in Å from pyFAI PONI text (stored in metres)."""
+    m = re.search(r"wavelength\s*:\s*([0-9eE.+-]+)", str(poni_text), re.IGNORECASE)
+    if not m:
+        return 0.0
+    try:
+        wl = float(m.group(1))
+    except ValueError:
+        return 0.0
+    return wl * 1e10 if 0 < wl < 1e-6 else wl
+
+
+def _bg_chunk(payload):
+    """Worker: run separate_background over a contiguous chunk of frames."""
+    mean_c, robust_c, mhw, npasses, lls = payload
+    m, nb = mean_c.shape
+    clean = np.full((m, nb), np.nan, "f4")
+    base = np.full((m, nb), np.nan, "f4")
+    spots = np.full((m, nb), np.nan, "f4")
+    contam = np.zeros(m, "f8")
+    for j in range(m):
+        res = separate_background(mean_c[j], robust_c[j], max_half_window=mhw,
+                                  n_passes=npasses, use_lls=lls)
+        clean[j] = res["clean"]; base[j] = res["baseline"]
+        spots[j] = res["spot_residual"]; contam[j] = res["contamination"]
+    return clean, base, spots, contam
+
+
 def run_background_separation(
     reduced_h5: "str | Path",
     out_h5: "Optional[str | Path]" = None,
@@ -155,6 +187,7 @@ def run_background_separation(
     n_passes: int = 1,
     use_lls: bool = True,
     contamination_threshold: "Optional[float]" = None,
+    num_workers: int = 1,
 ) -> Dict[str, Any]:
     """Apply Step-1 background separation to every frame of a reduced HDF5.
 
@@ -162,10 +195,11 @@ def run_background_separation(
     ``patterns/radial`` (and ``frames/...`` for provenance). Writes a
     self-contained analysis HDF5:
 
-        /  attrs: schema_version, source_reduced, unit, max_half_window, n_passes
+        /  attrs: schema_version, source_reduced, unit, wavelength, max_half_window, n_passes
         /radial                      (N_bins,)
         /frames/filename             (N,)   copied from the reduced file
         /frames/contamination        (N,)   per-frame spot score
+        /frames/excluded             (N,)   bool, carried over from the reduce stage
         /frames/flagged              (N,)   contamination > threshold (if given)
         /background/clean            (N, N_bins)
         /background/baseline         (N, N_bins)
@@ -193,30 +227,50 @@ def run_background_separation(
         robust_all = np.asarray(pat["intensity_robust"][:], dtype=float)
         radial = np.asarray(pat["radial"][:], dtype=float) if "radial" in pat else None
         unit = str(h5.attrs.get("unit", ""))
+        poni = h5.attrs.get("poni_text", "")
+        if isinstance(poni, (bytes, bytearray)):
+            poni = poni.decode("utf-8", "replace")
+        wavelength = _parse_wavelength(poni)
         frames = h5.get("frames")
         names = None
         if frames is not None and "filename" in frames:
             names = [x.decode("utf-8", "replace") if isinstance(x, (bytes, bytearray)) else str(x)
                      for x in frames["filename"][:]]
+        excluded = (np.asarray(frames["excluded"][:], dtype=bool)
+                    if frames is not None and "excluded" in frames else None)
 
     n, nb = mean_all.shape
+    if excluded is None or excluded.size != n:
+        excluded = np.zeros(n, dtype=bool)
     clean = np.full((n, nb), np.nan, dtype="f4")
     baseline = np.full((n, nb), np.nan, dtype="f4")
     spots = np.full((n, nb), np.nan, dtype="f4")
     contam = np.zeros(n, dtype="f8")
+    workers = resolve_workers(num_workers)
     print(f"[ANALYSIS] background separation: {n} frames, {nb} bins, "
-          f"SNIP M={max_half_window} passes={n_passes}", flush=True)
+          f"SNIP M={max_half_window} passes={n_passes} workers={workers}", flush=True)
 
-    for i in range(n):
-        res = separate_background(mean_all[i], robust_all[i],
-                                  max_half_window=max_half_window,
-                                  n_passes=n_passes, use_lls=use_lls)
-        clean[i] = res["clean"]
-        baseline[i] = res["baseline"]
-        spots[i] = res["spot_residual"]
-        contam[i] = res["contamination"]
-        if (i + 1) % 25 == 0 or i + 1 == n:
-            print(f"[ANALYSIS] {i + 1} {n}", flush=True)
+    if workers > 1 and n > 1:
+        ranges = chunk_ranges(n, workers)
+        payloads = [(mean_all[a:b], robust_all[a:b], max_half_window, n_passes, use_lls)
+                    for a, b in ranges]
+        done = 0
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            for (a, b), (c, bs, sp, ct) in zip(ranges, ex.map(_bg_chunk, payloads)):
+                clean[a:b] = c; baseline[a:b] = bs; spots[a:b] = sp; contam[a:b] = ct
+                done += (b - a)
+                print(f"[ANALYSIS] {done} {n}", flush=True)
+    else:
+        for i in range(n):
+            res = separate_background(mean_all[i], robust_all[i],
+                                      max_half_window=max_half_window,
+                                      n_passes=n_passes, use_lls=use_lls)
+            clean[i] = res["clean"]
+            baseline[i] = res["baseline"]
+            spots[i] = res["spot_residual"]
+            contam[i] = res["contamination"]
+            if (i + 1) % 25 == 0 or i + 1 == n:
+                print(f"[ANALYSIS] {i + 1} {n}", flush=True)
 
     flagged = None
     if contamination_threshold is not None:
@@ -228,6 +282,7 @@ def run_background_separation(
             o.attrs.update({
                 "tool": "bulkxrd.analysis.background", "schema_version": SCHEMA_VERSION,
                 "source_reduced": str(src), "unit": unit,
+                "wavelength": float(wavelength),
                 "max_half_window": int(max_half_window), "n_passes": int(n_passes),
                 "use_lls": bool(use_lls),
             })
@@ -239,6 +294,7 @@ def run_background_separation(
                 gf.create_dataset("filename", data=np.array(names, dtype=object),
                                   dtype=_h5.string_dtype(encoding="utf-8"))
             gf.create_dataset("contamination", data=contam)
+            gf.create_dataset("excluded", data=excluded)
             if flagged is not None:
                 gf.create_dataset("flagged", data=flagged)
             gb = o.create_group("background")
@@ -259,6 +315,8 @@ def run_background_separation(
         "n_frames": int(n),
         "n_bins": int(nb),
         "unit": unit,
+        "wavelength": float(wavelength) or None,
+        "n_excluded": int(excluded.sum()),
         "max_half_window": int(max_half_window),
         "n_passes": int(n_passes),
         "contamination_threshold": contamination_threshold,
