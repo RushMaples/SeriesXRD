@@ -698,7 +698,9 @@ class ReductionApp:
         patterns = review.get("patterns", [])
         cake_present = bool(review.get("cake_present"))
         nrows = 1 + (1 if cake_present else 0)
-        fig = Figure(figsize=(5.5, 5.6), dpi=100)
+        # constrained layout recomputes margins on resize (one-shot tight_layout
+        # leaves labels clipped/overlapping when the pane is resized).
+        fig = Figure(figsize=(5.5, 5.6), dpi=100, layout="constrained")
         self._review_fig = fig
         fig.patch.set_facecolor(BG)
         ax1 = fig.add_subplot(nrows, 1, 1)
@@ -734,7 +736,6 @@ class ReductionApp:
             ax2.set_xlabel(review.get("unit") or "radial")
             ax2.set_ylabel("azimuth (deg)")
             _style_ax(ax2)
-        fig.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=self.review_plot_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)

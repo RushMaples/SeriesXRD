@@ -272,6 +272,58 @@ def peak_map(h5_path: "str | Path", good_only: bool = False) -> Dict[str, Any]:
     return out
 
 
+def identify_tracks(h5_path: "str | Path") -> Dict[str, Any]:
+    """Per-phase Step-3a results for the pressure-vs-frame view.
+
+    Returns ``{ok, error, unit, wavelength, p_min, p_max, n_frames, phases}``
+    where ``phases`` is a list of ``{name, category, has_eos, n_pred, pressure,
+    score, confidence, n_matched}`` (the last four are arrays of length
+    n_frames).
+    """
+    p = Path(h5_path).expanduser()
+    out: Dict[str, Any] = {"ok": False, "error": "", "unit": "", "wavelength": 0.0,
+                           "p_min": 0.0, "p_max": 0.0, "n_frames": 0, "phases": []}
+    if not p.is_file():
+        out["error"] = f"File does not exist: {p}"
+        return out
+    try:
+        import h5py  # type: ignore
+    except ImportError:
+        out["error"] = "h5py is not installed."
+        return out
+    try:
+        with h5py.File(str(p), "r") as h5:
+            gid = h5.get("identify")
+            if gid is None:
+                out["error"] = "No /identify — run Step 3a (EOS phase matching) first."
+                return out
+            out["unit"] = str(gid.attrs.get("unit", ""))
+            out["wavelength"] = float(gid.attrs.get("wavelength", 0.0) or 0.0)
+            out["p_min"] = float(gid.attrs.get("p_min", 0.0) or 0.0)
+            out["p_max"] = float(gid.attrs.get("p_max", 0.0) or 0.0)
+            for key in gid:
+                g = gid[key]
+                if not hasattr(g, "keys") or "pressure" not in g:
+                    continue
+                rec = {
+                    "name": str(g.attrs.get("name", key)),
+                    "category": str(g.attrs.get("category", "")),
+                    "has_eos": bool(g.attrs.get("has_eos", False)),
+                    "n_pred": int(g.attrs.get("n_pred", 0)),
+                    "pressure": np.asarray(g["pressure"][:], dtype=float),
+                    "score": np.asarray(g["score"][:], dtype=float) if "score" in g else None,
+                    "confidence": np.asarray(g["confidence"][:], dtype=float) if "confidence" in g else None,
+                    "n_matched": np.asarray(g["n_matched"][:], dtype=int) if "n_matched" in g else None,
+                }
+                out["n_frames"] = max(out["n_frames"], int(rec["pressure"].size))
+                out["phases"].append(rec)
+            out["phases"].sort(key=lambda r: r["name"].lower())
+            out["ok"] = True
+    except Exception as e:
+        out["error"] = f"Failed to read HDF5: {e!r}"
+    return out
+
+
 def structure_report(review: Dict[str, Any]) -> str:
     """Human-readable text block for the GUI."""
     L: List[str] = [f"File: {review['path']}"]

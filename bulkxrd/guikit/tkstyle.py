@@ -31,6 +31,13 @@ def apply_dark_theme(root, ttk) -> None:
     style.map(       "TNotebook.Tab",background=[("selected", BG)], foreground=[("selected", ACCENT)])
     style.configure("TSeparator",    background=BORDER)
     style.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor=BG2, bordercolor=BORDER)
+    # Treeview (clam defaults to a white body/heading — unreadable on dark).
+    style.configure("Treeview",         background=BG2, fieldbackground=BG2, foreground=FG,
+                     bordercolor=BORDER, relief="flat")
+    style.map(       "Treeview",        background=[("selected", ACCENT)], foreground=[("selected", BG)])
+    style.configure("Treeview.Heading", background=BTN_BG, foreground=FG, relief="flat",
+                     bordercolor=BORDER)
+    style.map(       "Treeview.Heading",background=[("active", BTN_ACT)])
     root.configure(bg=BG)
     try:
         root.option_add("*TCombobox*Listbox.background", ENTRY_BG)

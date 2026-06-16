@@ -8,6 +8,7 @@ Workflow left-to-right across tabs:
     5 Review     — single-frame QC: traces + fitted peaks + contamination curve
     6 Heatmap    — scatter of peak positions across all frames (Step-3 precursor)
     7 Phases     — reference-phase library: bundled + user phases, import CIFs, toggle candidates
+    8 Identify   — Step 3a: deterministic EOS phase matching, per-frame pressure + confidence
 
 Same supervision model as reduce/gui.py: heavy computation runs in
 analysis/worker.py as a subprocess; this process never imports numpy/h5py
@@ -54,6 +55,22 @@ HELP: Dict[str, str] = {
     # Run scope
     "run_step1": "Run Step 1: SNIP baseline estimation + diamond-spot residual extraction.",
     "run_step2": "Run Step 2: pseudo-Voigt peak fitting on the clean (baseline-subtracted) patterns.",
+    "run_step3": (
+        "Run Step 3a: match the fitted peaks against the enabled candidate phases by fitting "
+        "each phase's Birch–Murnaghan EOS — gives a per-frame pressure and match confidence "
+        "per phase."
+    ),
+    # Step 3a
+    "p_min": "Pressure search range (GPa) for the EOS fit.",
+    "p_max": "Pressure search range (GPa) for the EOS fit.",
+    "rel_tol": (
+        "Peak-match tolerance as a fraction of d-spacing (e.g. 0.01 = 1%). "
+        "Looser = more tolerant matching, fuzzier pressure."
+    ),
+    "identify_wavelength": (
+        "X-ray wavelength (Å). Needed only for a 2θ axis; leave blank to auto-read it "
+        "from the reduced file's PONI. Not needed for q-axis data."
+    ),
     # Step 1
     "max_half_window": (
         "Widest feature (in bins) treated as background; ~1.5-2x the broadest "
@@ -182,6 +199,7 @@ class AnalysisApp:
             ("5 Review",     self._tab_review),
             ("6 Heatmap",    self._tab_heatmap),
             ("7 Phases",     self._tab_phases),
+            ("8 Identify",   self._tab_identify),
         ]:
             frame = ttk.Frame(self.nb, padding=10)
             builder(frame)
@@ -555,11 +573,12 @@ class AnalysisApp:
 
         run_step1 = bool(self.config.get("run_step1", True))
         run_step2 = bool(self.config.get("run_step2", True))
-        if not run_step1 and not run_step2:
+        run_step3 = bool(self.config.get("run_step3", False))
+        if not run_step1 and not run_step2 and not run_step3:
             self.messagebox.showerror(
                 "Nothing to run",
-                "Enable at least one of 'Run Step 1' or 'Run Step 2' "
-                "on the Background / Peaks tabs.")
+                "Enable at least one of 'Run Step 1', 'Run Step 2', or 'Run Step 3a' "
+                "on the Background / Peaks / Identify tabs.")
             return
 
         if run_step1:
@@ -614,11 +633,16 @@ class AnalysisApp:
                 for line in proc.stdout:
                     line = line.rstrip()
                     parts = line.split()
-                    if len(parts) == 3 and parts[0] in ("[ANALYSIS]", "[PEAKS]"):
+                    if len(parts) == 3 and parts[0] in ("[ANALYSIS]", "[PEAKS]", "[IDENTIFY]"):
                         try:
                             done = int(parts[1])
                             total = int(parts[2])
-                            phase = "Background" if parts[0] == "[ANALYSIS]" else "Peaks"
+                            _phase_labels = {
+                                "[ANALYSIS]": "Background",
+                                "[PEAKS]": "Peaks",
+                                "[IDENTIFY]": "Identify",
+                            }
+                            phase = _phase_labels.get(parts[0], parts[0])
                             self.root.after(
                                 0, self._update_progress, phase, done, total)
                             continue
@@ -672,6 +696,17 @@ class AnalysisApp:
                 n_peaks = s2.get("n_peaks", "?")
                 n_good = s2.get("n_good", "?")
                 self.log(f"Peak fitting: {n_good} good / {n_peaks} total peaks")
+            # Log Step 3a summary if it ran.
+            s3 = manifest.get("step3", {})
+            if s3:
+                for name, d in s3.get("summary", {}).items():
+                    try:
+                        self.log(
+                            f"  {name}: seen in {d['n_frames_seen']} frames, "
+                            f"median P={d['pressure_median']:.1f} GPa"
+                        )
+                    except Exception:
+                        pass
         try:
             self.inspect_input_clicked()
         except Exception as e:
@@ -684,6 +719,10 @@ class AnalysisApp:
             self.load_heatmap()
         except Exception as e:
             self.log(f"Auto heatmap load failed: {e!r}", "WARN")
+        try:
+            self.load_identify()
+        except Exception as e:
+            self.log(f"Auto identify load failed: {e!r}", "WARN")
 
     def _run_error(self, err: str):
         self._run_proc = None
@@ -880,7 +919,9 @@ class AnalysisApp:
         unit = fd.get("unit") or "radial bin"
         x = np.asarray(radial) if radial is not None else None
 
-        fig = Figure(figsize=(7, 6), dpi=100)
+        # constrained layout recomputes margins on every resize (one-shot
+        # tight_layout leaves labels clipped/overlapping when the pane resizes).
+        fig = Figure(figsize=(7, 6), dpi=100, layout="constrained")
         self._review_fig = fig
         fig.patch.set_facecolor(BG)
         ax1 = fig.add_subplot(2, 1, 1)
@@ -949,7 +990,6 @@ class AnalysisApp:
             ax2.set_xlabel("frame")
         self._style_ax(ax2)
 
-        fig.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=self.review_plot_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -1070,7 +1110,7 @@ class AnalysisApp:
 
         unit = pm.get("unit") or "radial"
 
-        fig = Figure(figsize=(7, 5), dpi=100)
+        fig = Figure(figsize=(7, 5), dpi=100, layout="constrained")
         self._heatmap_fig = fig
         fig.patch.set_facecolor(BG)
         ax = fig.add_subplot(1, 1, 1)
@@ -1103,7 +1143,6 @@ class AnalysisApp:
             ax.set_ylabel(f"peak center ({unit})")
             ax.set_title(f"Peak map — {n_pts} peaks", color=FG)
 
-        fig.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=self.heatmap_plot_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -1502,6 +1541,183 @@ class AnalysisApp:
                 "or fill in the lattice and EOS fields manually below.")
         # Always open the edit dialog so the user can fill in / verify the EOS
         self._phase_dialog(self._phases_by_name.get(phase.name, phase))
+
+    # ------------------------------------------------------------------
+    # Tab 8 — Identify (Step 3a: deterministic EOS phase matching)
+    # ------------------------------------------------------------------
+
+    def _tab_identify(self, frame):
+        tk, ttk = self.tk, self.ttk
+
+        # -- params area --------------------------------------------------
+        self.checkbox(frame, "run_step3",
+                      "Run Step 3a — EOS phase matching", row=0)
+        self.field(frame, "p_min", "Pressure min (GPa)", row=2, width=12)
+        self.field(frame, "p_max", "Pressure max (GPa)", row=3, width=12)
+        self.field(frame, "rel_tol", "Match tolerance (Δd/d)", row=4, width=12)
+        self.field(frame, "identify_wavelength",
+                   "Wavelength (Å, blank=auto)", row=5, width=12)
+
+        ttk.Label(
+            frame,
+            text=(
+                "Step 3a matches the fitted peak list against the phases enabled on "
+                "the Phases tab, fitting each phase’s Birch–Murnaghan EOS "
+                "to find the pressure that best explains the observed peak positions. "
+                "Requires pymatgen for full d-spacing simulation. Enable “Run "
+                "Step 3a” here and launch from the Run tab (the Run tab executes "
+                "every enabled step). Each candidate phase yields a per-frame "
+                "best-fit pressure and a match confidence."
+            ),
+            foreground=MUTED, justify="left", wraplength=640,
+        ).grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+
+        # -- controls row -------------------------------------------------
+        ctrl = ttk.Frame(frame)
+        ctrl.grid(row=7, column=0, columnspan=3, sticky="w", pady=(4, 2))
+
+        ttk.Button(ctrl, text="Load identification",
+                   command=self.load_identify).pack(side="left", padx=4)
+
+        ttk.Label(ctrl, text="Min confidence:", foreground=MUTED).pack(
+            side="left", padx=(12, 2))
+        self._identify_conf_var = tk.StringVar(value="0.5")
+        _conf_entry = ttk.Entry(ctrl, textvariable=self._identify_conf_var, width=6)
+        _conf_entry.pack(side="left", padx=2)
+        _conf_entry.bind("<Return>", lambda e: self.load_identify())
+
+        ttk.Button(ctrl, text="Redraw",
+                   command=self.load_identify).pack(side="left", padx=4)
+
+        self._identify_status = ttk.Label(ctrl, text="", foreground=MUTED)
+        self._identify_status.pack(side="left", padx=12)
+
+        # -- plot area ----------------------------------------------------
+        self.identify_plot_frame = ttk.Frame(frame)
+        self.identify_plot_frame.grid(
+            row=8, column=0, columnspan=3, sticky="nsew")
+        frame.rowconfigure(8, weight=1)
+        frame.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            self.identify_plot_frame,
+            text="Run Step 3a (Run tab) or Load identification to plot pressure vs frame.",
+            foreground=MUTED,
+        ).pack(anchor="center", expand=True)
+
+    def load_identify(self):
+        """Render the Step-3a pressure-vs-frame plot from the analysis HDF5."""
+        self.pull_vars()
+        path = str(self.config.get("analysis_h5_file", "") or "").strip()
+        if not path or not Path(path).is_file():
+            return  # silently skip auto-calls
+
+        # prev-figure-close leak guard
+        prev = getattr(self, "_identify_fig", None)
+        if prev is not None:
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.close(prev)
+            except Exception:
+                pass
+            self._identify_fig = None
+
+        for w in self.identify_plot_frame.winfo_children():
+            w.destroy()
+
+        try:
+            import matplotlib
+            matplotlib.use("TkAgg", force=False)
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        except Exception as e:
+            self.ttk.Label(
+                self.identify_plot_frame,
+                text=f"matplotlib unavailable: {e}",
+                foreground=WARN,
+            ).pack(anchor="center", expand=True)
+            return
+
+        import numpy as np
+
+        from .review import identify_tracks
+        tr = identify_tracks(path)
+        if not tr["ok"]:
+            self.ttk.Label(
+                self.identify_plot_frame,
+                text=tr["error"],
+                foreground=WARN,
+            ).pack(anchor="center", expand=True)
+            if hasattr(self, "_identify_status"):
+                self._identify_status.configure(text=tr["error"])
+            return
+
+        # Parse confidence threshold
+        conf_min = 0.5
+        try:
+            conf_min = float(self._identify_conf_var.get())
+            conf_min = max(0.0, min(1.0, conf_min))
+        except (ValueError, AttributeError):
+            pass
+
+        fig = Figure(figsize=(7, 6), dpi=100, layout="constrained")
+        self._identify_fig = fig
+        fig.patch.set_facecolor(BG)
+        ax_pres = fig.add_subplot(2, 1, 1)
+        ax_conf = fig.add_subplot(2, 1, 2)
+
+        for rec in tr["phases"]:
+            name = rec["name"]
+            pressure = np.asarray(rec["pressure"], dtype=float)
+            conf_arr = (
+                np.asarray(rec["confidence"], dtype=float)
+                if rec["confidence"] is not None
+                else np.zeros(pressure.size, dtype=float)
+            )
+            x = np.arange(pressure.size)
+            mask = conf_arr >= conf_min
+
+            label = name if rec["has_eos"] else f"{name} (no EOS)"
+
+            # Plot pressure where mask is satisfied; capture the line color.
+            if mask.any():
+                (ln,) = ax_pres.plot(
+                    x[mask], pressure[mask],
+                    marker=".", markersize=3, linewidth=0.7,
+                    label=label,
+                )
+                color = ln.get_color()
+            else:
+                # No points meet threshold — still need a color for confidence axis.
+                (ln,) = ax_pres.plot([], [], marker=".", markersize=3,
+                                     linewidth=0.7, label=label)
+                color = ln.get_color()
+
+            # Always show confidence trace in the same color.
+            ax_conf.plot(x, conf_arr, linewidth=0.7, color=color)
+
+        ax_pres.set_ylabel("pressure (GPa)")
+        ax_pres.set_title("Step 3a — best-fit pressure per phase", color=FG)
+        handles, labels = ax_pres.get_legend_handles_labels()
+        if handles:
+            ax_pres.legend(fontsize=7, framealpha=0.4)
+        self._style_ax(ax_pres)
+
+        ax_conf.axhline(conf_min, color=MUTED, linewidth=0.8, linestyle="--")
+        ax_conf.set_xlabel("frame index")
+        ax_conf.set_ylabel("confidence")
+        ax_conf.set_ylim(0, 1.02)
+        self._style_ax(ax_conf)
+
+        canvas = FigureCanvasTkAgg(fig, master=self.identify_plot_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._identify_fig = fig
+        self._identify_canvas = canvas
+
+        if hasattr(self, "_identify_status"):
+            self._identify_status.configure(
+                text=f"{len(tr['phases'])} phase(s), {tr['n_frames']} frames")
 
     # ------------------------------------------------------------------
     # Lifecycle

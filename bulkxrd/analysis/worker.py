@@ -23,10 +23,14 @@ if __package__ in (None, ""):
     from bulkxrd.core.config import read_json, write_json, print_status
     from bulkxrd.analysis.background import run_background_separation
     from bulkxrd.analysis.peaks import run_peak_fitting
+    from bulkxrd.analysis.identify import run_identification
+    from bulkxrd.analysis.phases import load_library
 else:
     from ..core.config import read_json, write_json, print_status
     from .background import run_background_separation
     from .peaks import run_peak_fitting
+    from .identify import run_identification
+    from .phases import load_library
 
 
 def _as_bool(v, default=False) -> bool:
@@ -62,21 +66,22 @@ def _opt_float(v):
 
 
 def run_analysis(cfg: dict) -> dict:
-    """Drive Step 1 and/or Step 2 from a config dict. Returns a merged manifest."""
+    """Drive Step 1 (background), Step 2 (peaks), and/or Step 3a (EOS phase
+    matching) from a config dict. Returns a merged manifest."""
     reduced = str(cfg.get("reduced_h5_file", "") or "").strip()
     out_path = str(cfg.get("analysis_h5_file", "") or "").strip()
     run_step1 = _as_bool(cfg.get("run_step1", True), True)
     run_step2 = _as_bool(cfg.get("run_step2", True), True)
+    run_step3 = _as_bool(cfg.get("run_step3", False), False)
 
     manifest: dict = {"steps": []}
 
     if run_step1:
         if not reduced or not Path(reduced).expanduser().is_file():
             raise FileNotFoundError(f"Reduced HDF5 not found: {reduced!r}")
-        out_arg = out_path or None
         thr = _opt_float(cfg.get("contamination_threshold"))
         m1 = run_background_separation(
-            reduced, out_arg,
+            reduced, out_path or None,
             max_half_window=_as_int(cfg.get("max_half_window"), 40),
             n_passes=_as_int(cfg.get("n_passes"), 1),
             use_lls=_as_bool(cfg.get("use_lls", True), True),
@@ -85,16 +90,15 @@ def run_analysis(cfg: dict) -> dict:
         out_path = m1["out_h5"]
         manifest["step1"] = m1
         manifest["steps"].append("background")
-    elif not out_path:
-        # Step 2 only: operate on an already-written analysis file.
-        raise ValueError("run_step1 is off and no analysis_h5_file given to fit peaks into.")
+    elif (run_step2 or run_step3) and not out_path:
+        # Steps 2/3 operate on an already-written analysis file.
+        raise ValueError("Step 1 is off and no analysis_h5_file given to operate on.")
 
     if run_step2:
-        target = out_path
-        if not target or not Path(target).expanduser().is_file():
-            raise FileNotFoundError(f"Analysis HDF5 not found for peak fitting: {target!r}")
+        if not out_path or not Path(out_path).expanduser().is_file():
+            raise FileNotFoundError(f"Analysis HDF5 not found for peak fitting: {out_path!r}")
         m2 = run_peak_fitting(
-            target, None,
+            out_path, None,
             min_snr=_as_float(cfg.get("min_snr"), 5.0),
             window_factor=_as_float(cfg.get("window_factor"), 3.0),
             max_chi2=_as_float(cfg.get("max_chi2"), 25.0),
@@ -103,6 +107,32 @@ def run_analysis(cfg: dict) -> dict:
         out_path = m2["out_h5"]
         manifest["step2"] = m2
         manifest["steps"].append("peaks")
+
+    if run_step3:
+        if not out_path or not Path(out_path).expanduser().is_file():
+            raise FileNotFoundError(f"Analysis HDF5 not found for phase matching: {out_path!r}")
+        names = [str(n) for n in (cfg.get("candidate_phases") or [])]
+        if not names:
+            raise ValueError(
+                "Step 3a needs candidate phases — enable some on the Phases tab.")
+        workspace = cfg.get("workspace_root") or str(Path(out_path).expanduser().parent)
+        lib = load_library(workspace)
+        phases = [lib[n] for n in names if n in lib]
+        missing = [n for n in names if n not in lib]
+        if missing:
+            print_status(f"Candidate phases not found in library, skipped: {missing}", "WARN")
+        if not phases:
+            raise ValueError("None of the candidate phases resolve in the reference library.")
+        m3 = run_identification(
+            out_path, phases,
+            wavelength=_opt_float(cfg.get("identify_wavelength")),
+            p_min=_as_float(cfg.get("p_min"), 0.0),
+            p_max=_as_float(cfg.get("p_max"), 100.0),
+            rel_tol=_as_float(cfg.get("rel_tol"), 0.01),
+        )
+        out_path = m3["out_h5"]
+        manifest["step3"] = m3
+        manifest["steps"].append("identify")
 
     manifest["analysis_h5_file"] = out_path
     return manifest
