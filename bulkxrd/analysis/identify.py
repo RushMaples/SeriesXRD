@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import math
 import re
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from .phases import Phase, simulate_pattern, volume_at_pressure, pymatgen_available
+from .parallel import resolve_workers, chunk_ranges
 
 SCHEMA_VERSION = "1"
 
@@ -75,7 +77,7 @@ def wavelength_from_reduced(reduced_path: "str | Path") -> "Optional[float]":
             poni = h5.attrs.get("poni_text", "")
             if isinstance(poni, bytes):
                 poni = poni.decode("utf-8", "replace")
-        m = re.search(r"wavelength\s*:\s*([0-9eE.+-]+)", str(poni))
+        m = re.search(r"wavelength\s*:\s*([0-9eE.+-]+)", str(poni), re.IGNORECASE)
         if m:
             wl_m = float(m.group(1))           # pyFAI stores it in metres
             return wl_m * 1e10 if wl_m < 1e-6 else wl_m
@@ -219,6 +221,30 @@ def _h5_safe(name: str) -> str:
     return name.replace("/", "_")
 
 
+def _identify_chunk(payload):
+    """Worker: fit pressure for every phase over a contiguous chunk of frames.
+
+    Reflections are precomputed in the parent and passed in, so the workers need
+    no pymatgen. Excluded frames are left as NaN/zero.
+    """
+    phases, refls, obs_chunk, excluded_chunk, p_min, p_max, rel_tol = payload
+    m = len(obs_chunk)
+    res = {ph.name: {"pressure": np.full(m, np.nan, "f8"), "score": np.zeros(m, "f8"),
+                     "confidence": np.zeros(m, "f8"), "n_matched": np.zeros(m, "i4")}
+           for ph in phases}
+    for j in range(m):
+        if excluded_chunk[j]:
+            continue
+        obs = obs_chunk[j]
+        for ph, refl in zip(phases, refls):
+            r = fit_pressure_for_phase(obs, ph, refl, p_min=p_min, p_max=p_max,
+                                       rel_tol=rel_tol)
+            rr = res[ph.name]
+            rr["pressure"][j] = r["pressure"]; rr["score"][j] = r["score"]
+            rr["confidence"][j] = r["confidence"]; rr["n_matched"][j] = r["n_matched"]
+    return res
+
+
 def _read_good_peaks_by_frame(h5) -> "Tuple[int, List[np.ndarray]]":
     pk = h5.get("peaks")
     if pk is None or "center" not in pk or "frame" not in pk:
@@ -245,6 +271,7 @@ def run_identification(
     p_max: float = 100.0,
     rel_tol: float = 0.01,
     out_h5: "Optional[str | Path]" = None,
+    num_workers: int = 1,
 ) -> Dict[str, Any]:
     """Match every frame's good peaks against each candidate phase and store the
     per-frame best-fit pressure / score / confidence under ``/identify``.
@@ -268,76 +295,100 @@ def run_identification(
     if not phases:
         raise ValueError("No candidate phases supplied — enable some on the Phases tab.")
 
+    import os
+    import shutil
+
     src = Path(analysis_h5).expanduser().resolve()
     if not src.is_file():
         raise FileNotFoundError(f"Analysis HDF5 not found: {src}")
     dst = Path(out_h5).expanduser().resolve() if out_h5 else src
-    if dst != src:
-        import shutil
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
 
-    with h5py.File(str(dst), "r") as h5:
+    with h5py.File(str(src), "r") as h5:
         unit = str(h5.attrs.get("unit", ""))
+        stored_wl = float(h5.attrs.get("wavelength", 0.0) or 0.0)
         source_reduced = h5.attrs.get("source_reduced", "")
         if isinstance(source_reduced, bytes):
             source_reduced = source_reduced.decode("utf-8", "replace")
         n, peaks_by_frame = _read_good_peaks_by_frame(h5)
+        frames = h5.get("frames")
+        excluded = (np.asarray(frames["excluded"][:], dtype=bool)
+                    if frames is not None and "excluded" in frames else None)
+    if excluded is None or excluded.size != n:
+        excluded = np.zeros(n, dtype=bool)
 
-    # Wavelength is only needed for a 2theta axis.
+    # Wavelength is only needed for a 2theta axis: prefer the value stored at
+    # Step 1, then an explicit arg, then the reduced PONI.
+    if wavelength is None and stored_wl > 0:
+        wavelength = stored_wl
     if wavelength is None and unit.strip().lower() in ("2th_deg", "2th_rad"):
         wavelength = wavelength_from_reduced(source_reduced)
         if wavelength is None:
             raise ValueError(
-                f"Data is on a {unit} axis but no wavelength was found (PONI text "
-                "missing from the reduced file). Pass wavelength explicitly.")
+                f"Data is on a {unit} axis but no wavelength was found. "
+                "Re-run Step 1 (which stores it) or pass wavelength explicitly.")
 
     # Observed d per frame (convert once).
     obs_d_by_frame = [radial_to_d(c, unit, wavelength) if c.size else np.zeros(0)
                       for c in peaks_by_frame]
 
-    print(f"[IDENTIFY] {len(phases)} phase(s), {n} frames, unit={unit or '?'} "
-          f"P=[{p_min},{p_max}] GPa", flush=True)
+    workers = resolve_workers(num_workers)
+    print(f"[IDENTIFY] {len(phases)} phase(s), {n} frames "
+          f"({int(excluded.sum())} excluded), unit={unit or '?'} "
+          f"P=[{p_min},{p_max}] GPa workers={workers}", flush=True)
 
-    results: Dict[str, Dict[str, np.ndarray]] = {}
-    refl_cache: Dict[str, Any] = {}
-    for ph in phases:
-        refl_cache[ph.name] = phase_reflections(ph)
-        results[ph.name] = {
-            "pressure": np.full(n, np.nan, "f8"), "score": np.zeros(n, "f8"),
-            "confidence": np.zeros(n, "f8"), "n_matched": np.zeros(n, "i4"),
-        }
+    # Reflections simulated once in the parent (needs pymatgen); workers only score.
+    refl_cache = {ph.name: phase_reflections(ph) for ph in phases}
+    refls = [refl_cache[ph.name] for ph in phases]
+    results: Dict[str, Dict[str, np.ndarray]] = {
+        ph.name: {"pressure": np.full(n, np.nan, "f8"), "score": np.zeros(n, "f8"),
+                  "confidence": np.zeros(n, "f8"), "n_matched": np.zeros(n, "i4")}
+        for ph in phases}
 
-    for i in range(n):
-        obs = obs_d_by_frame[i]
-        for ph in phases:
-            r = fit_pressure_for_phase(obs, ph, refl_cache[ph.name],
-                                       p_min=p_min, p_max=p_max, rel_tol=rel_tol)
-            res = results[ph.name]
-            res["pressure"][i] = r["pressure"]
-            res["score"][i] = r["score"]
-            res["confidence"][i] = r["confidence"]
-            res["n_matched"][i] = r["n_matched"]
-        if (i + 1) % 25 == 0 or i + 1 == n:
-            print(f"[IDENTIFY] {i + 1} {n}", flush=True)
+    def _absorb(a, chunk_res):
+        for name, rr in chunk_res.items():
+            for k, v in rr.items():
+                results[name][k][a:a + len(v)] = v
 
-    with h5py.File(str(dst), "r+") as o:
-        if "identify" in o:
-            del o["identify"]
-        gid = o.create_group("identify")
-        gid.attrs.update({
-            "schema_version": SCHEMA_VERSION, "unit": unit,
-            "wavelength": float(wavelength) if wavelength else 0.0,
-            "p_min": float(p_min), "p_max": float(p_max), "rel_tol": float(rel_tol),
-            "phases": ", ".join(p.name for p in phases),
-        })
-        for ph in phases:
-            g = gid.create_group(_h5_safe(ph.name))
-            g.attrs.update({"name": ph.name, "n_pred": int(refl_cache[ph.name][0].size),
-                            "has_eos": bool(ph.has_eos()), "category": ph.category})
-            res = results[ph.name]
-            for k, v in res.items():
-                g.create_dataset(k, data=v)
+    if workers > 1 and n > 1:
+        ranges = chunk_ranges(n, workers)
+        payloads = [(phases, refls, obs_d_by_frame[a:b], excluded[a:b],
+                     p_min, p_max, rel_tol) for a, b in ranges]
+        done = 0
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            for (a, b), chunk_res in zip(ranges, ex.map(_identify_chunk, payloads)):
+                _absorb(a, chunk_res)
+                done += (b - a)
+                print(f"[IDENTIFY] {done} {n}", flush=True)
+    else:
+        _absorb(0, _identify_chunk((phases, refls, obs_d_by_frame, excluded,
+                                    p_min, p_max, rel_tol)))
+        print(f"[IDENTIFY] {n} {n}", flush=True)
+
+    tmp = dst.with_name(dst.name + ".tmp")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, tmp)
+    try:
+        with h5py.File(str(tmp), "r+") as o:
+            if "identify" in o:
+                del o["identify"]
+            gid = o.create_group("identify")
+            gid.attrs.update({
+                "schema_version": SCHEMA_VERSION, "unit": unit,
+                "wavelength": float(wavelength) if wavelength else 0.0,
+                "p_min": float(p_min), "p_max": float(p_max), "rel_tol": float(rel_tol),
+                "phases": ", ".join(p.name for p in phases),
+            })
+            for ph in phases:
+                g = gid.create_group(_h5_safe(ph.name))
+                g.attrs.update({"name": ph.name, "n_pred": int(refl_cache[ph.name][0].size),
+                                "has_eos": bool(ph.has_eos()), "category": ph.category})
+                for k, v in results[ph.name].items():
+                    g.create_dataset(k, data=v)
+        os.replace(tmp, dst)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink()
+        raise
 
     # Per-phase summary over frames where the phase was confidently matched.
     summary = {}

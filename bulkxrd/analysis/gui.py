@@ -555,6 +555,13 @@ class AnalysisApp:
         self.cancel_btn = ttk.Button(
             top, text="Cancel", command=self.cancel_analysis, state="disabled")
         self.cancel_btn.pack(side="left", padx=4, pady=4)
+        ttk.Label(top, text="Workers:", foreground=MUTED).pack(side="left", padx=(16, 2))
+        _w_var = tk.StringVar(value=str(self.config.get("num_workers", "0")))
+        self.vars["num_workers"] = _w_var
+        _w_entry = ttk.Entry(top, textvariable=_w_var, width=5)
+        _w_entry.pack(side="left", padx=2)
+        _ToolTip(_w_entry, "Parallel worker processes for all steps. "
+                           "0 = auto (CPU count − 1), 1 = serial.")
         self.progress = ttk.Progressbar(frame, mode="determinate", maximum=100)
         self.progress.pack(fill="x", padx=4, pady=6)
         self.progress_label = ttk.Label(frame, text="Idle", foreground=MUTED)
@@ -995,10 +1002,7 @@ class AnalysisApp:
             ax2.set_xlabel("frame")
         self._style_ax(ax2)
 
-        canvas = FigureCanvasTkAgg(fig, master=self.review_plot_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
-        self._review_canvas = canvas
+        self._review_canvas = self._embed_figure(self.review_plot_frame, fig)
 
     def _style_ax(self, ax):
         ax.set_facecolor(BG2)
@@ -1008,6 +1012,25 @@ class AnalysisApp:
         ax.title.set_color(FG)
         for s in ax.spines.values():
             s.set_edgecolor(FG)
+
+    def _embed_figure(self, parent, fig):
+        """Embed a matplotlib figure so it tracks the pane size instead of forcing it.
+
+        A ttk.Notebook sizes itself to its largest tab, so a fixed-size canvas
+        (figsize×dpi ≈ 700–800 px) would pin the whole window to at least that
+        size — the plot then loads larger than the GUI and can't shrink. Giving
+        the canvas widget a tiny *requested* size removes that floor; fill+expand
+        grows it to fill the pane, and matplotlib's own <Configure> handler
+        redraws the figure at the allocated size (constrained layout re-flows the
+        margins on each resize). Returns the canvas.
+        """
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        widget = canvas.get_tk_widget()
+        widget.configure(width=10, height=10)   # don't let the canvas set the min size
+        widget.pack(fill="both", expand=True)
+        canvas.draw()
+        return canvas
 
     # ------------------------------------------------------------------
     # Tab 6 — Heatmap
@@ -1148,10 +1171,7 @@ class AnalysisApp:
             ax.set_ylabel(f"peak center ({unit})")
             ax.set_title(f"Peak map — {n_pts} peaks", color=FG)
 
-        canvas = FigureCanvasTkAgg(fig, master=self.heatmap_plot_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
-        self._heatmap_canvas = canvas
+        self._heatmap_canvas = self._embed_figure(self.heatmap_plot_frame, fig)
 
     # ------------------------------------------------------------------
     # Tab 7 — Phases (reference-phase library)
@@ -1714,11 +1734,7 @@ class AnalysisApp:
         ax_conf.set_ylim(0, 1.02)
         self._style_ax(ax_conf)
 
-        canvas = FigureCanvasTkAgg(fig, master=self.identify_plot_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
-        self._identify_fig = fig
-        self._identify_canvas = canvas
+        self._identify_canvas = self._embed_figure(self.identify_plot_frame, fig)
 
         if hasattr(self, "_identify_status"):
             self._identify_status.configure(
@@ -1949,10 +1965,7 @@ class AnalysisApp:
                 ax2.set_title(pl["error"], color=WARN)
             self._style_ax(ax2)
 
-        canvas = FigureCanvasTkAgg(fig, master=self.patternmap_plot_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
-        self._patternmap_canvas = canvas
+        self._patternmap_canvas = self._embed_figure(self.patternmap_plot_frame, fig)
 
         if hasattr(self, "_pm_status"):
             self._pm_status.configure(

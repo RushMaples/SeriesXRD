@@ -45,6 +45,7 @@ bulkxrd = "bulkxrd.app:main"
 bulkxrd-calib-gui = "bulkxrd.calib.run_gui:main"
 bulkxrd-reduce-gui = "bulkxrd.reduce.run_gui:main"
 bulkxrd-analysis-gui = "bulkxrd.analysis.run_gui:main"
+bulkxrd-analyze = "bulkxrd.analysis.batch:main"
 bulkxrd-inspect = "bulkxrd.core.inspect:main"
 
 [tool.setuptools.packages.find]
