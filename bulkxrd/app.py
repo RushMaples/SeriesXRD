@@ -20,6 +20,7 @@ from .core.config import (
     SessionConfig, config_path_for_notebook,
 )
 from .reduce.session import seed_reduction_config
+from .analysis.session import seed_analysis_config
 
 DEFAULT_WORKSPACE = Path.home() / "bulkxrd_workspace"
 
@@ -42,14 +43,16 @@ class BulkXRDApp:
         import tkinter as tk
         from tkinter import ttk
         from .guikit.tkstyle import apply_dark_theme
-        from .guikit.theme import BG, MUTED
+        from .guikit.theme import BG
         from .calib.gui import make_calib_pane
         from .reduce.gui import make_reduce_pane
+        from .analysis.gui import make_analysis_pane
 
         self.tk = tk
         self.workspace = ensure_dir(workspace)
         calib_cfg = _seed_calibration_config(self.workspace)
         reduce_cfg = seed_reduction_config(self.workspace)
+        analysis_cfg = seed_analysis_config(self.workspace)
 
         self.root = tk.Tk()
         self.root.title(f"{TOOL_NAME} {VERSION}  —  {self.workspace}")
@@ -77,10 +80,8 @@ class BulkXRDApp:
         # pane (no manual JSON picking needed in the normal calibrate→reduce flow).
         self.calib_pane.add_accept_listener(self.reduce_pane.set_handoff)
 
-        # Analysis placeholder.
-        ttk.Label(analysis_tab, text="Analysis stage — planned",
-                  foreground=MUTED).pack(expand=True)
-        nb.tab(2, state="disabled")
+        # Embed the analysis pane (Step 1 background + Step 2 peaks + QC views).
+        self.analysis_pane = make_analysis_pane(analysis_tab, analysis_cfg)
 
         self._build_menubar()
 
@@ -104,6 +105,11 @@ class BulkXRDApp:
         calib_menu.add_command(label="Environment Settings...", command=self.calib_pane.open_env_settings)
         calib_menu.add_command(label="Launch Dioptas", command=self.calib_pane.open_dioptas)
 
+        analysis_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Analysis", menu=analysis_menu)
+        analysis_menu.add_command(label="Use latest reduced output",
+                                  command=self._handoff_reduced_to_analysis)
+
         tools_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Tools", menu=tools_menu)
         tools_menu.add_command(label="Check Environment", command=self._check_environment)
@@ -119,9 +125,23 @@ class BulkXRDApp:
         try:
             self.calib_pane.save_config(silent=True)
             self.reduce_pane.save_config(silent=True)
+            self.analysis_pane.save_config(silent=True)
             self.calib_pane.log("Saved all configs")
         except Exception as e:
             self.calib_pane.log(f"Save all failed: {e!r}", "WARN")
+
+    def _handoff_reduced_to_analysis(self):
+        """Push the reduction stage's most recent reduced .h5 into the analysis pane."""
+        from tkinter import messagebox
+        self.reduce_pane.pull_vars()
+        reduced = str(self.reduce_pane.config.get("reduced_h5_file", "") or "").strip()
+        if not reduced or not Path(reduced).is_file():
+            messagebox.showinfo(
+                "No reduced output",
+                "No reduced .h5 is available yet. Run a reduction (or pick one on the "
+                "Reduction → Review tab) first.")
+            return
+        self.analysis_pane.set_reduced(reduced)
 
     def _open_workspace(self):
         from tkinter import filedialog, messagebox
@@ -187,6 +207,8 @@ class BulkXRDApp:
         if not self.calib_pane.shutdown(confirm=True):
             return
         if not self.reduce_pane.shutdown(confirm=True):
+            return
+        if not self.analysis_pane.shutdown(confirm=True):
             return
         self.root.destroy()
 
