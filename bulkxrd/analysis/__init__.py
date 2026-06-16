@@ -46,6 +46,15 @@ from .identify import (
     fit_pressure_for_phase,
     run_identification,
 )
+from .heatmap import pattern_image, reflection_tracks, phase_layers
+from .mldata import (
+    make_d_grid,
+    resample_to_d,
+    export_ml_dataset,
+    simulate_training_pattern,
+    build_simulated_dataset,
+    export_simulated_dataset,
+)
 from .session import seed_analysis_config, analysis_config_path
 from .phases import (
     Phase,
@@ -72,6 +81,10 @@ __all__ = [
     "structure_report", "review_analysis",
     "radial_to_d", "phase_reflections", "scale_at_pressure",
     "fit_pressure_for_phase", "run_identification",
+    "pattern_image", "reflection_tracks", "phase_layers",
+    "make_d_grid", "resample_to_d", "export_ml_dataset",
+    "simulate_training_pattern", "build_simulated_dataset",
+    "export_simulated_dataset",
     "seed_analysis_config", "analysis_config_path",
     "Phase", "load_bundled", "load_library", "list_phases",
     "upsert_user_phase", "remove_user_phase", "import_cif", "parse_cif",
