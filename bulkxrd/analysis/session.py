@@ -38,6 +38,12 @@ _DEFAULTS = {
     # Step 3 prep — candidate phases (names from the reference-phase library)
     # enabled for compound identification. Edited on the GUI's Phases tab.
     "candidate_phases": [],
+    # Step 3a — deterministic EOS phase matching
+    "run_step3": False,
+    "p_min": "0",
+    "p_max": "100",
+    "rel_tol": "0.01",
+    "identify_wavelength": "",  # Å; blank = auto-read from reduced PONI (2θ data only)
 }
 
 

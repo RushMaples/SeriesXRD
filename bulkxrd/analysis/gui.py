@@ -8,6 +8,7 @@ Workflow left-to-right across tabs:
     5 Review     — single-frame QC: traces + fitted peaks + contamination curve
     6 Heatmap    — scatter of peak positions across all frames (Step-3 precursor)
     7 Phases     — reference-phase library: bundled + user phases, import CIFs, toggle candidates
+    8 Identify   — Step 3a: deterministic EOS phase matching, per-frame pressure + confidence
 
 Same supervision model as reduce/gui.py: heavy computation runs in
 analysis/worker.py as a subprocess; this process never imports numpy/h5py
@@ -54,6 +55,22 @@ HELP: Dict[str, str] = {
     # Run scope
     "run_step1": "Run Step 1: SNIP baseline estimation + diamond-spot residual extraction.",
     "run_step2": "Run Step 2: pseudo-Voigt peak fitting on the clean (baseline-subtracted) patterns.",
+    "run_step3": (
+        "Run Step 3a: match the fitted peaks against the enabled candidate phases by fitting "
+        "each phase's Birch–Murnaghan EOS — gives a per-frame pressure and match confidence "
+        "per phase."
+    ),
+    # Step 3a
+    "p_min": "Pressure search range (GPa) for the EOS fit.",
+    "p_max": "Pressure search range (GPa) for the EOS fit.",
+    "rel_tol": (
+        "Peak-match tolerance as a fraction of d-spacing (e.g. 0.01 = 1%). "
+        "Looser = more tolerant matching, fuzzier pressure."
+    ),
+    "identify_wavelength": (
+        "X-ray wavelength (Å). Needed only for a 2θ axis; leave blank to auto-read it "
+        "from the reduced file's PONI. Not needed for q-axis data."
+    ),
     # Step 1
     "max_half_window": (
         "Widest feature (in bins) treated as background; ~1.5-2x the broadest "
@@ -182,6 +199,8 @@ class AnalysisApp:
             ("5 Review",     self._tab_review),
             ("6 Heatmap",    self._tab_heatmap),
             ("7 Phases",     self._tab_phases),
+            ("8 Identify",   self._tab_identify),
+            ("9 Pattern map", self._tab_patternmap),
         ]:
             frame = ttk.Frame(self.nb, padding=10)
             builder(frame)
@@ -555,11 +574,12 @@ class AnalysisApp:
 
         run_step1 = bool(self.config.get("run_step1", True))
         run_step2 = bool(self.config.get("run_step2", True))
-        if not run_step1 and not run_step2:
+        run_step3 = bool(self.config.get("run_step3", False))
+        if not run_step1 and not run_step2 and not run_step3:
             self.messagebox.showerror(
                 "Nothing to run",
-                "Enable at least one of 'Run Step 1' or 'Run Step 2' "
-                "on the Background / Peaks tabs.")
+                "Enable at least one of 'Run Step 1', 'Run Step 2', or 'Run Step 3a' "
+                "on the Background / Peaks / Identify tabs.")
             return
 
         if run_step1:
@@ -614,11 +634,16 @@ class AnalysisApp:
                 for line in proc.stdout:
                     line = line.rstrip()
                     parts = line.split()
-                    if len(parts) == 3 and parts[0] in ("[ANALYSIS]", "[PEAKS]"):
+                    if len(parts) == 3 and parts[0] in ("[ANALYSIS]", "[PEAKS]", "[IDENTIFY]"):
                         try:
                             done = int(parts[1])
                             total = int(parts[2])
-                            phase = "Background" if parts[0] == "[ANALYSIS]" else "Peaks"
+                            _phase_labels = {
+                                "[ANALYSIS]": "Background",
+                                "[PEAKS]": "Peaks",
+                                "[IDENTIFY]": "Identify",
+                            }
+                            phase = _phase_labels.get(parts[0], parts[0])
                             self.root.after(
                                 0, self._update_progress, phase, done, total)
                             continue
@@ -672,6 +697,17 @@ class AnalysisApp:
                 n_peaks = s2.get("n_peaks", "?")
                 n_good = s2.get("n_good", "?")
                 self.log(f"Peak fitting: {n_good} good / {n_peaks} total peaks")
+            # Log Step 3a summary if it ran.
+            s3 = manifest.get("step3", {})
+            if s3:
+                for name, d in s3.get("summary", {}).items():
+                    try:
+                        self.log(
+                            f"  {name}: seen in {d['n_frames_seen']} frames, "
+                            f"median P={d['pressure_median']:.1f} GPa"
+                        )
+                    except Exception:
+                        pass
         try:
             self.inspect_input_clicked()
         except Exception as e:
@@ -684,6 +720,14 @@ class AnalysisApp:
             self.load_heatmap()
         except Exception as e:
             self.log(f"Auto heatmap load failed: {e!r}", "WARN")
+        try:
+            self.load_identify()
+        except Exception as e:
+            self.log(f"Auto identify load failed: {e!r}", "WARN")
+        try:
+            self.load_pattern_map()
+        except Exception as e:
+            self.log(f"Auto pattern map load failed: {e!r}", "WARN")
 
     def _run_error(self, err: str):
         self._run_proc = None
@@ -880,7 +924,9 @@ class AnalysisApp:
         unit = fd.get("unit") or "radial bin"
         x = np.asarray(radial) if radial is not None else None
 
-        fig = Figure(figsize=(7, 6), dpi=100)
+        # constrained layout recomputes margins on every resize (one-shot
+        # tight_layout leaves labels clipped/overlapping when the pane resizes).
+        fig = Figure(figsize=(7, 6), dpi=100, layout="constrained")
         self._review_fig = fig
         fig.patch.set_facecolor(BG)
         ax1 = fig.add_subplot(2, 1, 1)
@@ -949,7 +995,6 @@ class AnalysisApp:
             ax2.set_xlabel("frame")
         self._style_ax(ax2)
 
-        fig.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=self.review_plot_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -1070,7 +1115,7 @@ class AnalysisApp:
 
         unit = pm.get("unit") or "radial"
 
-        fig = Figure(figsize=(7, 5), dpi=100)
+        fig = Figure(figsize=(7, 5), dpi=100, layout="constrained")
         self._heatmap_fig = fig
         fig.patch.set_facecolor(BG)
         ax = fig.add_subplot(1, 1, 1)
@@ -1103,7 +1148,6 @@ class AnalysisApp:
             ax.set_ylabel(f"peak center ({unit})")
             ax.set_title(f"Peak map — {n_pts} peaks", color=FG)
 
-        fig.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=self.heatmap_plot_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -1502,6 +1546,508 @@ class AnalysisApp:
                 "or fill in the lattice and EOS fields manually below.")
         # Always open the edit dialog so the user can fill in / verify the EOS
         self._phase_dialog(self._phases_by_name.get(phase.name, phase))
+
+    # ------------------------------------------------------------------
+    # Tab 8 — Identify (Step 3a: deterministic EOS phase matching)
+    # ------------------------------------------------------------------
+
+    def _tab_identify(self, frame):
+        tk, ttk = self.tk, self.ttk
+
+        # -- params area --------------------------------------------------
+        self.checkbox(frame, "run_step3",
+                      "Run Step 3a — EOS phase matching", row=0)
+        self.field(frame, "p_min", "Pressure min (GPa)", row=2, width=12)
+        self.field(frame, "p_max", "Pressure max (GPa)", row=3, width=12)
+        self.field(frame, "rel_tol", "Match tolerance (Δd/d)", row=4, width=12)
+        self.field(frame, "identify_wavelength",
+                   "Wavelength (Å, blank=auto)", row=5, width=12)
+
+        ttk.Label(
+            frame,
+            text=(
+                "Step 3a matches the fitted peak list against the phases enabled on "
+                "the Phases tab, fitting each phase’s Birch–Murnaghan EOS "
+                "to find the pressure that best explains the observed peak positions. "
+                "Requires pymatgen for full d-spacing simulation. Enable “Run "
+                "Step 3a” here and launch from the Run tab (the Run tab executes "
+                "every enabled step). Each candidate phase yields a per-frame "
+                "best-fit pressure and a match confidence."
+            ),
+            foreground=MUTED, justify="left", wraplength=640,
+        ).grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+
+        # -- controls row -------------------------------------------------
+        ctrl = ttk.Frame(frame)
+        ctrl.grid(row=7, column=0, columnspan=3, sticky="w", pady=(4, 2))
+
+        ttk.Button(ctrl, text="Load identification",
+                   command=self.load_identify).pack(side="left", padx=4)
+
+        ttk.Label(ctrl, text="Min confidence:", foreground=MUTED).pack(
+            side="left", padx=(12, 2))
+        self._identify_conf_var = tk.StringVar(value="0.5")
+        _conf_entry = ttk.Entry(ctrl, textvariable=self._identify_conf_var, width=6)
+        _conf_entry.pack(side="left", padx=2)
+        _conf_entry.bind("<Return>", lambda e: self.load_identify())
+
+        ttk.Button(ctrl, text="Redraw",
+                   command=self.load_identify).pack(side="left", padx=4)
+
+        self._identify_status = ttk.Label(ctrl, text="", foreground=MUTED)
+        self._identify_status.pack(side="left", padx=12)
+
+        # -- plot area ----------------------------------------------------
+        self.identify_plot_frame = ttk.Frame(frame)
+        self.identify_plot_frame.grid(
+            row=8, column=0, columnspan=3, sticky="nsew")
+        frame.rowconfigure(8, weight=1)
+        frame.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            self.identify_plot_frame,
+            text="Run Step 3a (Run tab) or Load identification to plot pressure vs frame.",
+            foreground=MUTED,
+        ).pack(anchor="center", expand=True)
+
+    def load_identify(self):
+        """Render the Step-3a pressure-vs-frame plot from the analysis HDF5."""
+        self.pull_vars()
+        path = str(self.config.get("analysis_h5_file", "") or "").strip()
+        if not path or not Path(path).is_file():
+            return  # silently skip auto-calls
+
+        # prev-figure-close leak guard
+        prev = getattr(self, "_identify_fig", None)
+        if prev is not None:
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.close(prev)
+            except Exception:
+                pass
+            self._identify_fig = None
+
+        for w in self.identify_plot_frame.winfo_children():
+            w.destroy()
+
+        try:
+            import matplotlib
+            matplotlib.use("TkAgg", force=False)
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        except Exception as e:
+            self.ttk.Label(
+                self.identify_plot_frame,
+                text=f"matplotlib unavailable: {e}",
+                foreground=WARN,
+            ).pack(anchor="center", expand=True)
+            return
+
+        import numpy as np
+
+        from .review import identify_tracks
+        tr = identify_tracks(path)
+        if not tr["ok"]:
+            self.ttk.Label(
+                self.identify_plot_frame,
+                text=tr["error"],
+                foreground=WARN,
+            ).pack(anchor="center", expand=True)
+            if hasattr(self, "_identify_status"):
+                self._identify_status.configure(text=tr["error"])
+            return
+
+        # Parse confidence threshold
+        conf_min = 0.5
+        try:
+            conf_min = float(self._identify_conf_var.get())
+            conf_min = max(0.0, min(1.0, conf_min))
+        except (ValueError, AttributeError):
+            pass
+
+        fig = Figure(figsize=(7, 6), dpi=100, layout="constrained")
+        self._identify_fig = fig
+        fig.patch.set_facecolor(BG)
+        ax_pres = fig.add_subplot(2, 1, 1)
+        ax_conf = fig.add_subplot(2, 1, 2)
+
+        for rec in tr["phases"]:
+            name = rec["name"]
+            pressure = np.asarray(rec["pressure"], dtype=float)
+            conf_arr = (
+                np.asarray(rec["confidence"], dtype=float)
+                if rec["confidence"] is not None
+                else np.zeros(pressure.size, dtype=float)
+            )
+            x = np.arange(pressure.size)
+            mask = conf_arr >= conf_min
+
+            label = name if rec["has_eos"] else f"{name} (no EOS)"
+
+            # Plot pressure where mask is satisfied; capture the line color.
+            if mask.any():
+                (ln,) = ax_pres.plot(
+                    x[mask], pressure[mask],
+                    marker=".", markersize=3, linewidth=0.7,
+                    label=label,
+                )
+                color = ln.get_color()
+            else:
+                # No points meet threshold — still need a color for confidence axis.
+                (ln,) = ax_pres.plot([], [], marker=".", markersize=3,
+                                     linewidth=0.7, label=label)
+                color = ln.get_color()
+
+            # Always show confidence trace in the same color.
+            ax_conf.plot(x, conf_arr, linewidth=0.7, color=color)
+
+        ax_pres.set_ylabel("pressure (GPa)")
+        ax_pres.set_title("Step 3a — best-fit pressure per phase", color=FG)
+        handles, labels = ax_pres.get_legend_handles_labels()
+        if handles:
+            ax_pres.legend(fontsize=7, framealpha=0.4)
+        self._style_ax(ax_pres)
+
+        ax_conf.axhline(conf_min, color=MUTED, linewidth=0.8, linestyle="--")
+        ax_conf.set_xlabel("frame index")
+        ax_conf.set_ylabel("confidence")
+        ax_conf.set_ylim(0, 1.02)
+        self._style_ax(ax_conf)
+
+        canvas = FigureCanvasTkAgg(fig, master=self.identify_plot_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._identify_fig = fig
+        self._identify_canvas = canvas
+
+        if hasattr(self, "_identify_status"):
+            self._identify_status.configure(
+                text=f"{len(tr['phases'])} phase(s), {tr['n_frames']} frames")
+
+    # ------------------------------------------------------------------
+    # Helpers shared by Tab 9
+    # ------------------------------------------------------------------
+
+    def _enabled_phase_objects(self):
+        """Return Phase objects for names in config candidate_phases, resolved from the library."""
+        from .phases import load_library
+        ws = self._phases_workspace()
+        try:
+            library = load_library(ws)
+        except Exception:
+            return []
+        names = self.config.get("candidate_phases", [])
+        return [library[n] for n in names if n in library]
+
+    # ------------------------------------------------------------------
+    # Tab 9 — Pattern map (Hrubiak/XDI-style waterfall + tracks + layers)
+    # ------------------------------------------------------------------
+
+    def _tab_patternmap(self, frame):
+        tk, ttk = self.tk, self.ttk
+
+        # Controls row 1
+        row1 = ttk.Frame(frame)
+        row1.pack(fill="x", pady=(0, 2))
+
+        ttk.Button(row1, text="Load pattern map",
+                   command=self.load_pattern_map).pack(side="left", padx=4)
+
+        ttk.Label(row1, text="Source:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        self._pm_source = ttk.Combobox(
+            row1,
+            values=["clean", "robust", "mean", "baseline", "spot_residual"],
+            state="readonly", width=12,
+        )
+        self._pm_source.set("clean")
+        self._pm_source.pack(side="left", padx=2)
+        self._pm_source.bind("<<ComboboxSelected>>",
+                             lambda e: self.load_pattern_map())
+
+        self._pm_tracks = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            row1, text="Overlay reflection tracks",
+            variable=self._pm_tracks, command=self.load_pattern_map,
+        ).pack(side="left", padx=8)
+
+        self._pm_layers = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            row1, text="Show phase layers",
+            variable=self._pm_layers, command=self.load_pattern_map,
+        ).pack(side="left", padx=4)
+
+        self._pm_status = ttk.Label(row1, text="", foreground=MUTED)
+        self._pm_status.pack(side="right", padx=8)
+
+        # Controls row 2
+        row2 = ttk.Frame(frame)
+        row2.pack(fill="x", pady=(0, 4))
+
+        ttk.Label(row2, text="Export →", foreground=MUTED).pack(side="left", padx=(4, 6))
+        ttk.Button(row2, text="Export ML dataset…",
+                   command=self.export_ml_clicked).pack(side="left", padx=2)
+        ttk.Button(row2, text="Export simulated set…",
+                   command=self.export_sim_clicked).pack(side="left", padx=2)
+
+        self._pm_pymatgen = ttk.Label(row2, text="", foreground=MUTED, wraplength=600,
+                                      justify="left")
+        self._pm_pymatgen.pack(side="left", padx=12)
+
+        # Plot area
+        self.patternmap_plot_frame = ttk.Frame(frame)
+        self.patternmap_plot_frame.pack(fill="both", expand=True)
+        ttk.Label(
+            self.patternmap_plot_frame,
+            text="Run the pipeline or Load pattern map to view the pattern waterfall.",
+            foreground=MUTED,
+        ).pack(anchor="center", expand=True)
+
+    def load_pattern_map(self):
+        """Render the pattern waterfall (and optional tracks/layers) from the analysis HDF5."""
+        self.pull_vars()
+        path = str(self.config.get("analysis_h5_file", "") or "").strip()
+        if not path or not Path(path).is_file():
+            return  # silently skip auto-calls
+
+        # prev-figure-close leak guard
+        prev = getattr(self, "_patternmap_fig", None)
+        if prev is not None:
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.close(prev)
+            except Exception:
+                pass
+            self._patternmap_fig = None
+
+        for w in self.patternmap_plot_frame.winfo_children():
+            w.destroy()
+
+        try:
+            import matplotlib
+            matplotlib.use("TkAgg", force=False)
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        except Exception as e:
+            self.ttk.Label(
+                self.patternmap_plot_frame,
+                text=f"matplotlib unavailable: {e}",
+                foreground=WARN,
+            ).pack(anchor="center", expand=True)
+            return
+
+        import numpy as np
+
+        from .heatmap import pattern_image, reflection_tracks, phase_layers
+        from .phases import pymatgen_available
+
+        # Update pymatgen hint label
+        if hasattr(self, "_pm_pymatgen"):
+            if pymatgen_available():
+                self._pm_pymatgen.configure(text="", foreground=MUTED)
+            else:
+                self._pm_pymatgen.configure(
+                    text=(
+                        "pymatgen not installed — reflection tracks, phase layers, and the "
+                        "simulated set are disabled (waterfall + ML export of measured data "
+                        "still work)"
+                    ),
+                    foreground=WARN,
+                )
+
+        img = pattern_image(path, source=self._pm_source.get(), x_axis="frame")
+        if not img["ok"]:
+            self.ttk.Label(
+                self.patternmap_plot_frame,
+                text=img["error"],
+                foreground=WARN,
+            ).pack(anchor="center", expand=True)
+            if hasattr(self, "_pm_status"):
+                self._pm_status.configure(text=img["error"])
+            return
+
+        show_layers = bool(self._pm_layers.get()) and pymatgen_available()
+
+        if show_layers:
+            fig = Figure(figsize=(8, 6), dpi=100, layout="constrained")
+            ax = fig.add_subplot(2, 1, 1)
+            ax2 = fig.add_subplot(2, 1, 2)
+        else:
+            fig = Figure(figsize=(8, 5), dpi=100, layout="constrained")
+            ax = fig.add_subplot(1, 1, 1)
+            ax2 = None
+
+        fig.patch.set_facecolor(BG)
+        self._patternmap_fig = fig
+
+        # Waterfall
+        Z = img["Z"]
+        radial = img["radial"]
+        n = img["n_frames"]
+
+        pos = Z[np.isfinite(Z) & (Z > 0)]
+        if pos.size:
+            vmin = float(np.percentile(pos, 5))
+            vmax = float(np.percentile(pos, 99))
+        else:
+            vmin = None
+            vmax = None
+
+        ax.imshow(
+            Z, aspect="auto", origin="lower", cmap="magma",
+            extent=[0, max(n - 1, 1), float(radial.min()), float(radial.max())],
+            vmin=vmin, vmax=vmax,
+        )
+        ax.set_xlabel("frame index")
+        ax.set_ylabel(img["unit"] or "radial")
+        ax.set_title(f"Pattern waterfall — {img['source']}", color=FG)
+        self._style_ax(ax)
+
+        # Reflection-track overlays
+        if self._pm_tracks.get() and pymatgen_available():
+            any_phase_plotted = False
+            for phase_obj in self._enabled_phase_objects():
+                tr = reflection_tracks(path, phase_obj)
+                if not tr["ok"]:
+                    continue
+                phase_color = None
+                first_track = True
+                for track in tr["tracks"]:
+                    centers = track["centers"]
+                    if not np.any(np.isfinite(centers)):
+                        continue
+                    x_coords = np.arange(n, dtype=float)
+                    if first_track:
+                        (ln,) = ax.plot(
+                            x_coords, centers, lw=0.6, alpha=0.7,
+                            label=phase_obj.name,
+                        )
+                        phase_color = ln.get_color()
+                        first_track = False
+                        any_phase_plotted = True
+                    else:
+                        ax.plot(x_coords, centers, lw=0.6, alpha=0.7,
+                                color=phase_color, label="_nolegend_")
+            if any_phase_plotted:
+                ax.legend(fontsize=7, framealpha=0.4)
+
+        # Phase layers on the bottom axis
+        if show_layers and ax2 is not None:
+            pl = phase_layers(path, self._enabled_phase_objects())
+            if pl["ok"]:
+                for layer in pl["layers"]:
+                    ax2.plot(
+                        np.arange(layer["intensity"].size),
+                        layer["intensity"],
+                        lw=0.8, label=layer["name"],
+                    )
+                ax2.set_xlabel("frame index")
+                ax2.set_ylabel("layer intensity (norm.)")
+                handles2, _ = ax2.get_legend_handles_labels()
+                if handles2:
+                    ax2.legend(fontsize=7, framealpha=0.4)
+            else:
+                ax2.set_title(pl["error"], color=WARN)
+            self._style_ax(ax2)
+
+        canvas = FigureCanvasTkAgg(fig, master=self.patternmap_plot_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._patternmap_canvas = canvas
+
+        if hasattr(self, "_pm_status"):
+            self._pm_status.configure(
+                text=f"{img['n_frames']} frames × {radial.size} bins")
+
+    def export_ml_clicked(self):
+        """Export the analysis frames as an ML-ready .npz dataset."""
+        self.pull_vars()
+        path = str(self.config.get("analysis_h5_file", "") or "").strip()
+        if not path or not Path(path).is_file():
+            self.messagebox.showerror(
+                "Export ML dataset",
+                "No analysis HDF5 found. Run the pipeline or set the path on the Input tab.")
+            return
+
+        out = self.filedialog.asksaveasfilename(
+            title="Export ML dataset",
+            defaultextension=".npz",
+            filetypes=[("NumPy npz", "*.npz")],
+        )
+        if not out:
+            return
+
+        from . import mldata
+        try:
+            man = mldata.export_ml_dataset(
+                path, out,
+                channels=("clean", "spot_residual"),
+                normalize=True,
+            )
+        except Exception as e:
+            self.messagebox.showerror("Export ML dataset failed", repr(e))
+            return
+
+        self.log(
+            f"ML dataset exported: {man['n_frames']} frames × {man['n_channels']} channels "
+            f"→ {out}  labels: {'yes' if man['has_labels'] else 'no'}"
+        )
+        self.messagebox.showinfo(
+            "Export complete",
+            f"{man['n_frames']} frames × {man['n_channels']} channels → {out}\n"
+            f"Labels: {'yes' if man['has_labels'] else 'no (run Step 3a first)'}",
+        )
+
+    def export_sim_clicked(self):
+        """Export a pressure-augmented simulated training set as .npz."""
+        from .phases import pymatgen_available
+        if not pymatgen_available():
+            self.messagebox.showinfo(
+                "Export simulated set",
+                "pymatgen is required to simulate XRD patterns.\n"
+                "Install it with:  pip install pymatgen")
+            return
+
+        phases = self._enabled_phase_objects()
+        if not phases:
+            self.messagebox.showinfo(
+                "Export simulated set",
+                "Enable candidate phases on the Phases tab first.")
+            return
+
+        out = self.filedialog.asksaveasfilename(
+            title="Export simulated training set",
+            defaultextension=".npz",
+            filetypes=[("NumPy npz", "*.npz")],
+        )
+        if not out:
+            return
+
+        import numpy as np
+        try:
+            pmin = float(self.config.get("p_min", 0) or 0)
+        except (ValueError, TypeError):
+            pmin = 0.0
+        try:
+            pmax = float(self.config.get("p_max", 100) or 100)
+        except (ValueError, TypeError):
+            pmax = 100.0
+        pressures = np.linspace(pmin, pmax, 21)
+
+        from . import mldata
+        try:
+            man = mldata.export_simulated_dataset(out, phases, pressures=pressures)
+        except Exception as e:
+            self.messagebox.showerror("Export simulated set failed", repr(e))
+            return
+
+        self.log(
+            f"Simulated dataset exported: {man['n_samples']} patterns "
+            f"({len(man['phases'])} phases) → {out}"
+        )
+        self.messagebox.showinfo(
+            "Export complete",
+            f"{man['n_samples']} simulated patterns ({len(man['phases'])} phases) → {out}",
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
