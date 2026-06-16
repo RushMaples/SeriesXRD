@@ -73,6 +73,7 @@ def run_analysis(cfg: dict) -> dict:
     run_step1 = _as_bool(cfg.get("run_step1", True), True)
     run_step2 = _as_bool(cfg.get("run_step2", True), True)
     run_step3 = _as_bool(cfg.get("run_step3", False), False)
+    num_workers = _as_int(cfg.get("num_workers"), 1)
 
     manifest: dict = {"steps": []}
 
@@ -86,6 +87,7 @@ def run_analysis(cfg: dict) -> dict:
             n_passes=_as_int(cfg.get("n_passes"), 1),
             use_lls=_as_bool(cfg.get("use_lls", True), True),
             contamination_threshold=thr,
+            num_workers=num_workers,
         )
         out_path = m1["out_h5"]
         manifest["step1"] = m1
@@ -103,6 +105,7 @@ def run_analysis(cfg: dict) -> dict:
             window_factor=_as_float(cfg.get("window_factor"), 3.0),
             max_chi2=_as_float(cfg.get("max_chi2"), 25.0),
             propagate_seeds=_as_bool(cfg.get("propagate_seeds", True), True),
+            num_workers=num_workers,
         )
         out_path = m2["out_h5"]
         manifest["step2"] = m2
@@ -129,6 +132,7 @@ def run_analysis(cfg: dict) -> dict:
             p_min=_as_float(cfg.get("p_min"), 0.0),
             p_max=_as_float(cfg.get("p_max"), 100.0),
             rel_tol=_as_float(cfg.get("rel_tol"), 0.01),
+            num_workers=num_workers,
         )
         out_path = m3["out_h5"]
         manifest["step3"] = m3

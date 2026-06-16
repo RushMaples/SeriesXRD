@@ -44,6 +44,8 @@ _DEFAULTS = {
     "p_max": "100",
     "rel_tol": "0.01",
     "identify_wavelength": "",  # Å; blank = auto-read from reduced PONI (2θ data only)
+    # Parallelism: 0 = auto (CPU count − 1), 1 = serial, N = N processes.
+    "num_workers": "0",
 }
 
 

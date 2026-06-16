@@ -55,8 +55,9 @@ def resample_to_d(radial, intensity, unit: str, wavelength: "Optional[float]",
 
 
 def _normalize_rows(X: np.ndarray) -> np.ndarray:
-    mx = np.nanmax(X, axis=-1, keepdims=True)
-    mx[mx <= 0] = 1.0
+    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+    mx = np.max(X, axis=-1, keepdims=True)
+    mx[~(mx > 0)] = 1.0          # guards zeros, negatives, and any residual NaN
     return X / mx
 
 
@@ -103,8 +104,13 @@ def export_ml_dataset(
     conf_threshold: float = 0.5,
     wavelength: "Optional[float]" = None,
     normalize: bool = True,
+    drop_excluded: bool = True,
 ) -> Dict[str, Any]:
     """Export experimental frames as an ML-ready ``.npz``.
+
+    Frames flagged ``excluded`` in the reduce stage are dropped by default
+    (``drop_excluded``) so the ML never trains/infers on known-bad frames;
+    ``frame_index`` preserves the original indices of the kept frames.
 
     Saved arrays: ``X`` (N, C, P) resampled patterns; ``d_grid`` (P,);
     ``channels`` (C,); ``frame_index`` (N,); ``y`` (N, n_phases) weak multi-labels
@@ -125,15 +131,15 @@ def export_ml_dataset(
 
     with h5py.File(str(src), "r") as h5:
         unit = str(h5.attrs.get("unit", ""))
+        stored_wl = float(h5.attrs.get("wavelength", 0.0) or 0.0)
         bg = h5.get("background")
         if bg is None or "clean" not in bg:
             raise ValueError("No /background/clean — run Step 1 first.")
         radial = np.asarray(h5["radial"][:], dtype=float)
+        if wavelength is None and stored_wl > 0:
+            wavelength = stored_wl
         if wavelength is None and unit.strip().lower() in ("2th_deg", "2th_rad"):
-            gid = h5.get("identify")
-            wavelength = float(gid.attrs["wavelength"]) if gid is not None and gid.attrs.get("wavelength") else None
-            if not wavelength:
-                raise ValueError("2θ axis needs a wavelength (none stored); pass wavelength=.")
+            raise ValueError("2θ axis needs a wavelength (none stored); pass wavelength=.")
         stacks = {c: np.asarray(bg[c][:], dtype=float) for c in chans}
         n = stacks[chans[0]].shape[0]
         ident = _read_identify(h5)
@@ -141,6 +147,10 @@ def export_ml_dataset(
         frames = h5.get("frames")
         contamination = (np.asarray(frames["contamination"][:], dtype=float)
                          if frames is not None and "contamination" in frames else None)
+        excluded = (np.asarray(frames["excluded"][:], dtype=bool)
+                    if frames is not None and "excluded" in frames else None)
+    if excluded is None or excluded.size != n:
+        excluded = np.zeros(n, dtype=bool)
 
     # Resample every frame × channel onto the d-grid.
     X = np.zeros((n, len(chans), grid.size), dtype="f4")
@@ -152,15 +162,9 @@ def export_ml_dataset(
         for ci in range(len(chans)):
             X[:, ci, :] = _normalize_rows(X[:, ci, :])
 
-    save: Dict[str, Any] = {
-        "X": X, "d_grid": grid, "channels": np.array(chans, dtype=object),
-        "frame_index": np.arange(n), "unit": unit,
-        "wavelength": float(wavelength) if wavelength else 0.0,
-        "n_good_peaks": n_good, "conf_threshold": float(conf_threshold),
-    }
-    if contamination is not None:
-        save["contamination"] = contamination
+    frame_index = np.arange(n)
     phase_names: List[str] = sorted(ident.keys())
+    y = pressure = None
     if phase_names:
         y = np.zeros((n, len(phase_names)), dtype="i1")
         pressure = np.full((n, len(phase_names)), np.nan, dtype="f4")
@@ -169,6 +173,26 @@ def export_ml_dataset(
             if conf is not None:
                 y[:, j] = (conf >= conf_threshold).astype("i1")
             pressure[:, j] = ident[name]["pressure"]
+
+    # Drop reduce-stage excluded frames so the ML never sees known-bad data.
+    n_excluded = int(excluded.sum())
+    if drop_excluded and n_excluded:
+        keep = ~excluded
+        X = X[keep]; frame_index = frame_index[keep]; n_good = n_good[keep]
+        if contamination is not None:
+            contamination = contamination[keep]
+        if y is not None:
+            y = y[keep]; pressure = pressure[keep]
+
+    save: Dict[str, Any] = {
+        "X": X, "d_grid": grid, "channels": np.array(chans, dtype=object),
+        "frame_index": frame_index, "unit": unit,
+        "wavelength": float(wavelength) if wavelength else 0.0,
+        "n_good_peaks": n_good, "conf_threshold": float(conf_threshold),
+    }
+    if contamination is not None:
+        save["contamination"] = contamination
+    if phase_names:
         save["y"] = y
         save["phase_names"] = np.array(phase_names, dtype=object)
         save["pressure"] = pressure
@@ -181,12 +205,14 @@ def export_ml_dataset(
     os.replace(tmp, out)
 
     manifest = {
-        "out_npz": str(out), "n_frames": int(n), "n_channels": len(chans),
+        "out_npz": str(out), "n_frames": int(X.shape[0]), "n_channels": len(chans),
+        "n_excluded": n_excluded if drop_excluded else 0,
         "channels": chans, "n_points": int(grid.size), "unit": unit,
         "n_phases": len(phase_names), "phases": phase_names,
         "has_labels": bool(phase_names),
     }
-    print(f"[MLDATA] exported {n} frames × {len(chans)} ch × {grid.size} pts -> {out}", flush=True)
+    print(f"[MLDATA] exported {X.shape[0]} frames × {len(chans)} ch × {grid.size} pts "
+          f"({n_excluded} excluded){'' if not drop_excluded else ' dropped'} -> {out}", flush=True)
     return manifest
 
 

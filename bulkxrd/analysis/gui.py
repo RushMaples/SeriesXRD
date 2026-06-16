@@ -555,6 +555,13 @@ class AnalysisApp:
         self.cancel_btn = ttk.Button(
             top, text="Cancel", command=self.cancel_analysis, state="disabled")
         self.cancel_btn.pack(side="left", padx=4, pady=4)
+        ttk.Label(top, text="Workers:", foreground=MUTED).pack(side="left", padx=(16, 2))
+        _w_var = tk.StringVar(value=str(self.config.get("num_workers", "0")))
+        self.vars["num_workers"] = _w_var
+        _w_entry = ttk.Entry(top, textvariable=_w_var, width=5)
+        _w_entry.pack(side="left", padx=2)
+        _ToolTip(_w_entry, "Parallel worker processes for all steps. "
+                           "0 = auto (CPU count − 1), 1 = serial.")
         self.progress = ttk.Progressbar(frame, mode="determinate", maximum=100)
         self.progress.pack(fill="x", padx=4, pady=6)
         self.progress_label = ttk.Label(frame, text="Idle", foreground=MUTED)
