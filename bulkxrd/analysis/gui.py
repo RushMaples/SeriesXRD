@@ -638,25 +638,41 @@ class AnalysisApp:
                 )
                 self._run_proc = proc
                 assert proc.stdout is not None
-                for line in proc.stdout:
-                    line = line.rstrip()
-                    parts = line.split()
-                    if len(parts) == 3 and parts[0] in ("[ANALYSIS]", "[PEAKS]", "[IDENTIFY]"):
-                        try:
-                            done = int(parts[1])
-                            total = int(parts[2])
-                            _phase_labels = {
-                                "[ANALYSIS]": "Background",
-                                "[PEAKS]": "Peaks",
-                                "[IDENTIFY]": "Identify",
-                            }
-                            phase = _phase_labels.get(parts[0], parts[0])
-                            self.root.after(
-                                0, self._update_progress, phase, done, total)
-                            continue
-                        except ValueError:
-                            pass
-                    self.log(line)
+                # Watchdog: once the process exits, close stdout so the reader
+                # below can't hang on a pipe still held open by forked pool
+                # workers / the multiprocessing resource tracker. Without this
+                # the loop never sees EOF, _run_done never fires, the run stays
+                # stuck at "running", and closing the app always warns.
+                def _watch(p=proc):
+                    p.wait()
+                    try:
+                        if p.stdout is not None:
+                            p.stdout.close()
+                    except Exception:
+                        pass
+                threading.Thread(target=_watch, daemon=True).start()
+                try:
+                    for line in proc.stdout:
+                        line = line.rstrip()
+                        parts = line.split()
+                        if len(parts) == 3 and parts[0] in ("[ANALYSIS]", "[PEAKS]", "[IDENTIFY]"):
+                            try:
+                                done = int(parts[1])
+                                total = int(parts[2])
+                                _phase_labels = {
+                                    "[ANALYSIS]": "Background",
+                                    "[PEAKS]": "Peaks",
+                                    "[IDENTIFY]": "Identify",
+                                }
+                                phase = _phase_labels.get(parts[0], parts[0])
+                                self.root.after(
+                                    0, self._update_progress, phase, done, total)
+                                continue
+                            except ValueError:
+                                pass
+                        self.log(line)
+                except (ValueError, OSError):
+                    pass  # stdout closed by the watchdog once the process exited
                 rc = int(proc.wait())
                 self.root.after(0, self._run_done, rc, out_json)
             except Exception as e:
@@ -936,8 +952,9 @@ class AnalysisApp:
         fig = Figure(figsize=(7, 6), dpi=100, layout="constrained")
         self._review_fig = fig
         fig.patch.set_facecolor(BG)
-        ax1 = fig.add_subplot(2, 1, 1)
-        ax2 = fig.add_subplot(2, 1, 2)
+        gs = fig.add_gridspec(2, 1, height_ratios=[3, 1])
+        ax1 = fig.add_subplot(gs[0])   # pattern traces get the bulk of the height
+        ax2 = fig.add_subplot(gs[1])   # contamination strip below
 
         def _plot(ax, arr, label, color, lw=0.9, alpha=0.85):
             if arr is None:
@@ -1038,6 +1055,18 @@ class AnalysisApp:
         if toolbar:
             self._add_nav_toolbar(canvas, parent)
         widget.pack(side="top", fill="both", expand=True)
+
+        # Force the figure to match the allocated canvas size on every resize.
+        # Belt-and-suspenders over matplotlib's own <Configure> handler, which
+        # in this embedding was leaving the figure at its (large) figsize so the
+        # plot rendered taller than the pane and ran off the bottom.
+        def _fit(event, canvas=canvas, fig=fig):
+            if event.width < 20 or event.height < 20:
+                return
+            dpi = fig.get_dpi() or 100
+            fig.set_size_inches(event.width / dpi, event.height / dpi, forward=False)
+            canvas.draw_idle()
+        widget.bind("<Configure>", _fit, add="+")
         canvas.draw()
         return canvas
 
@@ -1049,18 +1078,24 @@ class AnalysisApp:
             from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
             tb = NavigationToolbar2Tk(canvas, parent, pack_toolbar=False)
             tb.update()
+            # matplotlib's toolbar glyphs are dark, so painting the buttons the
+            # window background (near-black) hides them. Give the buttons a light
+            # fill so the icons read clearly; keep the frame + coordinate label
+            # on the dark palette.
             try:
                 tb.configure(background=BG)
                 for child in tb.winfo_children():
+                    cls = child.winfo_class()
                     try:
-                        child.configure(background=BG)
+                        if cls in ("Button", "Checkbutton", "Radiobutton"):
+                            child.configure(background=FG, activebackground=ACCENT,
+                                            highlightbackground=BG, relief="flat")
+                        elif cls == "Label":
+                            child.configure(background=BG, foreground=FG)
+                        else:
+                            child.configure(background=BG)
                     except Exception:
                         pass
-                    if isinstance(child, self.tk.Label):
-                        try:
-                            child.configure(foreground=FG)
-                        except Exception:
-                            pass
             except Exception:
                 pass
             tb.pack(side="bottom", fill="x")
