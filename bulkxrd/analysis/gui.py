@@ -1013,7 +1013,7 @@ class AnalysisApp:
         for s in ax.spines.values():
             s.set_edgecolor(FG)
 
-    def _embed_figure(self, parent, fig):
+    def _embed_figure(self, parent, fig, toolbar=True):
         """Embed a matplotlib figure so it tracks the pane size instead of forcing it.
 
         A ttk.Notebook sizes itself to its largest tab, so a fixed-size canvas
@@ -1022,15 +1022,48 @@ class AnalysisApp:
         the canvas widget a tiny *requested* size removes that floor; fill+expand
         grows it to fill the pane, and matplotlib's own <Configure> handler
         redraws the figure at the allocated size (constrained layout re-flows the
-        margins on each resize). Returns the canvas.
+        margins on each resize).
+
+        A navigation toolbar (home / pan / box-zoom / save) is packed beneath the
+        canvas so dense patterns can be zoomed into without resizing the window.
+        Returns the canvas.
         """
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         canvas = FigureCanvasTkAgg(fig, master=parent)
         widget = canvas.get_tk_widget()
         widget.configure(width=10, height=10)   # don't let the canvas set the min size
-        widget.pack(fill="both", expand=True)
+        if toolbar:
+            self._add_nav_toolbar(canvas, parent)   # packs along the bottom
+        widget.pack(side="top", fill="both", expand=True)
         canvas.draw()
         return canvas
+
+    def _add_nav_toolbar(self, canvas, parent):
+        """Add a dark-styled matplotlib navigation toolbar below an embedded
+        canvas (pan / box-zoom / home / save). Degrades silently if the toolbar
+        backend is unavailable."""
+        try:
+            from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+            tb = NavigationToolbar2Tk(canvas, parent, pack_toolbar=False)
+            tb.update()
+            try:
+                tb.configure(background=BG)
+                for child in tb.winfo_children():
+                    try:
+                        child.configure(background=BG)
+                    except Exception:
+                        pass
+                    if isinstance(child, self.tk.Label):
+                        try:
+                            child.configure(foreground=FG)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            tb.pack(side="bottom", fill="x")
+            return tb
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Tab 6 — Heatmap

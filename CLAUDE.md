@@ -227,3 +227,19 @@ No JAX installed. No GPU required.
 - Do NOT include model identifiers in commit messages, PR bodies, code, or any pushed artifact
 - Commit messages end with `https://claude.ai/code/session_01CsEwBEbW7wy99urMF9b6nf`
 - Model preference: Opus for planning/review, Sonnet for implementation, Haiku for prose/mechanical
+
+---
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues (`rmaples3/BulkXRD`) via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default canonical label strings (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
