@@ -1022,15 +1022,70 @@ class AnalysisApp:
         the canvas widget a tiny *requested* size removes that floor; fill+expand
         grows it to fill the pane, and matplotlib's own <Configure> handler
         redraws the figure at the allocated size (constrained layout re-flows the
-        margins on each resize). Returns the canvas.
+        margins on each resize).
+
+        A pan/zoom/save toolbar is packed along the bottom and recoloured to the
+        dark palette — matplotlib ships it with a light background and a white
+        coordinate label, which is the unthemed strip otherwise visible. The
+        toolbar is reserved first (side="bottom") so it stays reachable no matter
+        how small the pane gets; the canvas fills the remainder. Returns the
+        canvas.
         """
-        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from matplotlib.backends.backend_tkagg import (
+            FigureCanvasTkAgg, NavigationToolbar2Tk,
+        )
         canvas = FigureCanvasTkAgg(fig, master=parent)
+
+        # pack_toolbar=False lets us control packing order (mpl >= 3.3); older
+        # versions auto-pack the toolbar into the parent at side="bottom".
+        try:
+            toolbar = NavigationToolbar2Tk(canvas, parent, pack_toolbar=False)
+            self._theme_toolbar(toolbar)
+            toolbar.pack(side="bottom", fill="x")
+        except TypeError:
+            toolbar = NavigationToolbar2Tk(canvas, parent)
+            self._theme_toolbar(toolbar)
+        toolbar.update()
+
         widget = canvas.get_tk_widget()
         widget.configure(width=10, height=10)   # don't let the canvas set the min size
-        widget.pack(fill="both", expand=True)
+        widget.pack(side="top", fill="both", expand=True)
         canvas.draw()
         return canvas
+
+    def _theme_toolbar(self, toolbar):
+        """Recolour a matplotlib NavigationToolbar2Tk to the dark palette.
+
+        The toolbar is a tk.Frame of tk.Button/Checkbutton widgets plus a
+        coordinate Label, none of which the ttk dark theme reaches (they're
+        classic Tk widgets). Recolour each defensively — option support varies
+        by widget type and matplotlib version, so every set is best-effort.
+        """
+        from ..guikit.theme import BG, FG, BTN_ACT, MUTED
+        # Buttons get a mid-tone fill (BTN_ACT) so matplotlib's dark-grey glyph
+        # icons stay legible; the frame itself matches the window background.
+        opts = (
+            ("background", BTN_ACT), ("foreground", FG),
+            ("activebackground", MUTED), ("activeforeground", BG),
+            ("highlightbackground", BG), ("relief", "flat"), ("borderwidth", 0),
+        )
+        try:
+            toolbar.config(background=BG)
+        except Exception:
+            pass
+        for child in toolbar.winfo_children():
+            for key, val in opts:
+                try:
+                    child.config(**{key: val})
+                except Exception:
+                    pass
+        # The coordinate read-out label (and its container on some versions).
+        msg = getattr(toolbar, "_message_label", None)
+        if msg is not None:
+            try:
+                msg.config(background=BG, foreground=FG)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Tab 6 — Heatmap
