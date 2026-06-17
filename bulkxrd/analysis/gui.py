@@ -139,6 +139,11 @@ class AnalysisApp:
         # Thread-safe logging: worker threads push lines here; a main-thread
         # poller drains them into the Text widget.
         self._log_queue: "queue.Queue[str]" = queue.Queue()
+        # Thread-safe run events: the worker thread pushes ("progress"|"done"|
+        # "error", ...) tuples here and the main-thread poller dispatches them.
+        # Tkinter is not thread-safe, so the worker must NEVER touch widgets (or
+        # even root.after) directly — that can deadlock the event loop.
+        self._event_queue: "queue.Queue[tuple]" = queue.Queue()
         # History buffer so lines aren't lost before the console window opens.
         self._log_history: "list[str]" = []
 
@@ -339,7 +344,27 @@ class AnalysisApp:
                 self._insert_log_line(line)
         except queue.Empty:
             pass
+        # Dispatch run events on the main thread.
+        try:
+            while True:
+                evt = self._event_queue.get_nowait()
+                self._dispatch_run_event(evt)
+        except queue.Empty:
+            pass
         self.root.after(100, self._drain_log_queue)
+
+    def _dispatch_run_event(self, evt: tuple):
+        """Handle a worker run event on the main thread (see _worker_thread)."""
+        kind = evt[0]
+        try:
+            if kind == "progress":
+                self._update_progress(evt[1], evt[2], evt[3])
+            elif kind == "done":
+                self._run_done(evt[1], evt[2])
+            elif kind == "error":
+                self._run_error(evt[1])
+        except Exception as e:  # never let a dispatch error wedge the poller
+            self.log(f"run-event handler failed ({kind}): {e!r}", "WARN")
 
     # ------------------------------------------------------------------
     # Console log window
@@ -665,8 +690,8 @@ class AnalysisApp:
                                     "[IDENTIFY]": "Identify",
                                 }
                                 phase = _phase_labels.get(parts[0], parts[0])
-                                self.root.after(
-                                    0, self._update_progress, phase, done, total)
+                                self._event_queue.put(
+                                    ("progress", phase, done, total))
                                 continue
                             except ValueError:
                                 pass
@@ -674,9 +699,9 @@ class AnalysisApp:
                 except (ValueError, OSError):
                     pass  # stdout closed by the watchdog once the process exited
                 rc = int(proc.wait())
-                self.root.after(0, self._run_done, rc, out_json)
+                self._event_queue.put(("done", rc, out_json))
             except Exception as e:
-                self.root.after(0, self._run_error, repr(e))
+                self._event_queue.put(("error", repr(e)))
 
         threading.Thread(target=_worker_thread, daemon=True).start()
 
@@ -731,26 +756,30 @@ class AnalysisApp:
                         )
                     except Exception:
                         pass
-        try:
-            self.inspect_input_clicked()
-        except Exception as e:
-            self.log(f"Auto-inspect failed: {e!r}", "WARN")
-        try:
-            self.load_review()
-        except Exception as e:
-            self.log(f"Auto review load failed: {e!r}", "WARN")
-        try:
-            self.load_heatmap()
-        except Exception as e:
-            self.log(f"Auto heatmap load failed: {e!r}", "WARN")
-        try:
-            self.load_identify()
-        except Exception as e:
-            self.log(f"Auto identify load failed: {e!r}", "WARN")
-        try:
-            self.load_pattern_map()
-        except Exception as e:
-            self.log(f"Auto pattern map load failed: {e!r}", "WARN")
+        # Refresh the views off the new results. Some loads are heavy (the
+        # pattern map runs pymatgen reflection-track simulation), so stagger
+        # them via after() rather than running all in one synchronous blast —
+        # that kept the event loop from pumping and showed "Not responding"
+        # right after a phase match. Each step yields to the loop between runs.
+        loaders = [
+            ("inspect", self.inspect_input_clicked),
+            ("review", self.load_review),
+            ("heatmap", self.load_heatmap),
+            ("identify", self.load_identify),
+            ("pattern map", self.load_pattern_map),
+        ]
+
+        def _run_loader(i=0):
+            if i >= len(loaders):
+                return
+            name, fn = loaders[i]
+            try:
+                fn()
+            except Exception as e:
+                self.log(f"Auto {name} load failed: {e!r}", "WARN")
+            self.root.after(20, lambda: _run_loader(i + 1))
+
+        self.root.after(20, _run_loader)
 
     def _run_error(self, err: str):
         self._run_proc = None
