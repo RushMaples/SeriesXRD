@@ -750,9 +750,14 @@ class AnalysisApp:
             if s3:
                 for name, d in s3.get("summary", {}).items():
                     try:
+                        pm = d.get("pressure_median")
+                        p_txt = f"{pm:.1f} GPa" if pm is not None and pm == pm else "n/a"
                         self.log(
-                            f"  {name}: seen in {d['n_frames_seen']} frames, "
-                            f"median P={d['pressure_median']:.1f} GPa"
+                            f"  {name}: seen in {d['n_frames_seen']} frame(s) "
+                            f"(conf>{d.get('seen_conf', 0.3):.2f}), "
+                            f"max conf {d.get('max_confidence', 0.0):.2f}, "
+                            f"up to {d.get('max_matched', 0)} line(s) matched, "
+                            f"median P={p_txt}"
                         )
                     except Exception:
                         pass
@@ -776,7 +781,9 @@ class AnalysisApp:
             try:
                 fn()
             except Exception as e:
+                import traceback
                 self.log(f"Auto {name} load failed: {e!r}", "WARN")
+                self.log(traceback.format_exc(), "WARN")
             self.root.after(20, lambda: _run_loader(i + 1))
 
         self.root.after(20, _run_loader)
