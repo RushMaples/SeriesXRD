@@ -1030,6 +1030,18 @@ class AnalysisApp:
         for s in ax.spines.values():
             s.set_edgecolor(FG)
 
+    def _style_colorbar(self, cb):
+        """Recolour a colorbar to the dark palette — its label, ticks, and
+        outline default to black and vanish against the figure background."""
+        try:
+            cb.ax.tick_params(colors=FG, which="both")
+            cb.ax.yaxis.label.set_color(FG)
+            cb.ax.xaxis.label.set_color(FG)
+            if cb.outline is not None:
+                cb.outline.set_edgecolor(FG)
+        except Exception:
+            pass
+
     def _embed_figure(self, parent, fig, toolbar=True):
         """Embed a matplotlib figure so it tracks the pane size instead of forcing it.
 
@@ -1056,17 +1068,30 @@ class AnalysisApp:
             self._add_nav_toolbar(canvas, parent)
         widget.pack(side="top", fill="both", expand=True)
 
-        # Force the figure to match the allocated canvas size on every resize.
-        # Belt-and-suspenders over matplotlib's own <Configure> handler, which
-        # in this embedding was leaving the figure at its (large) figsize so the
-        # plot rendered taller than the pane and ran off the bottom.
-        def _fit(event, canvas=canvas, fig=fig):
-            if event.width < 20 or event.height < 20:
-                return
+        # Keep the figure sized to its allocated canvas so it can never render
+        # larger than the pane (matplotlib's own resize wasn't constraining it
+        # in this embedding).
+        def _apply_size(w, h, canvas=canvas, fig=fig):
+            if w < 20 or h < 20:
+                return False
             dpi = fig.get_dpi() or 100
-            fig.set_size_inches(event.width / dpi, event.height / dpi, forward=False)
+            fig.set_size_inches(w / dpi, h / dpi, forward=False)
             canvas.draw_idle()
-        widget.bind("<Configure>", _fit, add="+")
+            return True
+
+        widget.bind("<Configure>", lambda e: _apply_size(e.width, e.height), add="+")
+
+        # Initial fit: <Configure> only fires on later resizes, so without this
+        # the first render keeps the figure's large default size and overflows
+        # the pane until the user resizes the window. Poll until the widget has
+        # its real allocated size, then size the figure to it.
+        def _initial_fit(tries=0, widget=widget):
+            if _apply_size(widget.winfo_width(), widget.winfo_height()):
+                return
+            if tries < 40:
+                self.root.after(25, lambda: _initial_fit(tries + 1))
+        self.root.after(0, _initial_fit)
+
         canvas.draw()
         return canvas
 
@@ -1230,16 +1255,20 @@ class AnalysisApp:
             else:
                 norm = None
 
+            # Larger markers with a light edge so even dark-coloured (low-value)
+            # points read against the dark axes background.
             sc = ax.scatter(
                 frame_arr, center_arr, c=c_arr,
-                cmap="magma", s=4, alpha=0.7, norm=norm,
+                cmap="viridis", s=28, alpha=0.9, norm=norm,
+                edgecolors=FG, linewidths=0.4,
             )
             try:
-                fig.colorbar(sc, ax=ax, label=color_by)
+                cb = fig.colorbar(sc, ax=ax, label=color_by)
+                self._style_colorbar(cb)
             except Exception:
                 pass
-            ax.set_xlabel("frame index")
-            ax.set_ylabel(f"peak center ({unit})")
+            ax.set_xlabel("frame index", color=FG)
+            ax.set_ylabel(f"peak center ({unit})", color=FG)
             ax.set_title(f"Peak map — {n_pts} peaks", color=FG)
 
         self._heatmap_canvas = self._embed_figure(self.heatmap_plot_frame, fig)
@@ -1646,8 +1675,13 @@ class AnalysisApp:
         tk, ttk = self.tk, self.ttk
 
         # -- params area --------------------------------------------------
+        ttk.Label(
+            frame, text="Phase identification (EOS matching)",
+            font=("TkDefaultFont", 12, "bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 2))
+
         self.checkbox(frame, "run_step3",
-                      "Run Step 3a — EOS phase matching", row=0)
+                      "Enable phase identification in the next run", row=1)
         self.field(frame, "p_min", "Pressure min (GPa)", row=2, width=12)
         self.field(frame, "p_max", "Pressure max (GPa)", row=3, width=12)
         self.field(frame, "rel_tol", "Match tolerance (Δd/d)", row=4, width=12)
@@ -1657,13 +1691,19 @@ class AnalysisApp:
         ttk.Label(
             frame,
             text=(
-                "Step 3a matches the fitted peak list against the phases enabled on "
-                "the Phases tab, fitting each phase’s Birch–Murnaghan EOS "
-                "to find the pressure that best explains the observed peak positions. "
-                "Requires pymatgen for full d-spacing simulation. Enable “Run "
-                "Step 3a” here and launch from the Run tab (the Run tab executes "
-                "every enabled step). Each candidate phase yields a per-frame "
-                "best-fit pressure and a match confidence."
+                "What this does: for each candidate phase, fit its Birch–Murnaghan "
+                "equation of state to find the pressure whose simulated peak "
+                "positions best match the fitted peaks in each frame — giving a "
+                "per-frame pressure estimate and a match confidence per phase. "
+                "(This is “Step 3a” of the analysis pipeline; requires pymatgen for "
+                "d-spacing simulation.)\n\n"
+                "How to run it:\n"
+                "  1. Phases tab — enable the candidate phases known to be in the cell.\n"
+                "  2. Here — tick “Enable phase identification” and set the pressure "
+                "range / tolerance.\n"
+                "  3. Run tab — click Run (it executes every enabled step).\n"
+                "  4. Back here — click “Load identification” to plot pressure vs frame.\n"
+                "Already have a results file? Just click “Load identification” below."
             ),
             foreground=MUTED, justify="left", wraplength=640,
         ).grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
@@ -1697,7 +1737,8 @@ class AnalysisApp:
 
         ttk.Label(
             self.identify_plot_frame,
-            text="Run Step 3a (Run tab) or Load identification to plot pressure vs frame.",
+            text="Enable phase identification and Run (see steps above), or click "
+                 "“Load identification” to plot pressure vs frame from a results file.",
             foreground=MUTED,
         ).pack(anchor="center", expand=True)
 
@@ -1793,7 +1834,7 @@ class AnalysisApp:
             ax_conf.plot(x, conf_arr, linewidth=0.7, color=color)
 
         ax_pres.set_ylabel("pressure (GPa)")
-        ax_pres.set_title("Step 3a — best-fit pressure per phase", color=FG)
+        ax_pres.set_title("Best-fit pressure per phase", color=FG)
         handles, labels = ax_pres.get_legend_handles_labels()
         if handles:
             ax_pres.legend(fontsize=7, framealpha=0.4)

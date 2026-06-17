@@ -807,6 +807,27 @@ class ReductionApp:
             widget.configure(width=10, height=10)
             self._add_review_toolbar(canvas, parent)
             widget.pack(side="top", fill="both", expand=True)
+
+            # Keep the figure sized to its pane, and force an initial fit (the
+            # <Configure> handler only fires on later resizes, so the first
+            # render would otherwise overflow until the window is resized).
+            def _apply_size(w, h, canvas=canvas, fig=fig):
+                if w < 20 or h < 20:
+                    return False
+                dpi = fig.get_dpi() or 100
+                fig.set_size_inches(w / dpi, h / dpi, forward=False)
+                canvas.draw_idle()
+                return True
+
+            widget.bind("<Configure>", lambda e: _apply_size(e.width, e.height), add="+")
+
+            def _initial_fit(tries=0, widget=widget):
+                if _apply_size(widget.winfo_width(), widget.winfo_height()):
+                    return
+                if tries < 40:
+                    self.root.after(25, lambda: _initial_fit(tries + 1))
+            self.root.after(0, _initial_fit)
+
             canvas.draw()
             self._review_canvas = canvas
             return
@@ -850,18 +871,23 @@ class ReductionApp:
             from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
             tb = NavigationToolbar2Tk(canvas, parent, pack_toolbar=False)
             tb.update()
+            # matplotlib's toolbar glyphs are dark, so a near-black button fill
+            # hides them. Give buttons a light fill; keep the frame + coordinate
+            # label on the dark palette.
             try:
                 tb.configure(background=BG)
                 for child in tb.winfo_children():
+                    cls = child.winfo_class()
                     try:
-                        child.configure(background=BG)
+                        if cls in ("Button", "Checkbutton", "Radiobutton"):
+                            child.configure(background=FG, activebackground=ACCENT,
+                                            highlightbackground=BG, relief="flat")
+                        elif cls == "Label":
+                            child.configure(background=BG, foreground=FG)
+                        else:
+                            child.configure(background=BG)
                     except Exception:
                         pass
-                    if isinstance(child, self.tk.Label):
-                        try:
-                            child.configure(foreground=FG)
-                        except Exception:
-                            pass
             except Exception:
                 pass
             tb.pack(side="bottom", fill="x")
