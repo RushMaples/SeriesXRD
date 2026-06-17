@@ -234,12 +234,12 @@ No JAX installed. No GPU required.
 
 ### Issue tracker
 
-Issues live in GitHub Issues for `rmaples3/BulkXRD` (remote sessions use the GitHub MCP tools; local sessions use the `gh` CLI). See `docs/agents/issue-tracker.md`.
+Issues are tracked in GitHub Issues (`rmaples3/BulkXRD`) via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
-Canonical role names used verbatim (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`; categories `bug`, `enhancement`). See `docs/agents/triage-labels.md`.
+Default canonical label strings (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix). See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` glossary + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.

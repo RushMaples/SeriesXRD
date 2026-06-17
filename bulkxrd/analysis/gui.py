@@ -1013,7 +1013,7 @@ class AnalysisApp:
         for s in ax.spines.values():
             s.set_edgecolor(FG)
 
-    def _embed_figure(self, parent, fig):
+    def _embed_figure(self, parent, fig, toolbar=True):
         """Embed a matplotlib figure so it tracks the pane size instead of forcing it.
 
         A ttk.Notebook sizes itself to its largest tab, so a fixed-size canvas
@@ -1024,12 +1024,9 @@ class AnalysisApp:
         redraws the figure at the allocated size (constrained layout re-flows the
         margins on each resize).
 
-        A pan/zoom/save toolbar is packed along the bottom and recoloured to the
-        dark palette — matplotlib ships it with a light background and a white
-        coordinate label, which is the unthemed strip otherwise visible. The
-        toolbar is reserved first (side="bottom") so it stays reachable no matter
-        how small the pane gets; the canvas fills the remainder. Returns the
-        canvas.
+        A navigation toolbar (home / pan / box-zoom / save) is packed beneath the
+        canvas so dense patterns can be zoomed into without resizing the window.
+        Returns the canvas.
         """
         from matplotlib.backends.backend_tkagg import (
             FigureCanvasTkAgg, NavigationToolbar2Tk,
@@ -1049,43 +1046,38 @@ class AnalysisApp:
 
         widget = canvas.get_tk_widget()
         widget.configure(width=10, height=10)   # don't let the canvas set the min size
+        if toolbar:
+            self._add_nav_toolbar(canvas, parent)   # packs along the bottom
         widget.pack(side="top", fill="both", expand=True)
         canvas.draw()
         return canvas
 
-    def _theme_toolbar(self, toolbar):
-        """Recolour a matplotlib NavigationToolbar2Tk to the dark palette.
-
-        The toolbar is a tk.Frame of tk.Button/Checkbutton widgets plus a
-        coordinate Label, none of which the ttk dark theme reaches (they're
-        classic Tk widgets). Recolour each defensively — option support varies
-        by widget type and matplotlib version, so every set is best-effort.
-        """
-        from ..guikit.theme import BG, FG, BTN_ACT, MUTED
-        # Buttons get a mid-tone fill (BTN_ACT) so matplotlib's dark-grey glyph
-        # icons stay legible; the frame itself matches the window background.
-        opts = (
-            ("background", BTN_ACT), ("foreground", FG),
-            ("activebackground", MUTED), ("activeforeground", BG),
-            ("highlightbackground", BG), ("relief", "flat"), ("borderwidth", 0),
-        )
+    def _add_nav_toolbar(self, canvas, parent):
+        """Add a dark-styled matplotlib navigation toolbar below an embedded
+        canvas (pan / box-zoom / home / save). Degrades silently if the toolbar
+        backend is unavailable."""
         try:
-            toolbar.config(background=BG)
-        except Exception:
-            pass
-        for child in toolbar.winfo_children():
-            for key, val in opts:
-                try:
-                    child.config(**{key: val})
-                except Exception:
-                    pass
-        # The coordinate read-out label (and its container on some versions).
-        msg = getattr(toolbar, "_message_label", None)
-        if msg is not None:
+            from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+            tb = NavigationToolbar2Tk(canvas, parent, pack_toolbar=False)
+            tb.update()
             try:
-                msg.config(background=BG, foreground=FG)
+                tb.configure(background=BG)
+                for child in tb.winfo_children():
+                    try:
+                        child.configure(background=BG)
+                    except Exception:
+                        pass
+                    if isinstance(child, self.tk.Label):
+                        try:
+                            child.configure(foreground=FG)
+                        except Exception:
+                            pass
             except Exception:
                 pass
+            tb.pack(side="bottom", fill="x")
+            return tb
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Tab 6 — Heatmap

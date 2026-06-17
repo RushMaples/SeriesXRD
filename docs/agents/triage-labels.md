@@ -1,22 +1,24 @@
 # Triage labels
 
-Canonical role → actual label string. This repo uses the canonical names verbatim.
+The `triage` skill moves an incoming issue through a state machine and applies
+one of the labels below. These are the **canonical default strings** — they
+equal their role names. If you rename a label in GitHub, update the right-hand
+value here so the skill applies the string that actually exists.
 
-## Category (exactly one per issue)
+| Role                                          | Label string      |
+| --------------------------------------------- | ----------------- |
+| Maintainer needs to evaluate                  | `needs-triage`    |
+| Waiting on reporter                           | `needs-info`      |
+| Fully specified, AFK-ready (agent can pick up)| `ready-for-agent` |
+| Needs human implementation                    | `ready-for-human` |
+| Will not be actioned                          | `wontfix`         |
 
-| Role          | Label string  |
-| ------------- | ------------- |
-| bug           | `bug`         |
-| enhancement   | `enhancement` |
+These labels may need to be created in the GitHub repo before first use:
 
-## State (exactly one per triaged issue)
-
-| Role             | Label string       | Meaning                                  |
-| ---------------- | ------------------ | ---------------------------------------- |
-| needs-triage     | `needs-triage`     | Maintainer needs to evaluate             |
-| needs-info       | `needs-info`       | Waiting on reporter                      |
-| ready-for-agent  | `ready-for-agent`  | Fully specified, AFK-ready for an agent  |
-| ready-for-human  | `ready-for-human`  | Needs human implementation               |
-| wontfix          | `wontfix`          | Will not be actioned                     |
-
-Labels are created in the repo on first use if they don't exist yet.
+```sh
+gh label create needs-triage    --description "Maintainer needs to evaluate"
+gh label create needs-info      --description "Waiting on reporter"
+gh label create ready-for-agent --description "Fully specified, AFK-ready"
+gh label create ready-for-human --description "Needs human implementation"
+gh label create wontfix         --description "Will not be actioned"
+```

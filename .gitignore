@@ -18,24 +18,25 @@ env/
 # see examples/calibration_session_config.example.json for the schema)
 calibration_session_config.json
 reduction_session_config.json
+analysis_session_config.json
 last_preflight.json
 handoff_for_next_notebook.json
 master_metadata.json
 
 # Generated run outputs (the notebooks write these at runtime)
-notebooks/data/
-notebooks/figures/
-notebooks/metadata/
-notebooks/logs/
-/notebooks/previews
+data/
+figures/
+metadata/
+logs/
+previews/
 
 # Logs and editor settings
-logs/
 *.log
 worker_gen*.json
 .vscode/
 .idea/
 .DS_Store
+reference_phases/
 
 **/data/processed/
 **/data/raw/
