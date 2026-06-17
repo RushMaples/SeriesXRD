@@ -620,8 +620,15 @@ class ReductionApp:
     def _tab_review(self, frame):
         tk, ttk = self.tk, self.ttk
         self.field(frame, "reduced_h5_file", "Reduced HDF5 file", browse="file", row=0)
-        ttk.Button(frame, text="Inspect HDF5", command=self.inspect_h5_clicked).grid(
-            row=2, column=0, sticky="w", padx=4, pady=8)
+        ctrl = ttk.Frame(frame)
+        ctrl.grid(row=2, column=0, columnspan=3, sticky="w", padx=4, pady=8)
+        ttk.Button(ctrl, text="Inspect HDF5", command=self.inspect_h5_clicked).pack(
+            side="left")
+        # Default to separated (one frame per x-axis, scrollable); overlay is the
+        # toggleable option for comparing patterns on a shared axis.
+        self._review_overlay = tk.BooleanVar(value=bool(self.config.get("review_overlay", False)))
+        ttk.Checkbutton(ctrl, text="Overlay patterns", variable=self._review_overlay,
+                        command=self._on_review_overlay_toggle).pack(side="left", padx=(12, 0))
         paned = ttk.PanedWindow(frame, orient="horizontal")
         paned.grid(row=3, column=0, columnspan=3, sticky="nsew", padx=4, pady=4)
         frame.rowconfigure(3, weight=1)
@@ -662,7 +669,48 @@ class ReductionApp:
         self._render_review_plots(review)
         self.save_config(silent=True)
 
+    def _on_review_overlay_toggle(self):
+        """Re-render the loaded review when the overlay toggle flips."""
+        self.config["review_overlay"] = bool(self._review_overlay.get())
+        review = getattr(self, "_last_review", None)
+        if review is not None:
+            self._render_review_plots(review)
+
+    @staticmethod
+    def _style_review_ax(ax):
+        ax.set_facecolor(BG2)
+        ax.tick_params(colors=FG, which="both", labelsize=8)
+        ax.xaxis.label.set_color(FG)
+        ax.yaxis.label.set_color(FG)
+        ax.title.set_color(FG)
+        for s in ax.spines.values():
+            s.set_edgecolor(FG)
+
+    def _draw_review_cake(self, ax, review):
+        import numpy as np
+        cake = np.asarray(review["cake"], dtype=float)
+        cr = review.get("cake_radial")
+        caz = review.get("cake_azimuthal")
+        extent = None
+        if cr is not None and caz is not None:
+            extent = [float(np.min(cr)), float(np.max(cr)),
+                      float(np.min(caz)), float(np.max(caz))]
+        cc = cake.copy()
+        cc[cc <= 0] = np.nan
+        vmin = np.nanpercentile(cc, 5) if np.any(np.isfinite(cc)) else None
+        vmax = np.nanpercentile(cc, 99) if np.any(np.isfinite(cc)) else None
+        ax.imshow(cc, aspect="auto", origin="lower", cmap="magma",
+                  extent=extent, vmin=vmin, vmax=vmax)
+        fi = review.get("cake_frame_index")
+        ax.set_title(f"Cake (frame {fi})" if fi is not None else "Cake")
+        ax.set_xlabel(review.get("unit") or "radial")
+        ax.set_ylabel("azimuth (deg)")
+        self._style_review_ax(ax)
+
     def _render_review_plots(self, review: dict):
+        # Remember the review so the overlay toggle can re-render without a
+        # re-inspect.
+        self._last_review = review
         # Close the previous figure before discarding its canvas, else each
         # re-inspect leaks a matplotlib Figure.
         prev = getattr(self, "_review_fig", None)
@@ -679,71 +727,147 @@ class ReductionApp:
             import matplotlib
             matplotlib.use("TkAgg", force=False)
             from matplotlib.figure import Figure
-            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         except Exception as e:
             self.ttk.Label(self.review_plot_frame, text=f"matplotlib unavailable: {e}",
                            foreground=WARN).pack(anchor="center", expand=True)
             return
         import numpy as np
 
-        def _style_ax(ax):
-            ax.set_facecolor(BG2)
-            ax.tick_params(colors=FG, which="both")
-            ax.xaxis.label.set_color(FG)
-            ax.yaxis.label.set_color(FG)
-            ax.title.set_color(FG)
-            for s in ax.spines.values():
-                s.set_edgecolor(FG)
-
         patterns = review.get("patterns", [])
-        cake_present = bool(review.get("cake_present"))
-        nrows = 1 + (1 if cake_present else 0)
-        # constrained layout recomputes margins on resize (one-shot tight_layout
-        # leaves labels clipped/overlapping when the pane is resized).
-        fig = Figure(figsize=(5.5, 5.6), dpi=100, layout="constrained")
-        self._review_fig = fig
-        fig.patch.set_facecolor(BG)
-        ax1 = fig.add_subplot(nrows, 1, 1)
+        cake_present = bool(review.get("cake_present") and review.get("cake") is not None)
         radial = review.get("radial")
         x = np.asarray(radial) if radial is not None else None
-        for pr in patterns:
+        unit = review.get("unit") or "radial bin"
+        overlay = bool(self._review_overlay.get()) if hasattr(self, "_review_overlay") else False
+
+        if overlay or not patterns:
+            # Overlaid view: all sample patterns on a shared axis (good for
+            # comparison). Fully resizable + zoomable via the nav toolbar.
+            nrows = 1 + (1 if cake_present else 0)
+            fig = Figure(figsize=(5.5, 5.6), dpi=100, layout="constrained")
+            self._review_fig = fig
+            fig.patch.set_facecolor(BG)
+            ax1 = fig.add_subplot(nrows, 1, 1)
+            for pr in patterns:
+                y = np.asarray(pr["intensity"], dtype=float)
+                if x is not None and x.shape == y.shape:
+                    ax1.plot(x, y, lw=0.8, alpha=0.7)
+                else:
+                    ax1.plot(y, lw=0.8, alpha=0.7)
+            ax1.set_title(f"{len(patterns)} sample patterns (overlaid)")
+            ax1.set_xlabel(unit)
+            ax1.set_ylabel("intensity")
+            self._style_review_ax(ax1)
+            if cake_present:
+                self._draw_review_cake(fig.add_subplot(nrows, 1, 2), review)
+            self._embed_review_figure(fig, scroll=False)
+            return
+
+        # Separated view (default): one sample pattern per subplot, each with its
+        # own x-axis, stacked in a vertically-scrollable strip so individual
+        # features are easy to read. Cake (if any) goes at the bottom.
+        n = len(patterns)
+        rows = n + (1 if cake_present else 0)
+        per_in = 1.7
+        fig = Figure(figsize=(5.5, max(2.2, per_in * rows)), dpi=100, layout="constrained")
+        self._review_fig = fig
+        fig.patch.set_facecolor(BG)
+        axes = fig.subplots(rows, 1, squeeze=False)[:, 0]
+        for k, pr in enumerate(patterns):
+            ax = axes[k]
             y = np.asarray(pr["intensity"], dtype=float)
             if x is not None and x.shape == y.shape:
-                ax1.plot(x, y, lw=0.8, alpha=0.7)
+                ax.plot(x, y, lw=0.9, color=ACCENT2)
             else:
-                ax1.plot(y, lw=0.8, alpha=0.7)
-        ax1.set_title(f"{len(patterns)} sample patterns")
-        ax1.set_xlabel(review.get("unit") or "radial bin")
-        ax1.set_ylabel("intensity")
-        _style_ax(ax1)
-        if cake_present and review.get("cake") is not None:
-            ax2 = fig.add_subplot(nrows, 1, 2)
-            cake = np.asarray(review["cake"], dtype=float)
-            cr = review.get("cake_radial")
-            caz = review.get("cake_azimuthal")
-            extent = None
-            if cr is not None and caz is not None:
-                extent = [float(np.min(cr)), float(np.max(cr)),
-                          float(np.min(caz)), float(np.max(caz))]
-            cc = cake.copy()
-            cc[cc <= 0] = np.nan
-            vmin = np.nanpercentile(cc, 5) if np.any(np.isfinite(cc)) else None
-            vmax = np.nanpercentile(cc, 99) if np.any(np.isfinite(cc)) else None
-            
-            ax2.imshow(cc, aspect="auto", origin="lower", cmap="magma", extent=extent, vmin=vmin, vmax=vmax)
-            fi = review.get("cake_frame_index")
-            ax2.set_title(f"Cake (frame {fi})" if fi is not None else "Cake")
-            ax2.set_xlabel(review.get("unit") or "radial")
-            ax2.set_ylabel("azimuth (deg)")
-            _style_ax(ax2)
-        canvas = FigureCanvasTkAgg(fig, master=self.review_plot_frame)
-        # Tiny requested size so the canvas doesn't pin the notebook/window to the
-        # figure size (which made plots load larger than the pane); fill+expand
-        # grows it to the pane and matplotlib redraws at the allocated size.
-        canvas.get_tk_widget().configure(width=10, height=10)
+                ax.plot(y, lw=0.9, color=ACCENT2)
+            ax.set_title(pr.get("name") or f"frame {pr.get('index')}", fontsize=9)
+            ax.set_ylabel("intensity", fontsize=8)
+            ax.set_xlabel(unit, fontsize=8)
+            self._style_review_ax(ax)
+        if cake_present:
+            self._draw_review_cake(axes[n], review)
+        self._embed_review_figure(fig, scroll=True)
+
+    def _embed_review_figure(self, fig, scroll: bool):
+        """Embed the review figure in the right pane.
+
+        ``scroll=False`` fills the pane and tracks resizes (overlay view).
+        ``scroll=True`` keeps the figure's tall pixel height and wraps it in a
+        vertically-scrollable canvas (separated view); the width still tracks
+        the pane so each subplot stays readable.
+        """
+        tk, ttk = self.tk, self.ttk
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        parent = self.review_plot_frame
+        if not scroll:
+            canvas = FigureCanvasTkAgg(fig, master=parent)
+            widget = canvas.get_tk_widget()
+            # Tiny requested size so the canvas doesn't pin the notebook/window to
+            # the figure size; fill+expand grows it to the pane.
+            widget.configure(width=10, height=10)
+            self._add_review_toolbar(canvas, parent)
+            widget.pack(side="top", fill="both", expand=True)
+            canvas.draw()
+            self._review_canvas = canvas
+            return
+
+        container = ttk.Frame(parent)
+        container.pack(fill="both", expand=True)
+        sc = tk.Canvas(container, bg=BG, highlightthickness=0)
+        vsb = ttk.Scrollbar(container, orient="vertical", command=sc.yview)
+        sc.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        sc.pack(side="left", fill="both", expand=True)
+        canvas = FigureCanvasTkAgg(fig, master=sc)
+        widget = canvas.get_tk_widget()
+        fig_h_px = int(fig.get_figheight() * fig.get_dpi())
+        win = sc.create_window((0, 0), window=widget, anchor="nw")
+
+        def _on_sc_config(event):
+            # Width tracks the viewport; height stays tall so the strip scrolls.
+            sc.itemconfigure(win, width=event.width)
+            sc.configure(scrollregion=(0, 0, event.width, fig_h_px))
+
+        sc.bind("<Configure>", _on_sc_config)
+
+        def _wheel(event):
+            up = getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0
+            sc.yview_scroll(-1 if up else 1, "units")
+
+        sc.bind("<Enter>", lambda e: (sc.bind_all("<MouseWheel>", _wheel),
+                                      sc.bind_all("<Button-4>", _wheel),
+                                      sc.bind_all("<Button-5>", _wheel)))
+        sc.bind("<Leave>", lambda e: (sc.unbind_all("<MouseWheel>"),
+                                      sc.unbind_all("<Button-4>"),
+                                      sc.unbind_all("<Button-5>")))
         canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
         self._review_canvas = canvas
+
+    def _add_review_toolbar(self, canvas, parent):
+        """Dark-styled matplotlib nav toolbar (zoom/pan/home/save) under the
+        overlay canvas. Degrades silently if unavailable."""
+        try:
+            from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+            tb = NavigationToolbar2Tk(canvas, parent, pack_toolbar=False)
+            tb.update()
+            try:
+                tb.configure(background=BG)
+                for child in tb.winfo_children():
+                    try:
+                        child.configure(background=BG)
+                    except Exception:
+                        pass
+                    if isinstance(child, self.tk.Label):
+                        try:
+                            child.configure(foreground=FG)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            tb.pack(side="bottom", fill="x")
+            return tb
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Tab 6 — Gallery (per-frame cake/1D matrix with click-to-exclude)
