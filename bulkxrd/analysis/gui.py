@@ -1028,26 +1028,15 @@ class AnalysisApp:
         canvas so dense patterns can be zoomed into without resizing the window.
         Returns the canvas.
         """
-        from matplotlib.backends.backend_tkagg import (
-            FigureCanvasTkAgg, NavigationToolbar2Tk,
-        )
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         canvas = FigureCanvasTkAgg(fig, master=parent)
-
-        # pack_toolbar=False lets us control packing order (mpl >= 3.3); older
-        # versions auto-pack the toolbar into the parent at side="bottom".
-        try:
-            toolbar = NavigationToolbar2Tk(canvas, parent, pack_toolbar=False)
-            self._theme_toolbar(toolbar)
-            toolbar.pack(side="bottom", fill="x")
-        except TypeError:
-            toolbar = NavigationToolbar2Tk(canvas, parent)
-            self._theme_toolbar(toolbar)
-        toolbar.update()
-
         widget = canvas.get_tk_widget()
         widget.configure(width=10, height=10)   # don't let the canvas set the min size
+        # Reserve the toolbar strip at the bottom first (best-effort: it degrades
+        # to None if the backend is unavailable and never blocks the plot), then
+        # let the canvas fill the remainder.
         if toolbar:
-            self._add_nav_toolbar(canvas, parent)   # packs along the bottom
+            self._add_nav_toolbar(canvas, parent)
         widget.pack(side="top", fill="both", expand=True)
         canvas.draw()
         return canvas
