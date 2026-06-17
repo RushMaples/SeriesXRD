@@ -103,11 +103,53 @@ def test_run_identification():
         assert np.all(rec["confidence"] > 0.8)
 
 
+def test_sparse_observation_still_seen():
+    """Regression: a DAC frame shows only a few of a phase's strong lines (the
+    rest below the noise floor / overlapped). The phase must still register as
+    'seen' with a finite pressure — the old confidence definition divided by
+    EVERY predicted line, so a real phase scored ≈0 and reported P=nan."""
+    if not ph.pymatgen_available():
+        print("  (pymatgen not installed — skipping sparse-observation test)")
+        return
+    au = ph.load_bundled()["Au"]
+    refl = idf.phase_reflections(au)
+    d0, w, _ = refl
+    p_true = 30.0
+    s = idf.scale_at_pressure(au, p_true)
+    # Observe only the 3 strongest reflections (sparse, like real DAC data).
+    obs_d = d0[:3] * s
+    res = idf.fit_pressure_for_phase(obs_d, au, refl, p_min=0.0, p_max=200.0,
+                                     rel_tol=0.01)
+    assert abs(res["pressure"] - p_true) < 4.0, res["pressure"]
+    assert res["confidence"] > 0.3, f"sparse match should be seen, got {res['confidence']:.3f}"
+    assert res["n_matched"] >= 3
+
+    # End-to-end: the summary must surface it (n_frames_seen > 0, finite P).
+    import h5py
+    with tempfile.TemporaryDirectory() as td:
+        h5 = Path(td) / "analysis.h5"
+        centers_q = 2 * np.pi / obs_d
+        with h5py.File(str(h5), "w") as f:
+            f.attrs["unit"] = "q_A^-1"
+            f.attrs["source_reduced"] = "synthetic"
+            gp = f.create_group("peaks")
+            k = centers_q.size
+            gp.create_dataset("counts", data=np.full(3, k, "i4"))
+            gp.create_dataset("frame", data=np.repeat(np.arange(3), k).astype("i4"))
+            gp.create_dataset("center", data=np.tile(centers_q, 3).astype("f8"))
+            gp.create_dataset("flag", data=np.zeros(3 * k, "i4"))
+        manifest = idf.run_identification(h5, [au], p_min=0.0, p_max=200.0)
+        summ = manifest["summary"]["Au"]
+        assert summ["n_frames_seen"] >= 1, summ
+        assert summ["pressure_median"] == summ["pressure_median"], "pressure_median is NaN"
+
+
 def main() -> None:
     test_radial_to_d()
     test_scale_monotonic()
     test_pressure_recovery()
     test_run_identification()
+    test_sparse_observation_still_seen()
     print("IDENTIFY TEST OK")
 
 

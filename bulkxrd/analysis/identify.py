@@ -140,13 +140,22 @@ def _nearest_gap(pred: np.ndarray, obs_sorted: np.ndarray) -> np.ndarray:
 
 
 def score_at_scale(obs_sorted: np.ndarray, d0: np.ndarray, weight: np.ndarray,
-                   s: float, rel_tol: float) -> Tuple[float, int, float]:
+                   s: float, rel_tol: float,
+                   strong_frac: float = 0.1) -> Tuple[float, int, float]:
     """Match score, #matched, and confidence for a given lattice scale ``s``.
 
-    Score = Σ wᵢ·exp(−½(Δdᵢ/σᵢ)²) with σᵢ = rel_tol·d_pred,ᵢ (q-resolution makes
-    a relative tolerance natural). Confidence is the matched-weight fraction over
-    only the predicted lines whose position falls inside the observed d-range, so
-    reflections that can't be seen don't penalise a real phase.
+    Score = Σ wᵢ·exp(−½(Δdᵢ/σᵢ)²) with σᵢ = rel_tol·d_pred,ᵢ — the optimisation
+    target for the pressure fit.
+
+    Confidence is the intensity-weighted fraction of the phase's *strong,
+    observable* reflections that are matched: of the predicted lines that fall
+    inside the observed d-range AND are at least ``strong_frac`` of the strongest
+    such line, how much of their intensity is accounted for by an observed peak.
+    Using only strong lines is deliberate — a powder-in-DAC pattern shows only a
+    handful of reflections (weak lines fall below the noise floor, others overlap
+    or are killed by texture), so dividing by *every* predicted line made even a
+    correct phase score ≈0. This recall-style figure of merit answers "are the
+    lines I'd actually expect to see present?".
     """
     pred = d0 * s
     sigma = np.maximum(rel_tol * pred, 1e-9)
@@ -154,13 +163,16 @@ def score_at_scale(obs_sorted: np.ndarray, d0: np.ndarray, weight: np.ndarray,
     kernel = np.exp(-0.5 * (gap / sigma) ** 2)
     score = float(np.sum(weight * kernel))
     n_matched = int(np.sum(gap < 2.0 * sigma))
+    conf = 0.0
     if obs_sorted.size:
-        lo, hi = obs_sorted[0] - 2 * sigma.max(), obs_sorted[-1] + 2 * sigma.max()
-        in_win = (pred >= lo) & (pred <= hi)
-        denom = float(np.sum(weight[in_win]))
-        conf = float(np.sum((weight * kernel)[in_win]) / denom) if denom > 0 else 0.0
-    else:
-        conf = 0.0
+        span = 2.0 * float(sigma.max())
+        in_win = (pred >= obs_sorted[0] - span) & (pred <= obs_sorted[-1] + span)
+        w_win = weight[in_win]
+        if w_win.size:
+            strong = w_win >= strong_frac * float(w_win.max())
+            denom = float(np.sum(w_win[strong]))
+            num = float(np.sum((weight * kernel)[in_win][strong]))
+            conf = num / denom if denom > 0 else 0.0
     return score, n_matched, conf
 
 
@@ -390,15 +402,25 @@ def run_identification(
             tmp.unlink()
         raise
 
-    # Per-phase summary over frames where the phase was confidently matched.
+    # Per-phase summary. "Seen" uses a deliberately modest confidence bar (a
+    # DAC pattern rarely shows every strong line); the richer stats below let the
+    # user judge partial matches instead of collapsing them to a single 0.
+    SEEN_CONF = 0.3
     summary = {}
+    live = ~excluded
     for ph in phases:
         res = results[ph.name]
         conf = res["confidence"]
-        seen = conf > 0.5
+        nm = res["n_matched"]
+        conf_live = conf[live] if live.any() else conf
+        seen = (conf > SEEN_CONF) & live
         summary[ph.name] = {
-            "mean_confidence": float(np.mean(conf)) if n else 0.0,
+            "mean_confidence": float(np.mean(conf_live)) if conf_live.size else 0.0,
+            "max_confidence": float(np.max(conf_live)) if conf_live.size else 0.0,
+            "seen_conf": SEEN_CONF,
             "n_frames_seen": int(np.sum(seen)),
+            "n_frames_matched": int(np.sum((nm > 0) & live)),
+            "max_matched": int(np.max(nm)) if nm.size else 0,
             "pressure_median": float(np.nanmedian(res["pressure"][seen])) if np.any(seen) else float("nan"),
             "has_eos": bool(ph.has_eos()),
         }
