@@ -141,21 +141,24 @@ def _nearest_gap(pred: np.ndarray, obs_sorted: np.ndarray) -> np.ndarray:
 
 def score_at_scale(obs_sorted: np.ndarray, d0: np.ndarray, weight: np.ndarray,
                    s: float, rel_tol: float,
-                   strong_frac: float = 0.1) -> Tuple[float, int, float]:
-    """Match score, #matched, and confidence for a given lattice scale ``s``.
+                   strong_frac: float = 0.1) -> Tuple[float, int, float, float]:
+    """Match score, #matched, recall, and precision for a lattice scale ``s``.
 
-    Score = Σ wᵢ·exp(−½(Δdᵢ/σᵢ)²) with σᵢ = rel_tol·d_pred,ᵢ — the optimisation
+    ``score`` = Σ wᵢ·exp(−½(Δdᵢ/σᵢ)²), σᵢ = rel_tol·d_pred,ᵢ — the optimisation
     target for the pressure fit.
 
-    Confidence is the intensity-weighted fraction of the phase's *strong,
-    observable* reflections that are matched: of the predicted lines that fall
-    inside the observed d-range AND are at least ``strong_frac`` of the strongest
-    such line, how much of their intensity is accounted for by an observed peak.
-    Using only strong lines is deliberate — a powder-in-DAC pattern shows only a
-    handful of reflections (weak lines fall below the noise floor, others overlap
-    or are killed by texture), so dividing by *every* predicted line made even a
-    correct phase score ≈0. This recall-style figure of merit answers "are the
-    lines I'd actually expect to see present?".
+    Two complementary figures of merit, because neither alone survives DAC data:
+
+    * ``recall`` — intensity-weighted fraction of the phase's *strong, observable*
+      lines (≥ ``strong_frac`` of the strongest in-window line) that are matched.
+      "Are the lines I'd expect to see present?" Good for simple/cubic phases;
+      intrinsically low for a dense low-symmetry pattern where most strong lines
+      go unobserved (texture, overlap, noise floor).
+    * ``precision`` — fraction of the *observed* peaks lying in the predicted
+      range that are explained by a predicted line. "Do my peaks belong to this
+      phase?" High for the dominant/sample phase even when recall is low.
+
+    A phase is taken as present if *either* is high (see ``fit_pressure_for_phase``).
     """
     pred = d0 * s
     sigma = np.maximum(rel_tol * pred, 1e-9)
@@ -163,17 +166,26 @@ def score_at_scale(obs_sorted: np.ndarray, d0: np.ndarray, weight: np.ndarray,
     kernel = np.exp(-0.5 * (gap / sigma) ** 2)
     score = float(np.sum(weight * kernel))
     n_matched = int(np.sum(gap < 2.0 * sigma))
-    conf = 0.0
-    if obs_sorted.size:
+    recall = 0.0
+    precision = 0.0
+    if obs_sorted.size and pred.size:
         span = 2.0 * float(sigma.max())
+        # Recall over the strong in-window predicted lines.
         in_win = (pred >= obs_sorted[0] - span) & (pred <= obs_sorted[-1] + span)
         w_win = weight[in_win]
         if w_win.size:
             strong = w_win >= strong_frac * float(w_win.max())
             denom = float(np.sum(w_win[strong]))
             num = float(np.sum((weight * kernel)[in_win][strong]))
-            conf = num / denom if denom > 0 else 0.0
-    return score, n_matched, conf
+            recall = num / denom if denom > 0 else 0.0
+        # Precision over observed peaks falling in the predicted d-range.
+        pred_sorted = np.sort(pred)
+        lo, hi = pred_sorted[0] - span, pred_sorted[-1] + span
+        obs_in = obs_sorted[(obs_sorted >= lo) & (obs_sorted <= hi)]
+        if obs_in.size:
+            gap_obs = _nearest_gap(obs_in, pred_sorted)
+            precision = float(np.mean(gap_obs < 2.0 * rel_tol * obs_in))
+    return score, n_matched, recall, precision
 
 
 def fit_pressure_for_phase(obs_d, phase: Phase,
@@ -192,14 +204,19 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
     obs = np.sort(np.asarray(obs_d, dtype=float))
     obs = obs[np.isfinite(obs) & (obs > 0)]
     out = {"pressure": float("nan"), "score": 0.0, "confidence": 0.0,
-           "n_matched": 0, "n_pred": int(d0.size)}
+           "recall": 0.0, "precision": 0.0, "n_matched": 0, "n_pred": int(d0.size)}
     if d0.size == 0 or obs.size == 0:
         out["pressure"] = 0.0
         return out
 
+    def _record(p_val, s):
+        score, nm, rec, prec = score_at_scale(obs, d0, weight, s, rel_tol)
+        out.update({"pressure": p_val, "score": score, "n_matched": nm,
+                    "recall": rec, "precision": prec,
+                    "confidence": max(rec, prec)})  # present if EITHER is high
+
     if not phase.has_eos():
-        score, nm, conf = score_at_scale(obs, d0, weight, 1.0, rel_tol)
-        out.update({"pressure": 0.0, "score": score, "confidence": conf, "n_matched": nm})
+        _record(0.0, 1.0)
         return out
 
     Ps = np.linspace(float(p_min), float(p_max), int(max(n_grid, 2)))
@@ -220,8 +237,7 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
                 p_opt = float(r.x)
         except Exception:
             pass
-    score, nm, conf = score_at_scale(obs, d0, weight, scale_at_pressure(phase, p_opt), rel_tol)
-    out.update({"pressure": p_opt, "score": score, "confidence": conf, "n_matched": nm})
+    _record(p_opt, scale_at_pressure(phase, p_opt))
     return out
 
 
@@ -242,7 +258,8 @@ def _identify_chunk(payload):
     phases, refls, obs_chunk, excluded_chunk, p_min, p_max, rel_tol = payload
     m = len(obs_chunk)
     res = {ph.name: {"pressure": np.full(m, np.nan, "f8"), "score": np.zeros(m, "f8"),
-                     "confidence": np.zeros(m, "f8"), "n_matched": np.zeros(m, "i4")}
+                     "confidence": np.zeros(m, "f8"), "recall": np.zeros(m, "f8"),
+                     "precision": np.zeros(m, "f8"), "n_matched": np.zeros(m, "i4")}
            for ph in phases}
     for j in range(m):
         if excluded_chunk[j]:
@@ -253,7 +270,8 @@ def _identify_chunk(payload):
                                        rel_tol=rel_tol)
             rr = res[ph.name]
             rr["pressure"][j] = r["pressure"]; rr["score"][j] = r["score"]
-            rr["confidence"][j] = r["confidence"]; rr["n_matched"][j] = r["n_matched"]
+            rr["confidence"][j] = r["confidence"]; rr["recall"][j] = r["recall"]
+            rr["precision"][j] = r["precision"]; rr["n_matched"][j] = r["n_matched"]
     return res
 
 
@@ -353,7 +371,8 @@ def run_identification(
     refls = [refl_cache[ph.name] for ph in phases]
     results: Dict[str, Dict[str, np.ndarray]] = {
         ph.name: {"pressure": np.full(n, np.nan, "f8"), "score": np.zeros(n, "f8"),
-                  "confidence": np.zeros(n, "f8"), "n_matched": np.zeros(n, "i4")}
+                  "confidence": np.zeros(n, "f8"), "recall": np.zeros(n, "f8"),
+                  "precision": np.zeros(n, "f8"), "n_matched": np.zeros(n, "i4")}
         for ph in phases}
 
     def _absorb(a, chunk_res):
@@ -396,6 +415,18 @@ def run_identification(
                                 "has_eos": bool(ph.has_eos()), "category": ph.category})
                 for k, v in results[ph.name].items():
                     g.create_dataset(k, data=v)
+                # Cache the ambient reflection list so GUI overlays (reflection
+                # tracks / phase layers) never need to re-run pymatgen — that
+                # simulation, on the main thread, froze the app for low-symmetry
+                # phases. d-spacings are wavelength-independent; tracks scale them
+                # by the per-frame pressure.
+                d0c, wc, hklc = refl_cache[ph.name]
+                g.create_dataset("refl_d", data=np.asarray(d0c, "f8"))
+                g.create_dataset("refl_w", data=np.asarray(wc, "f8"))
+                g.create_dataset(
+                    "refl_hkl",
+                    data=np.array([str(h) for h in hklc], dtype=object),
+                    dtype=h5py.string_dtype(encoding="utf-8"))
         os.replace(tmp, dst)
     except Exception:
         if tmp.exists():
@@ -405,7 +436,7 @@ def run_identification(
     # Per-phase summary. "Seen" uses a deliberately modest confidence bar (a
     # DAC pattern rarely shows every strong line); the richer stats below let the
     # user judge partial matches instead of collapsing them to a single 0.
-    SEEN_CONF = 0.3
+    SEEN_CONF = 0.5
     summary = {}
     live = ~excluded
     for ph in phases:
@@ -417,6 +448,8 @@ def run_identification(
         summary[ph.name] = {
             "mean_confidence": float(np.mean(conf_live)) if conf_live.size else 0.0,
             "max_confidence": float(np.max(conf_live)) if conf_live.size else 0.0,
+            "max_recall": float(np.max(res["recall"][live])) if live.any() else 0.0,
+            "max_precision": float(np.max(res["precision"][live])) if live.any() else 0.0,
             "seen_conf": SEEN_CONF,
             "n_frames_seen": int(np.sum(seen)),
             "n_frames_matched": int(np.sum((nm > 0) & live)),

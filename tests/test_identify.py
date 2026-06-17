@@ -101,6 +101,15 @@ def test_run_identification():
         assert rec["name"] == "Au"
         assert abs(float(np.median(rec["pressure"])) - 60.0) < 3.0
         assert np.all(rec["confidence"] > 0.8)
+        # Reflections must be cached so GUI overlays need no pymatgen.
+        import h5py
+        with h5py.File(str(h5), "r") as f:
+            g = f["identify"]["Au"]
+            assert "refl_d" in g and g["refl_d"].size >= 3
+        # reflection_tracks must read the cache (works regardless of pymatgen).
+        from bulkxrd.analysis.heatmap import reflection_tracks
+        tr2 = reflection_tracks(h5, au)
+        assert tr2["ok"] and len(tr2["tracks"]) >= 3
 
 
 def test_sparse_observation_still_seen():
