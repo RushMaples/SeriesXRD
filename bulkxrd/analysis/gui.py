@@ -93,8 +93,14 @@ HELP: Dict[str, str] = {
     ),
     # Step 2
     "min_snr": (
-        "Minimum signal-to-noise ratio (peak height / MAD noise floor) for a "
+        "Minimum signal-to-noise ratio (peak HEIGHT / MAD noise floor) for a "
         "peak to be accepted. Lower = more peaks, more noise hits. Default 5."
+    ),
+    "min_prominence_snr": (
+        "Minimum peak PROMINENCE in noise-floor units. Prominence is measured "
+        "against the taller neighbour, so a real peak on the shoulder of a "
+        "stronger one needs this lower than Min SNR to register. Default 2 "
+        "(blank = use Min SNR, the old coupled behaviour)."
     ),
     "window_factor": (
         "Fit-window half-width as a multiple of the initial FWHM estimate. "
@@ -545,9 +551,10 @@ class AnalysisApp:
     def _tab_peaks(self, frame):
         ttk = self.ttk
         self.checkbox(frame, "run_step2", "Run Step 2 — pseudo-Voigt peak fitting", row=0)
-        self.field(frame, "min_snr", "Min SNR", row=2, width=14)
-        self.field(frame, "window_factor", "Window factor (× FWHM)", row=3, width=14)
-        self.field(frame, "max_chi2", "Max reduced χ²", row=4, width=14)
+        self.field(frame, "min_snr", "Min SNR (height)", row=2, width=14)
+        self.field(frame, "min_prominence_snr", "Min prominence SNR", row=3, width=14)
+        self.field(frame, "window_factor", "Window factor (× FWHM)", row=4, width=14)
+        self.field(frame, "max_chi2", "Max reduced χ²", row=5, width=14)
         self.checkbox(frame, "propagate_seeds",
                       "Propagate peak seeds frame-to-frame", row=6)
         ttk.Label(
@@ -817,6 +824,10 @@ class AnalysisApp:
 
         ttk.Button(ctrl, text="Load review", command=self.load_review).pack(
             side="left", padx=4)
+        ttk.Button(ctrl, text="Open in window",
+                   command=lambda: self._open_plot_window(
+                       getattr(self, "_review_fig", None), "Review")
+                   ).pack(side="left", padx=4)
 
         ttk.Label(ctrl, text="Frame:", foreground=MUTED).pack(side="left", padx=(12, 2))
         self._review_idx_var = tk.IntVar(value=0)
@@ -840,6 +851,7 @@ class AnalysisApp:
         self._show_clean = tk.BooleanVar(value=True)
         self._show_spot = tk.BooleanVar(value=False)
         self._show_peaks = tk.BooleanVar(value=True)
+        self._show_cake = tk.BooleanVar(value=False)
         for var, label in [
             (self._show_mean, "mean"),
             (self._show_robust, "robust"),
@@ -847,10 +859,12 @@ class AnalysisApp:
             (self._show_clean, "clean"),
             (self._show_spot, "spot_residual"),
             (self._show_peaks, "fitted peaks"),
+            (self._show_cake, "cake (2D)"),
         ]:
             ttk.Checkbutton(ctrl, text=label, variable=var,
                             command=self._schedule_review_render).pack(
                 side="left", padx=2)
+        self._review_source_reduced = ""
 
         # Matplotlib area
         self.review_plot_frame = ttk.Frame(frame)
@@ -879,6 +893,7 @@ class AnalysisApp:
             return
         nf = int(info.get("n_frames", 0))
         self._review_nframes = nf
+        self._review_source_reduced = str(info.get("source_reduced", "") or "")
         contam = info.get("contamination")
         self._review_contamination = contam
         if nf > 0:
@@ -986,12 +1001,20 @@ class AnalysisApp:
 
         # constrained layout recomputes margins on every resize (one-shot
         # tight_layout leaves labels clipped/overlapping when the pane resizes).
+        show_cake = bool(self._show_cake.get())
         fig = Figure(figsize=(7, 6), dpi=100, layout="constrained")
         self._review_fig = fig
         fig.patch.set_facecolor(BG)
-        gs = fig.add_gridspec(2, 1, height_ratios=[3, 1])
-        ax1 = fig.add_subplot(gs[0])   # pattern traces get the bulk of the height
-        ax2 = fig.add_subplot(gs[1])   # contamination strip below
+        if show_cake:
+            gs = fig.add_gridspec(3, 1, height_ratios=[3, 2, 1])
+            ax1 = fig.add_subplot(gs[0])    # pattern traces
+            ax_cake = fig.add_subplot(gs[1])  # 2D cake (azimuth × radial)
+            ax2 = fig.add_subplot(gs[2])    # contamination strip
+        else:
+            gs = fig.add_gridspec(2, 1, height_ratios=[3, 1])
+            ax1 = fig.add_subplot(gs[0])   # pattern traces get the bulk of the height
+            ax2 = fig.add_subplot(gs[1])   # contamination strip below
+            ax_cake = None
 
         def _plot(ax, arr, label, color, lw=0.9, alpha=0.85):
             if arr is None:
@@ -1042,6 +1065,33 @@ class AnalysisApp:
             ax1.legend(fontsize=7, framealpha=0.4)
         self._style_ax(ax1)
 
+        # Optional middle axis: the 2D cake (azimuth × radial) for this frame,
+        # read from the source reduced file (cakes don't live in the analysis file).
+        if ax_cake is not None:
+            from .review import cake_for_frame
+            ck = cake_for_frame(self._review_source_reduced, frame_index)
+            if ck.get("ok") and ck.get("cake") is not None:
+                cake = np.asarray(ck["cake"], dtype=float)
+                cr, caz = ck.get("radial"), ck.get("azimuthal")
+                extent = None
+                if cr is not None and caz is not None and cr.size and caz.size:
+                    extent = [float(np.min(cr)), float(np.max(cr)),
+                              float(np.min(caz)), float(np.max(caz))]
+                cc = cake.copy()
+                cc[~np.isfinite(cc) | (cc <= 0)] = np.nan
+                finite = cc[np.isfinite(cc)]
+                vmin = float(np.percentile(finite, 5)) if finite.size else None
+                vmax = float(np.percentile(finite, 99)) if finite.size else None
+                ax_cake.imshow(cc, aspect="auto", origin="lower", cmap="magma",
+                               extent=extent, vmin=vmin, vmax=vmax)
+                ax_cake.set_xlabel(ck.get("unit") or unit)
+                ax_cake.set_ylabel("azimuth (deg)")
+                ax_cake.set_title("Cake (2D)", color=FG)
+            else:
+                ax_cake.set_title(f"Cake: {ck.get('error', 'unavailable')}", color=WARN)
+                ax_cake.set_xticks([]); ax_cake.set_yticks([])
+            self._style_ax(ax_cake)
+
         # Bottom axis: contamination across series.
         contam = self._review_contamination
         if contam is not None and len(contam):
@@ -1066,6 +1116,61 @@ class AnalysisApp:
         ax.title.set_color(FG)
         for s in ax.spines.values():
             s.set_edgecolor(FG)
+
+    def _toggle_identify_help(self):
+        """Show/hide the Identify instructions so the plot can use the space."""
+        if self._identify_help_var.get():
+            self._identify_help.grid()
+        else:
+            self._identify_help.grid_remove()
+
+    def _open_plot_window(self, fig, title="Plot"):
+        """Open ``fig`` in a separate, large, resizable window with its own
+        toolbar. The figure is shared with the inline canvas (these plots are
+        static, rendered once per load), so the pop-out is just a bigger view;
+        reloading the tab refreshes both."""
+        if fig is None:
+            self.messagebox.showinfo("Open in window", "Load a plot first.")
+            return
+        try:
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            win = self.tk.Toplevel(self.root)
+            win.title(f"Bulk-XRD — {title}")
+            try:
+                win.configure(bg=BG)
+                win.geometry("1100x800")
+            except Exception:
+                pass
+            canvas = FigureCanvasTkAgg(fig, master=win)
+            self._add_nav_toolbar(canvas, win)
+            w = canvas.get_tk_widget()
+            w.configure(width=10, height=10)
+            w.pack(side="top", fill="both", expand=True)
+            canvas.draw()
+        except Exception as e:
+            self.messagebox.showerror("Open in window", f"Could not open: {e!r}")
+
+    def _attach_hover(self, canvas, status_label):
+        """Live frame read-out: show the frame index under the cursor (the x-axis
+        of these plots is the frame index) in ``status_label``, restoring its text
+        on leave. Call AFTER the label's base text is set."""
+        if canvas is None or status_label is None:
+            return
+        base = {"text": status_label.cget("text")}
+        def _move(event):
+            if event.inaxes is not None and event.xdata is not None:
+                fr = int(round(event.xdata))
+                if event.ydata is not None:
+                    status_label.configure(text=f"{base['text']}   |   frame {fr}, y={event.ydata:.4g}")
+                else:
+                    status_label.configure(text=f"{base['text']}   |   frame {fr}")
+        def _leave(event):
+            status_label.configure(text=base["text"])
+        try:
+            canvas.mpl_connect("motion_notify_event", _move)
+            canvas.mpl_connect("axes_leave_event", _leave)
+        except Exception:
+            pass
 
     def _style_colorbar(self, cb):
         """Recolour a colorbar to the dark palette — its label, ticks, and
@@ -1189,6 +1294,10 @@ class AnalysisApp:
         ).pack(side="left", padx=2)
         ttk.Button(top, text="Refresh", command=self.load_heatmap).pack(
             side="left", padx=4)
+        ttk.Button(top, text="Open in window",
+                   command=lambda: self._open_plot_window(
+                       getattr(self, "_heatmap_fig", None), "Peak map")
+                   ).pack(side="left", padx=4)
 
         self.heatmap_status = ttk.Label(top, text="", foreground=MUTED)
         self.heatmap_status.pack(side="left", padx=12)
@@ -1309,6 +1418,7 @@ class AnalysisApp:
             ax.set_title(f"Peak map — {n_pts} peaks", color=FG)
 
         self._heatmap_canvas = self._embed_figure(self.heatmap_plot_frame, fig)
+        self._attach_hover(self._heatmap_canvas, self.heatmap_status)
 
     # ------------------------------------------------------------------
     # Tab 7 — Phases (reference-phase library)
@@ -1549,23 +1659,58 @@ class AnalysisApp:
         row += 1
 
         # EOS
-        ttk.Label(content, text="EOS  V0 (Å³)").grid(
-            row=row, column=0, sticky="w", **pad)
+        from .phases import EOS_TYPES, _eos_norm_type
+        ttk.Label(content, text="EOS").grid(row=row, column=0, sticky="w", **pad)
         eos_frame = ttk.Frame(content)
         eos_frame.grid(row=row, column=1, columnspan=3, sticky="w", **pad)
         ex_eos = (existing.eos or {}) if existing else {}
-        eos_keys = ("V0", "K0", "K0p")
-        eos_labels = ("V0 (Å³)", "K0 (GPa)", "K0'")
+        ttk.Label(eos_frame, text="type").grid(row=0, column=0, sticky="e", padx=(0, 1))
+        v_eos_type = tk.StringVar(value=_eos_norm_type(ex_eos) if ex_eos else "BM3")
+        ttk.Combobox(eos_frame, textvariable=v_eos_type, values=list(EOS_TYPES),
+                     state="readonly", width=10).grid(row=0, column=1, padx=(0, 4))
+        # K0'' only used by BM4; left blank otherwise.
+        eos_keys = ("V0", "K0", "K0p", "K0pp")
+        eos_labels = ("V0 (Å³)", "K0 (GPa)", "K0'", "K0'' (1/GPa, BM4)")
         eos_vars: "Dict[str, tk.StringVar]" = {}
         for i, (k, lbl) in enumerate(zip(eos_keys, eos_labels)):
             v_raw = ex_eos.get(k)
             ex_val = f"{v_raw:g}" if v_raw is not None else ""
-            ttk.Label(eos_frame, text=lbl).grid(row=0, column=i * 2,
-                                                 sticky="e", padx=(6 if i else 0, 1))
+            ttk.Label(eos_frame, text=lbl).grid(row=1, column=i * 2,
+                                                sticky="e", padx=(6 if i else 0, 1))
             sv = tk.StringVar(value=ex_val)
             ttk.Entry(eos_frame, textvariable=sv, width=10).grid(
-                row=0, column=i * 2 + 1, padx=(0, 4))
+                row=1, column=i * 2 + 1, padx=(0, 4))
             eos_vars[k] = sv
+        ttk.Label(eos_frame,
+                  text="V0 optional (cancels in scaling); only K0 is required. "
+                       "Forms: BM2/BM3/BM4, Vinet, Murnaghan.",
+                  foreground=MUTED).grid(row=2, column=0, columnspan=8, sticky="w", pady=(2, 0))
+        row += 1
+
+        # Axial (anisotropic) EOS — optional, per-axis K0/K0' for non-cubic phases.
+        ttk.Label(content, text="Axial EOS").grid(row=row, column=0, sticky="nw", **pad)
+        ax_frame = ttk.Frame(content)
+        ax_frame.grid(row=row, column=1, columnspan=3, sticky="w", **pad)
+        ex_ax = (existing.axial_eos or {}) if existing else {}
+        ttk.Label(ax_frame, text="axis").grid(row=0, column=0, padx=(0, 4))
+        ttk.Label(ax_frame, text="K0 (GPa)").grid(row=0, column=1, padx=2)
+        ttk.Label(ax_frame, text="K0'").grid(row=0, column=2, padx=2)
+        axial_vars: "Dict[str, tuple]" = {}
+        for i, axis in enumerate(("a", "b", "c")):
+            e = ex_ax.get(axis) if isinstance(ex_ax.get(axis), dict) else {}
+            k0 = e.get("K0"); kp = e.get("K0p")
+            ttk.Label(ax_frame, text=axis).grid(row=i + 1, column=0, sticky="e", padx=(0, 4))
+            v_k0 = tk.StringVar(value=f"{k0:g}" if k0 is not None else "")
+            v_kp = tk.StringVar(value=f"{kp:g}" if kp is not None else "")
+            ttk.Entry(ax_frame, textvariable=v_k0, width=10).grid(row=i + 1, column=1, padx=2)
+            ttk.Entry(ax_frame, textvariable=v_kp, width=8).grid(row=i + 1, column=2, padx=2)
+            axial_vars[axis] = (v_k0, v_kp)
+        ttk.Label(ax_frame,
+                  text="Optional. Fill per-axis K0 (on the cubed axis length, "
+                       "PASCal/EosFit convention) for anisotropic compression; "
+                       "blank axes fall back to the volume EOS. b inherits a if equal.",
+                  foreground=MUTED, wraplength=420, justify="left").grid(
+            row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
         row += 1
 
         # Source
@@ -1603,11 +1748,22 @@ class AnalysisApp:
                 if fv is not None:
                     lattice[k] = fv
 
-            eos: "Dict[str, Any]" = {"type": "BM3"}
+            eos: "Dict[str, Any]" = {"type": v_eos_type.get() or "BM3"}
             for k in eos_keys:
                 fv = _f(eos_vars[k].get())
                 if fv is not None:
                     eos[k] = fv
+
+            # Per-axis EOS (only axes with a K0 entered); same form as the main EOS.
+            axial_eos: "Dict[str, Any]" = {}
+            for axis, (v_k0, v_kp) in axial_vars.items():
+                k0 = _f(v_k0.get())
+                if k0 is not None:
+                    ae = {"type": v_eos_type.get() or "BM3", "K0": k0}
+                    kp = _f(v_kp.get())
+                    if kp is not None:
+                        ae["K0p"] = kp
+                    axial_eos[axis] = ae
 
             notes = notes_text.get("1.0", "end-1c")
 
@@ -1619,7 +1775,7 @@ class AnalysisApp:
                 lattice=lattice,
                 atoms=(existing.atoms if existing else []),
                 eos=eos,
-                axial_eos=(existing.axial_eos if existing else {}),
+                axial_eos=axial_eos,
                 amorphous=(existing.amorphous if existing else False),
                 cif_path=(existing.cif_path if existing else ""),
                 source=v_source.get().strip(),
@@ -1712,10 +1868,16 @@ class AnalysisApp:
         tk, ttk = self.tk, self.ttk
 
         # -- params area --------------------------------------------------
+        title_row = ttk.Frame(frame)
+        title_row.grid(row=0, column=0, columnspan=3, sticky="we", padx=6, pady=(0, 2))
         ttk.Label(
-            frame, text="Phase identification (EOS matching)",
+            title_row, text="Phase identification (EOS matching)",
             font=("TkDefaultFont", 12, "bold"),
-        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 2))
+        ).pack(side="left")
+        self._identify_help_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(title_row, text="Show instructions",
+                        variable=self._identify_help_var,
+                        command=self._toggle_identify_help).pack(side="left", padx=12)
 
         self.checkbox(frame, "run_step3",
                       "Enable phase identification in the next run", row=1)
@@ -1725,7 +1887,7 @@ class AnalysisApp:
         self.field(frame, "identify_wavelength",
                    "Wavelength (Å, blank=auto)", row=5, width=12)
 
-        ttk.Label(
+        self._identify_help = ttk.Label(
             frame,
             text=(
                 "What this does: for each candidate phase, fit its Birch–Murnaghan "
@@ -1743,7 +1905,9 @@ class AnalysisApp:
                 "Already have a results file? Just click “Load identification” below."
             ),
             foreground=MUTED, justify="left", wraplength=640,
-        ).grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        )
+        self._identify_help.grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        self._identify_help.grid_remove()   # collapsed by default → bigger plot
 
         # -- controls row -------------------------------------------------
         ctrl = ttk.Frame(frame)
@@ -1751,6 +1915,10 @@ class AnalysisApp:
 
         ttk.Button(ctrl, text="Load identification",
                    command=self.load_identify).pack(side="left", padx=4)
+        ttk.Button(ctrl, text="Open in window",
+                   command=lambda: self._open_plot_window(
+                       getattr(self, "_identify_fig", None), "Phase identification")
+                   ).pack(side="left", padx=4)
 
         ttk.Label(ctrl, text="Min confidence:", foreground=MUTED).pack(
             side="left", padx=(12, 2))
@@ -1888,6 +2056,7 @@ class AnalysisApp:
         if hasattr(self, "_identify_status"):
             self._identify_status.configure(
                 text=f"{len(tr['phases'])} phase(s), {tr['n_frames']} frames")
+        self._attach_hover(self._identify_canvas, self._identify_status)
 
     # ------------------------------------------------------------------
     # Helpers shared by Tab 9
@@ -1917,6 +2086,10 @@ class AnalysisApp:
 
         ttk.Button(row1, text="Load pattern map",
                    command=self.load_pattern_map).pack(side="left", padx=4)
+        ttk.Button(row1, text="Open in window",
+                   command=lambda: self._open_plot_window(
+                       getattr(self, "_patternmap_fig", None), "Pattern map")
+                   ).pack(side="left", padx=4)
 
         ttk.Label(row1, text="Source:", foreground=MUTED).pack(side="left", padx=(12, 2))
         self._pm_source = ttk.Combobox(
@@ -2119,6 +2292,7 @@ class AnalysisApp:
         if hasattr(self, "_pm_status"):
             self._pm_status.configure(
                 text=f"{img['n_frames']} frames × {radial.size} bins")
+        self._attach_hover(self._patternmap_canvas, self._pm_status)
 
     def export_ml_clicked(self):
         """Export the analysis frames as an ML-ready .npz dataset."""

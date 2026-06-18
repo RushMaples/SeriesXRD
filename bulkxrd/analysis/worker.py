@@ -102,6 +102,7 @@ def run_analysis(cfg: dict) -> dict:
         m2 = run_peak_fitting(
             out_path, None,
             min_snr=_as_float(cfg.get("min_snr"), 5.0),
+            min_prominence_snr=_opt_float(cfg.get("min_prominence_snr")),
             window_factor=_as_float(cfg.get("window_factor"), 3.0),
             max_chi2=_as_float(cfg.get("max_chi2"), 25.0),
             propagate_seeds=_as_bool(cfg.get("propagate_seeds", True), True),

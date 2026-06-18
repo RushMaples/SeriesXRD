@@ -70,7 +70,24 @@ def main() -> None:
     assert first[0] > first[-1], first
     assert abs((first[0] - first[-1]) - 0.05) < 0.02, first
 
+    _test_prominence_decoupling()
     print("PEAKS TEST OK")
+
+
+def _test_prominence_decoupling():
+    """A peak on the shoulder of a taller one (shallow saddle) has low prominence
+    but adequate height: the coupled threshold drops it, a lower decoupled
+    prominence keeps it."""
+    # idx2 is a local max (8) whose saddle toward the taller idx4 (9) sits at 6,
+    # so its prominence is 8-6=2; idx4's prominence is 9.
+    x = np.arange(7, dtype=float)
+    y = np.array([0, 1, 8, 6, 9, 1, 0], dtype=float)
+    coupled = detect_peaks(x, y, min_snr=3.0, sigma=1.0)            # prom thresh 3
+    decoupled = detect_peaks(x, y, min_snr=3.0, min_prominence_snr=1.0, sigma=1.0)
+    cc = {round(c["center"]) for c in coupled}
+    dd = {round(c["center"]) for c in decoupled}
+    assert 4 in cc and 2 not in cc, f"coupled should drop the shoulder peak: {cc}"
+    assert 2 in dd and 4 in dd, f"decoupled should keep both: {dd}"
 
 
 if __name__ == "__main__":

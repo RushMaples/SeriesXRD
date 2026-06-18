@@ -119,16 +119,27 @@ def _half_max_width(x, y, k) -> float:
     return float(w)
 
 
-def detect_peaks(x, y, *, min_snr: float = 5.0, sigma: Optional[float] = None,
+def detect_peaks(x, y, *, min_snr: float = 5.0,
+                 min_prominence_snr: Optional[float] = None,
+                 sigma: Optional[float] = None,
                  seed_centers: Optional[Sequence[float]] = None,
                  ) -> List[Dict[str, float]]:
     """Find candidate peaks and seed initial fit parameters.
 
     Returns a list of ``{center, amplitude, fwhm}`` dicts (one per candidate),
-    sorted by center. Uses ``scipy.signal.find_peaks`` with a prominence set
-    from the MAD noise floor; if ``seed_centers`` is given, any detected peak
-    is snapped toward the nearest seed and seeds with no detection are added
-    back (so peak identity survives across a frame series).
+    sorted by center. Uses ``scipy.signal.find_peaks`` with a height threshold
+    AND a prominence threshold, both in units of the MAD noise floor ``σ``:
+
+    * ``min_snr·σ`` — minimum height (a peak must clear the noise).
+    * ``min_prominence_snr·σ`` — minimum prominence. Decoupled from height
+      because prominence is measured against the *taller* neighbour: a real peak
+      sitting on the shoulder of a stronger one has low prominence and was being
+      rejected even though its height was fine. Defaults to ``min_snr`` (the old
+      coupled behaviour) when not given; set it lower to keep shoulder/adjacent
+      peaks.
+
+    If ``seed_centers`` is given, seeds with no detection are added back so peak
+    identity survives across a frame series.
     """
     from scipy.signal import find_peaks  # lazy
 
@@ -137,8 +148,9 @@ def detect_peaks(x, y, *, min_snr: float = 5.0, sigma: Optional[float] = None,
     yf = np.where(np.isfinite(y), y, 0.0)
     sig = float(sigma) if sigma is not None else mad_sigma(y)
     sig = sig if sig > 0 else (np.nanstd(y) or 1.0)
+    prom_snr = min_snr if min_prominence_snr is None else float(min_prominence_snr)
     height = min_snr * sig
-    prominence = max(min_snr * sig, 1e-12)
+    prominence = max(prom_snr * sig, 1e-12)
     idx, _ = find_peaks(yf, height=height, prominence=prominence)
 
     cands: List[Dict[str, float]] = []
@@ -265,7 +277,8 @@ def _failed_peak(g: Dict[str, float], flag: int) -> Dict[str, Any]:
 
 
 def fit_pattern(x, y, *, min_snr: float = 5.0, window_factor: float = 3.0,
-                max_chi2: float = 25.0, sigma: Optional[float] = None,
+                max_chi2: float = 25.0, min_prominence_snr: Optional[float] = None,
+                sigma: Optional[float] = None,
                 seed_centers: Optional[Sequence[float]] = None,
                 keep_flagged: bool = True) -> List[Dict[str, Any]]:
     """Detect and fit every peak in one 1D pattern.
@@ -277,7 +290,8 @@ def fit_pattern(x, y, *, min_snr: float = 5.0, window_factor: float = 3.0,
     x = np.asarray(x, float)
     y = np.asarray(y, float)
     sig = float(sigma) if sigma is not None else mad_sigma(y)
-    cands = detect_peaks(x, y, min_snr=min_snr, sigma=sig, seed_centers=seed_centers)
+    cands = detect_peaks(x, y, min_snr=min_snr, min_prominence_snr=min_prominence_snr,
+                         sigma=sig, seed_centers=seed_centers)
     peaks: List[Dict[str, Any]] = []
     for group in _group_peaks(cands, window_factor):
         peaks.extend(_fit_group(x, y, group, sig, window_factor=window_factor,
@@ -289,7 +303,8 @@ def fit_pattern(x, y, *, min_snr: float = 5.0, window_factor: float = 3.0,
 
 
 def fit_dataset(radial, clean, *, min_snr: float = 5.0, window_factor: float = 3.0,
-                max_chi2: float = 25.0, propagate_seeds: bool = True,
+                max_chi2: float = 25.0, min_prominence_snr: Optional[float] = None,
+                propagate_seeds: bool = True,
                 keep_flagged: bool = True) -> List[List[Dict[str, Any]]]:
     """Fit every frame of a (N_frames, N_bins) ``clean`` stack.
 
@@ -304,6 +319,7 @@ def fit_dataset(radial, clean, *, min_snr: float = 5.0, window_factor: float = 3
     for i in range(clean.shape[0]):
         peaks = fit_pattern(radial, clean[i], min_snr=min_snr,
                             window_factor=window_factor, max_chi2=max_chi2,
+                            min_prominence_snr=min_prominence_snr,
                             seed_centers=seeds, keep_flagged=keep_flagged)
         results.append(peaks)
         if propagate_seeds:
@@ -327,7 +343,8 @@ def _peaks_chunk(payload):
     within the chunk (the parent offsets them to global frame indices). Excluded
     frames are skipped (count 0) and do not seed their neighbours.
     """
-    radial, clean_c, excluded_c, min_snr, window_factor, max_chi2, propagate = payload
+    (radial, clean_c, excluded_c, min_snr, window_factor, max_chi2,
+     propagate, min_prominence_snr) = payload
     m = clean_c.shape[0]
     counts = [0] * m
     frames_local: List[int] = []
@@ -338,6 +355,7 @@ def _peaks_chunk(payload):
             continue
         peaks = fit_pattern(radial, clean_c[j], min_snr=min_snr,
                             window_factor=window_factor, max_chi2=max_chi2,
+                            min_prominence_snr=min_prominence_snr,
                             seed_centers=seeds, keep_flagged=True)
         counts[j] = len(peaks)
         for p in peaks:
@@ -357,6 +375,7 @@ def run_peak_fitting(
     min_snr: float = 5.0,
     window_factor: float = 3.0,
     max_chi2: float = 25.0,
+    min_prominence_snr: Optional[float] = None,
     propagate_seeds: bool = True,
     num_workers: int = 1,
 ) -> Dict[str, Any]:
@@ -408,9 +427,10 @@ def run_peak_fitting(
     if excluded is None or excluded.size != n:
         excluded = np.zeros(n, dtype=bool)
     workers = resolve_workers(num_workers)
+    prom_txt = min_snr if min_prominence_snr is None else min_prominence_snr
     print(f"[PEAKS] fitting {n} frames ({int(excluded.sum())} excluded), "
           f"radial[{radial.size}] unit={unit or '?'} min_snr={min_snr} "
-          f"window={window_factor} workers={workers}", flush=True)
+          f"min_prom={prom_txt} window={window_factor} workers={workers}", flush=True)
 
     counts = np.zeros(n, dtype="i4")
     cols: Dict[str, list] = {c: [] for c in _PEAK_COLS}
@@ -426,7 +446,7 @@ def run_peak_fitting(
     if workers > 1 and n > 1:
         ranges = chunk_ranges(n, workers)
         payloads = [(radial, clean[a:b], excluded[a:b], min_snr, window_factor,
-                     max_chi2, propagate_seeds) for a, b in ranges]
+                     max_chi2, propagate_seeds, min_prominence_snr) for a, b in ranges]
         done = 0
         with ProcessPoolExecutor(max_workers=workers) as ex:
             for (a, b), result in zip(ranges, ex.map(_peaks_chunk, payloads)):
@@ -435,7 +455,7 @@ def run_peak_fitting(
                 print(f"[PEAKS] {done} {n}", flush=True)
     else:
         _absorb(0, _peaks_chunk((radial, clean, excluded, min_snr, window_factor,
-                                 max_chi2, propagate_seeds)))
+                                 max_chi2, propagate_seeds, min_prominence_snr)))
         print(f"[PEAKS] {n} {n}", flush=True)
 
     P = int(counts.sum())
@@ -448,6 +468,8 @@ def run_peak_fitting(
                 del o["peaks"]
             gp = o.create_group("peaks")
             gp.attrs.update({"schema_version": SCHEMA_VERSION, "min_snr": float(min_snr),
+                             "min_prominence_snr": float(
+                                 min_snr if min_prominence_snr is None else min_prominence_snr),
                              "window_factor": float(window_factor),
                              "max_chi2": float(max_chi2),
                              "propagate_seeds": bool(propagate_seeds)})
