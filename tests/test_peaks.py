@@ -72,7 +72,29 @@ def main() -> None:
 
     _test_prominence_decoupling()
     _test_edge_window_and_min_width()
+    _test_local_detrend_detection()
     print("PEAKS TEST OK")
+
+
+def _test_local_detrend_detection():
+    """When `clean` isn't background-flat, the global MAD σ is inflated and small
+    real peaks fall under the height threshold. Local detrending fixes it."""
+    from bulkxrd.analysis.peaks import fit_pattern
+    x = np.linspace(0, 24, 1500)
+    broad = (16 * np.exp(-0.5 * ((x - 3.5) / 2.0) ** 2)
+             + 6 * np.exp(-0.5 * ((x - 15.5) / 3.0) ** 2))
+    broad[x < 2] = 0.0
+    real = (pseudo_voigt(x, 9.3, 3.5, 0.10, 0.5)
+            + pseudo_voigt(x, 10.7, 4.0, 0.08, 0.5))   # small, on top of `broad`
+    clean = np.clip(broad + real
+                    + np.random.default_rng(0).normal(0, 0.6, x.size), 0, None)
+    found = lambda peaks, c: any(abs(p["center"] - c) < 0.2 for p in peaks)
+
+    off = fit_pattern(x, clean, min_snr=4.0, local_baseline_bins=0)
+    on = fit_pattern(x, clean, min_snr=4.0, local_baseline_bins=81)
+    # Without detrend the inflated σ hides the real peaks; with it, both appear.
+    assert not (found(off, 9.3) and found(off, 10.7)), "expected misses without detrend"
+    assert found(on, 9.3) and found(on, 10.7), "detrend should recover the real peaks"
 
 
 def _test_edge_window_and_min_width():
