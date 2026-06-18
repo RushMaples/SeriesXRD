@@ -153,6 +153,50 @@ def _detect_anomalies(out: Dict[str, Any]) -> List[str]:
     return a
 
 
+def cake_for_frame(reduced_h5: "str | Path", frame_index: int) -> Dict[str, Any]:
+    """The 2D cake (azimuth × radial) for ``frame_index``, read from a reduced
+    file, or ``ok=False`` if none is stored.
+
+    Cakes are NOT in the analysis file; they live in the *reduced* file under
+    ``/cakes`` (typically a subset of frames, mapped by ``/cakes/frame_index``).
+    Returns ``{ok, error, cake, radial, azimuthal, unit, frame_index}``.
+    """
+    out: Dict[str, Any] = {"ok": False, "error": "", "cake": None, "radial": None,
+                           "azimuthal": None, "unit": "", "frame_index": int(frame_index)}
+    p = Path(reduced_h5).expanduser()
+    if not str(reduced_h5) or not p.is_file():
+        out["error"] = "Source reduced file not found (cakes live there, not the analysis file)."
+        return out
+    try:
+        import h5py  # type: ignore
+        with h5py.File(str(p), "r") as h5:
+            out["unit"] = _attr_str(h5.attrs.get("unit", ""))
+            cakes = h5.get("cakes")
+            if cakes is None or "intensity" not in cakes or cakes["intensity"].shape[0] == 0:
+                out["error"] = "No cakes in the reduced file (re-run reduction with cakes enabled)."
+                return out
+            n_cakes = int(cakes["intensity"].shape[0])
+            j = None
+            if "frame_index" in cakes:
+                fi = np.asarray(cakes["frame_index"][:])
+                w = np.where(fi == int(frame_index))[0]
+                j = int(w[0]) if w.size else None
+            elif int(frame_index) < n_cakes:
+                j = int(frame_index)
+            if j is None:
+                out["error"] = f"No cake stored for frame {frame_index}."
+                return out
+            out["cake"] = np.asarray(cakes["intensity"][j], dtype=float)
+            if "radial" in cakes:
+                out["radial"] = np.asarray(cakes["radial"][:], dtype=float)
+            if "azimuthal" in cakes:
+                out["azimuthal"] = np.asarray(cakes["azimuthal"][:], dtype=float)
+            out["ok"] = True
+    except Exception as e:
+        out["error"] = f"Failed to read cake: {e!r}"
+    return out
+
+
 def frame_data(h5_path: "str | Path", frame_index: int) -> Dict[str, Any]:
     """Reconstruct everything needed to plot one frame.
 

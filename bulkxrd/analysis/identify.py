@@ -365,6 +365,11 @@ def run_identification(
     print(f"[IDENTIFY] {len(phases)} phase(s), {n} frames "
           f"({int(excluded.sum())} excluded), unit={unit or '?'} "
           f"P=[{p_min},{p_max}] GPa workers={workers}", flush=True)
+    no_eos = [p.name for p in phases if not p.has_eos()]
+    if no_eos:
+        print(f"[IDENTIFY] WARNING: no Birch-Murnaghan EOS for {no_eos} — these "
+              f"phases are evaluated at ambient only (pressure fixed at 0). Add "
+              f"V0/K0/K0' on the Phases tab to fit pressure.", flush=True)
 
     # Reflections simulated once in the parent (needs pymatgen); workers only score.
     refl_cache = {ph.name: phase_reflections(ph) for ph in phases}

@@ -840,6 +840,7 @@ class AnalysisApp:
         self._show_clean = tk.BooleanVar(value=True)
         self._show_spot = tk.BooleanVar(value=False)
         self._show_peaks = tk.BooleanVar(value=True)
+        self._show_cake = tk.BooleanVar(value=False)
         for var, label in [
             (self._show_mean, "mean"),
             (self._show_robust, "robust"),
@@ -847,10 +848,12 @@ class AnalysisApp:
             (self._show_clean, "clean"),
             (self._show_spot, "spot_residual"),
             (self._show_peaks, "fitted peaks"),
+            (self._show_cake, "cake (2D)"),
         ]:
             ttk.Checkbutton(ctrl, text=label, variable=var,
                             command=self._schedule_review_render).pack(
                 side="left", padx=2)
+        self._review_source_reduced = ""
 
         # Matplotlib area
         self.review_plot_frame = ttk.Frame(frame)
@@ -879,6 +882,7 @@ class AnalysisApp:
             return
         nf = int(info.get("n_frames", 0))
         self._review_nframes = nf
+        self._review_source_reduced = str(info.get("source_reduced", "") or "")
         contam = info.get("contamination")
         self._review_contamination = contam
         if nf > 0:
@@ -986,12 +990,20 @@ class AnalysisApp:
 
         # constrained layout recomputes margins on every resize (one-shot
         # tight_layout leaves labels clipped/overlapping when the pane resizes).
+        show_cake = bool(self._show_cake.get())
         fig = Figure(figsize=(7, 6), dpi=100, layout="constrained")
         self._review_fig = fig
         fig.patch.set_facecolor(BG)
-        gs = fig.add_gridspec(2, 1, height_ratios=[3, 1])
-        ax1 = fig.add_subplot(gs[0])   # pattern traces get the bulk of the height
-        ax2 = fig.add_subplot(gs[1])   # contamination strip below
+        if show_cake:
+            gs = fig.add_gridspec(3, 1, height_ratios=[3, 2, 1])
+            ax1 = fig.add_subplot(gs[0])    # pattern traces
+            ax_cake = fig.add_subplot(gs[1])  # 2D cake (azimuth × radial)
+            ax2 = fig.add_subplot(gs[2])    # contamination strip
+        else:
+            gs = fig.add_gridspec(2, 1, height_ratios=[3, 1])
+            ax1 = fig.add_subplot(gs[0])   # pattern traces get the bulk of the height
+            ax2 = fig.add_subplot(gs[1])   # contamination strip below
+            ax_cake = None
 
         def _plot(ax, arr, label, color, lw=0.9, alpha=0.85):
             if arr is None:
@@ -1042,6 +1054,33 @@ class AnalysisApp:
             ax1.legend(fontsize=7, framealpha=0.4)
         self._style_ax(ax1)
 
+        # Optional middle axis: the 2D cake (azimuth × radial) for this frame,
+        # read from the source reduced file (cakes don't live in the analysis file).
+        if ax_cake is not None:
+            from .review import cake_for_frame
+            ck = cake_for_frame(self._review_source_reduced, frame_index)
+            if ck.get("ok") and ck.get("cake") is not None:
+                cake = np.asarray(ck["cake"], dtype=float)
+                cr, caz = ck.get("radial"), ck.get("azimuthal")
+                extent = None
+                if cr is not None and caz is not None and cr.size and caz.size:
+                    extent = [float(np.min(cr)), float(np.max(cr)),
+                              float(np.min(caz)), float(np.max(caz))]
+                cc = cake.copy()
+                cc[~np.isfinite(cc) | (cc <= 0)] = np.nan
+                finite = cc[np.isfinite(cc)]
+                vmin = float(np.percentile(finite, 5)) if finite.size else None
+                vmax = float(np.percentile(finite, 99)) if finite.size else None
+                ax_cake.imshow(cc, aspect="auto", origin="lower", cmap="magma",
+                               extent=extent, vmin=vmin, vmax=vmax)
+                ax_cake.set_xlabel(ck.get("unit") or unit)
+                ax_cake.set_ylabel("azimuth (deg)")
+                ax_cake.set_title("Cake (2D)", color=FG)
+            else:
+                ax_cake.set_title(f"Cake: {ck.get('error', 'unavailable')}", color=WARN)
+                ax_cake.set_xticks([]); ax_cake.set_yticks([])
+            self._style_ax(ax_cake)
+
         # Bottom axis: contamination across series.
         contam = self._review_contamination
         if contam is not None and len(contam):
@@ -1066,6 +1105,28 @@ class AnalysisApp:
         ax.title.set_color(FG)
         for s in ax.spines.values():
             s.set_edgecolor(FG)
+
+    def _attach_hover(self, canvas, status_label):
+        """Live frame read-out: show the frame index under the cursor (the x-axis
+        of these plots is the frame index) in ``status_label``, restoring its text
+        on leave. Call AFTER the label's base text is set."""
+        if canvas is None or status_label is None:
+            return
+        base = {"text": status_label.cget("text")}
+        def _move(event):
+            if event.inaxes is not None and event.xdata is not None:
+                fr = int(round(event.xdata))
+                if event.ydata is not None:
+                    status_label.configure(text=f"{base['text']}   |   frame {fr}, y={event.ydata:.4g}")
+                else:
+                    status_label.configure(text=f"{base['text']}   |   frame {fr}")
+        def _leave(event):
+            status_label.configure(text=base["text"])
+        try:
+            canvas.mpl_connect("motion_notify_event", _move)
+            canvas.mpl_connect("axes_leave_event", _leave)
+        except Exception:
+            pass
 
     def _style_colorbar(self, cb):
         """Recolour a colorbar to the dark palette — its label, ticks, and
@@ -1309,6 +1370,7 @@ class AnalysisApp:
             ax.set_title(f"Peak map — {n_pts} peaks", color=FG)
 
         self._heatmap_canvas = self._embed_figure(self.heatmap_plot_frame, fig)
+        self._attach_hover(self._heatmap_canvas, self.heatmap_status)
 
     # ------------------------------------------------------------------
     # Tab 7 — Phases (reference-phase library)
@@ -1888,6 +1950,7 @@ class AnalysisApp:
         if hasattr(self, "_identify_status"):
             self._identify_status.configure(
                 text=f"{len(tr['phases'])} phase(s), {tr['n_frames']} frames")
+        self._attach_hover(self._identify_canvas, self._identify_status)
 
     # ------------------------------------------------------------------
     # Helpers shared by Tab 9
@@ -2119,6 +2182,7 @@ class AnalysisApp:
         if hasattr(self, "_pm_status"):
             self._pm_status.configure(
                 text=f"{img['n_frames']} frames × {radial.size} bins")
+        self._attach_hover(self._patternmap_canvas, self._pm_status)
 
     def export_ml_clicked(self):
         """Export the analysis frames as an ML-ready .npz dataset."""

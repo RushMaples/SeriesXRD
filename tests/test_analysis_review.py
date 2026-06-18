@@ -103,7 +103,32 @@ def main() -> None:
         assert pm_good["center"].size <= pm["center"].size
         assert np.all(pm_good["flag"] == 0)
 
+    _test_cake_for_frame()
     print("ANALYSIS REVIEW TEST OK")
+
+
+def _test_cake_for_frame():
+    """cake_for_frame pulls the right cake by frame index from a reduced file."""
+    import h5py
+    from bulkxrd.analysis.review import cake_for_frame
+    with tempfile.TemporaryDirectory() as td:
+        red = Path(td) / "reduced.h5"
+        n_rad, n_az = 50, 36
+        cake0 = np.random.default_rng(1).random((n_az, n_rad)).astype("f4")
+        cake5 = np.random.default_rng(2).random((n_az, n_rad)).astype("f4")
+        with h5py.File(str(red), "w") as h5:
+            h5.attrs["unit"] = "2th_deg"
+            cg = h5.create_group("cakes")
+            cg.create_dataset("intensity", data=np.stack([cake0, cake5]))
+            cg.create_dataset("radial", data=np.linspace(2, 20, n_rad))
+            cg.create_dataset("azimuthal", data=np.linspace(-180, 180, n_az))
+            cg.create_dataset("frame_index", data=np.array([0, 5], dtype="i4"))
+        ok = cake_for_frame(red, 5)
+        assert ok["ok"] and ok["cake"].shape == (n_az, n_rad)
+        assert np.allclose(ok["cake"], cake5)
+        miss = cake_for_frame(red, 3)          # no cake stored for frame 3
+        assert not miss["ok"] and "frame 3" in miss["error"]
+        assert not cake_for_frame(Path(td) / "nope.h5", 0)["ok"]
 
 
 if __name__ == "__main__":
