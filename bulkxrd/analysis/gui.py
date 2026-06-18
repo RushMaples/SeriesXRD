@@ -1652,23 +1652,32 @@ class AnalysisApp:
         row += 1
 
         # EOS
-        ttk.Label(content, text="EOS  V0 (Å³)").grid(
-            row=row, column=0, sticky="w", **pad)
+        from .phases import EOS_TYPES, _eos_norm_type
+        ttk.Label(content, text="EOS").grid(row=row, column=0, sticky="w", **pad)
         eos_frame = ttk.Frame(content)
         eos_frame.grid(row=row, column=1, columnspan=3, sticky="w", **pad)
         ex_eos = (existing.eos or {}) if existing else {}
-        eos_keys = ("V0", "K0", "K0p")
-        eos_labels = ("V0 (Å³)", "K0 (GPa)", "K0'")
+        ttk.Label(eos_frame, text="type").grid(row=0, column=0, sticky="e", padx=(0, 1))
+        v_eos_type = tk.StringVar(value=_eos_norm_type(ex_eos) if ex_eos else "BM3")
+        ttk.Combobox(eos_frame, textvariable=v_eos_type, values=list(EOS_TYPES),
+                     state="readonly", width=10).grid(row=0, column=1, padx=(0, 4))
+        # K0'' only used by BM4; left blank otherwise.
+        eos_keys = ("V0", "K0", "K0p", "K0pp")
+        eos_labels = ("V0 (Å³)", "K0 (GPa)", "K0'", "K0'' (1/GPa, BM4)")
         eos_vars: "Dict[str, tk.StringVar]" = {}
         for i, (k, lbl) in enumerate(zip(eos_keys, eos_labels)):
             v_raw = ex_eos.get(k)
             ex_val = f"{v_raw:g}" if v_raw is not None else ""
-            ttk.Label(eos_frame, text=lbl).grid(row=0, column=i * 2,
-                                                 sticky="e", padx=(6 if i else 0, 1))
+            ttk.Label(eos_frame, text=lbl).grid(row=1, column=i * 2,
+                                                sticky="e", padx=(6 if i else 0, 1))
             sv = tk.StringVar(value=ex_val)
             ttk.Entry(eos_frame, textvariable=sv, width=10).grid(
-                row=0, column=i * 2 + 1, padx=(0, 4))
+                row=1, column=i * 2 + 1, padx=(0, 4))
             eos_vars[k] = sv
+        ttk.Label(eos_frame,
+                  text="V0 optional (cancels in scaling); only K0 is required. "
+                       "Forms: BM2/BM3/BM4, Vinet, Murnaghan.",
+                  foreground=MUTED).grid(row=2, column=0, columnspan=8, sticky="w", pady=(2, 0))
         row += 1
 
         # Source
@@ -1706,7 +1715,7 @@ class AnalysisApp:
                 if fv is not None:
                     lattice[k] = fv
 
-            eos: "Dict[str, Any]" = {"type": "BM3"}
+            eos: "Dict[str, Any]" = {"type": v_eos_type.get() or "BM3"}
             for k in eos_keys:
                 fv = _f(eos_vars[k].get())
                 if fv is not None:

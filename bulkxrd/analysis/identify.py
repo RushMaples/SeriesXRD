@@ -33,7 +33,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .phases import Phase, simulate_pattern, volume_at_pressure, pymatgen_available
+from .phases import (Phase, simulate_pattern, compression_at_pressure,
+                     pymatgen_available)
 from .parallel import resolve_workers, chunk_ranges
 
 SCHEMA_VERSION = "1"
@@ -115,14 +116,13 @@ def phase_reflections(phase: Phase, *, max_reflections: int = 40,
 
 
 def scale_at_pressure(phase: Phase, pressure: float) -> float:
-    """Isotropic lattice scale factor ``s = (V(P)/V0)**(1/3)`` from the phase EOS.
+    """Isotropic lattice scale factor ``s = (V(P)/V0)**(1/3)`` from the phase EOS
+    (any supported type: BM2/BM3/BM4, Vinet, Murnaghan).
 
     Returns 1.0 at/below ambient or when the phase has no usable EOS."""
     if pressure <= 0 or not phase.has_eos():
         return 1.0
-    e = phase.eos
-    V = volume_at_pressure(float(pressure), float(e["V0"]), float(e["K0"]), float(e["K0p"]))
-    return (V / float(e["V0"])) ** (1.0 / 3.0)
+    return compression_at_pressure(phase.eos, float(pressure)) ** (1.0 / 3.0)
 
 
 # ---------------------------------------------------------------------------

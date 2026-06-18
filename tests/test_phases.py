@@ -72,6 +72,31 @@ def test_birch_murnaghan_roundtrip():
         assert abs(P_back - P) < 1e-3, f"roundtrip off at {P}: got {P_back}"
 
 
+def test_eos_forms():
+    """Each EOS form: P=0 at r=1, monotonic, and round-trips P→r→P."""
+    K0, Kp = 160.0, 4.2
+    for typ in ("BM2", "BM3", "BM4", "Vinet", "Murnaghan"):
+        e = {"type": typ, "K0": K0, "K0p": Kp}
+        if typ == "BM4":
+            e["K0pp"] = -0.03
+        assert abs(ph.eos_pressure(e, 1.0)) < 1e-9, f"{typ}: P!=0 at r=1"
+        last = -1.0
+        for r in (0.95, 0.9, 0.85, 0.8):
+            p = ph.eos_pressure(e, r)
+            assert p > last, f"{typ}: not monotonic"
+            last = p
+        for P in (2.0, 10.0, 40.0, 120.0):
+            r = ph.compression_at_pressure(e, P)
+            assert 0 < r < 1
+            assert abs(ph.eos_pressure(e, r) - P) < 1e-3, f"{typ} roundtrip @ {P}"
+    # Type normalisation + V0-independence of the scale factor.
+    assert ph._eos_norm_type({"type": "birch-murnaghan"}) == "BM3"
+    assert ph._eos_norm_type({"type": "vinet"}) == "Vinet"
+    # has_eos requires a positive K0 (placeholder all-zeros is not usable).
+    assert not ph.Phase(name="x", eos={"V0": 0, "K0": 0, "K0p": 0}).has_eos()
+    assert ph.Phase(name="y", eos={"type": "Vinet", "K0": 160, "K0p": 4.2}).has_eos()
+
+
 def test_compress_lattice():
     au = ph.load_bundled()["Au"]
     a0 = au.lattice["a"]
@@ -108,6 +133,7 @@ def main() -> None:
     test_bundled()
     test_user_override_and_merge()
     test_birch_murnaghan_roundtrip()
+    test_eos_forms()
     test_compress_lattice()
     test_pymatgen_paths()
     print("PHASES TEST OK")

@@ -81,8 +81,14 @@ class Phase:
         return bool(self.lattice) and bool(self.atoms) and bool(self.space_group)
 
     def has_eos(self) -> bool:
+        """True if there's a usable equation of state. Only a positive bulk
+        modulus K0 is required (K0' defaults to 4; V0 cancels in the d-spacing
+        scaling). Guards against placeholder all-zero EOS entries."""
         e = self.eos or {}
-        return all(k in e and e[k] is not None for k in ("V0", "K0", "K0p"))
+        try:
+            return float(e.get("K0") or 0.0) > 0.0
+        except (TypeError, ValueError):
+            return False
 
 
 # ---------------------------------------------------------------------------
@@ -337,49 +343,128 @@ def simulate_pattern(phase: Phase, wavelength_angstrom: float, *,
 
 
 # ---------------------------------------------------------------------------
-# Birch–Murnaghan EOS (3rd order) — pure stdlib, central to Step 3a
+# Equations of state — pure stdlib, central to Step 3a
 # ---------------------------------------------------------------------------
+#
+# All forms are isothermal (~300 K) "cold" P–V EOS. They are written as a
+# function of the compression ratio r = V/V0 so the absolute V0 cancels for the
+# d-spacing scaling Step 3a needs (it only uses (V/V0)^(1/3)). Parameters:
+#   K0   bulk modulus (GPa)            — required
+#   K0p  pressure derivative K0'        — dimensionless (defaults to 4)
+#   K0pp second derivative (1/GPa)      — BM4 only (defaults to 0)
+# References for the functional forms:
+#   Birch (1947) Phys. Rev. 71, 809   — Birch–Murnaghan 2nd/3rd/4th order
+#   Vinet et al. (1987) J. Phys. C 19, L467 — universal (Vinet/Rose) EOS
+#   Murnaghan (1944) PNAS 30, 244     — Murnaghan EOS
+
+EOS_TYPES = ("BM2", "BM3", "BM4", "Vinet", "Murnaghan")
+
+
+def _eos_norm_type(eos: "Dict[str, Any]") -> str:
+    t = str((eos or {}).get("type", "BM3")).strip().lower().replace("-", "").replace(" ", "")
+    if t in ("bm2", "birch2", "bm2nd"):
+        return "BM2"
+    if t in ("bm4", "birch4", "bm4th"):
+        return "BM4"
+    if t in ("vinet", "rose", "universal"):
+        return "Vinet"
+    if t in ("murnaghan", "murn"):
+        return "Murnaghan"
+    return "BM3"  # default / "bm", "bm3", "birchmurnaghan", unknown
+
+
+def eos_pressure(eos: "Dict[str, Any]", r: float) -> float:
+    """Pressure (GPa) at compression ``r = V/V0`` for any supported EOS dict.
+
+    Supports BM2/BM3/BM4 (Birch–Murnaghan), Vinet, and Murnaghan. ``r`` ≤ 1 is
+    compression; r = 1 gives P = 0. V0 is not needed (it cancels)."""
+    if r <= 0:
+        return float("inf")
+    typ = _eos_norm_type(eos)
+    K0 = float(eos["K0"])
+    Kp = float(eos.get("K0p", 4.0) if eos.get("K0p") is not None else 4.0)
+    if typ == "Murnaghan":
+        return (K0 / Kp) * ((1.0 / r) ** Kp - 1.0)
+    if typ == "Vinet":
+        x = r ** (1.0 / 3.0)
+        return 3.0 * K0 * (1.0 - x) / (x * x) * math.exp(1.5 * (Kp - 1.0) * (1.0 - x))
+    # Birch–Murnaghan family, in Eulerian strain fE = ½[(V0/V)^(2/3) − 1].
+    fE = 0.5 * ((1.0 / r) ** (2.0 / 3.0) - 1.0)
+    pref = 3.0 * K0 * fE * (1.0 + 2.0 * fE) ** 2.5
+    if typ == "BM2":
+        return pref
+    if typ == "BM4":
+        Kpp = float(eos.get("K0pp", 0.0) or 0.0)
+        term = (1.0 + 1.5 * (Kp - 4.0) * fE
+                + 1.5 * (K0 * Kpp + (Kp - 4.0) * (Kp - 3.0) + 35.0 / 9.0) * fE * fE)
+        return pref * term
+    return pref * (1.0 + 1.5 * (Kp - 4.0) * fE)   # BM3
+
+
+def compression_at_pressure(eos: "Dict[str, Any]", P: float,
+                            *, tol: float = 1e-9, max_iter: int = 200) -> float:
+    """Invert any supported EOS for the compression ratio ``r = V/V0`` at ``P``
+    (GPa).
+
+    Scans r from 1 downward for the FIRST (largest-r) crossing of P, then
+    bisects. Taking the largest-r root keeps the *physical* branch even when a
+    form goes non-monotonic at extreme compression (e.g. BM4 with negative K0''
+    or BM3 with K0'<4), where a naive widening bracket would lock onto a spurious
+    deep-compression root. Pure stdlib."""
+    if P <= 0:
+        return 1.0
+    f = lambda r: eos_pressure(eos, r) - P     # f(1) = -P < 0; rises as r falls
+    step = 0.0025
+    r, lo = 1.0, None
+    while r > 0.02:
+        r2 = r - step
+        if f(r2) >= 0.0:                        # crossing in [r2, r]
+            lo, hi = r2, r
+            break
+        r = r2
+    if lo is None:
+        return 0.02                             # beyond the physical scan range
+    for _ in range(max_iter):                   # bisect: f(lo) ≥ 0 > f(hi)
+        mid = 0.5 * (lo + hi)
+        fm = f(mid)
+        if abs(fm) < tol:
+            return mid
+        if fm > 0.0:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def eos_summary(eos: "Dict[str, Any]") -> str:
+    """Short human-readable EOS description, e.g. ``BM3: K0=167, K0'=5.0``."""
+    e = eos or {}
+    if not e.get("K0"):
+        return "no EOS"
+    typ = _eos_norm_type(e)
+    parts = [f"K0={e.get('K0')}", f"K0'={e.get('K0p', 4.0)}"]
+    if typ == "BM4" and e.get("K0pp") is not None:
+        parts.append(f"K0''={e.get('K0pp')}")
+    return f"{typ}: " + ", ".join(str(p) for p in parts)
+
+
+# --- Birch–Murnaghan 3rd-order in absolute volume (back-compat wrappers) -----
 
 def birch_murnaghan_pressure(V: float, V0: float, K0: float, K0p: float) -> float:
-    """3rd-order Birch–Murnaghan pressure (GPa) at volume ``V`` (same units as V0)."""
-    x = (V0 / V) ** (1.0 / 3.0)
-    x2 = x * x
-    return (1.5 * K0 * (x ** 7 - x ** 5)
-            * (1.0 + 0.75 * (K0p - 4.0) * (x2 - 1.0)))
+    """3rd-order Birch–Murnaghan pressure (GPa) at volume ``V`` (units of V0)."""
+    return eos_pressure({"type": "BM3", "K0": K0, "K0p": K0p}, float(V) / float(V0))
 
 
 def volume_at_pressure(P: float, V0: float, K0: float, K0p: float,
                        *, tol: float = 1e-8, max_iter: int = 200) -> float:
-    """Invert the 3rd-order BM EOS: volume (Å³) at pressure ``P`` (GPa).
-
-    Bisection on V/V0 ∈ (lo, 1]; pure stdlib so this module stays import-light.
-    """
-    if P <= 0:
-        return float(V0)
-    lo, hi = 0.05, 1.0  # compression rarely exceeds ~20x; widen if needed
-    # P decreases as V increases; find bracket where P(lo) > P > P(hi).
-    f = lambda r: birch_murnaghan_pressure(V0 * r, V0, K0, K0p) - P
-    flo, fhi = f(lo), f(hi)
-    # Expand the lower bound if the target pressure is enormous.
-    while flo < 0 and lo > 1e-4:
-        lo *= 0.5
-        flo = f(lo)
-    if flo * fhi > 0:
-        return float(V0 * lo)  # out of bracket — return the most-compressed bound
-    for _ in range(max_iter):
-        mid = 0.5 * (lo + hi)
-        fm = f(mid)
-        if abs(fm) < tol:
-            return float(V0 * mid)
-        if flo * fm < 0:
-            hi, fhi = mid, fm
-        else:
-            lo, flo = mid, fm
-    return float(V0 * 0.5 * (lo + hi))
+    """3rd-order BM volume (Å³) at pressure ``P`` (GPa) — back-compat wrapper."""
+    r = compression_at_pressure({"type": "BM3", "K0": K0, "K0p": K0p}, float(P),
+                                tol=tol, max_iter=max_iter)
+    return float(V0) * r
 
 
 def compress_lattice(phase: Phase, pressure_gpa: float) -> Dict[str, float]:
-    """Lattice parameters of ``phase`` at ``pressure_gpa`` via its BM EOS.
+    """Lattice parameters of ``phase`` at ``pressure_gpa`` via its EOS.
 
     Isotropic volume scaling (cube-root of V/V0 applied to a, b, c) unless an
     ``axial_eos`` is provided (not yet modeled — isotropic is used and a note is
@@ -387,13 +472,10 @@ def compress_lattice(phase: Phase, pressure_gpa: float) -> Dict[str, float]:
     has no usable EOS or lattice.
     """
     if not phase.has_eos():
-        raise ValueError(f"Phase {phase.name!r} has no BM EOS (V0,K0,K0p).")
+        raise ValueError(f"Phase {phase.name!r} has no usable EOS (need K0).")
     if not phase.lattice:
         raise ValueError(f"Phase {phase.name!r} has no lattice to scale.")
-    e = phase.eos
-    V = volume_at_pressure(float(pressure_gpa), float(e["V0"]),
-                           float(e["K0"]), float(e["K0p"]))
-    scale = (V / float(e["V0"])) ** (1.0 / 3.0)
+    scale = compression_at_pressure(phase.eos, float(pressure_gpa)) ** (1.0 / 3.0)
     L = dict(phase.lattice)
     for k in ("a", "b", "c"):
         if k in L and L[k]:
