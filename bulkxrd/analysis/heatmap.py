@@ -50,6 +50,32 @@ def _pressure_track(h5, phase_name: str) -> "Optional[np.ndarray]":
     return None
 
 
+def _stored_reflections(h5, phase_name: str):
+    """Reflections cached under /identify/<phase> by Step 3a, or None.
+
+    Returns ``(d, weight, hkl)`` so the overlay can be built without pymatgen.
+    """
+    gid = h5.get("identify")
+    if gid is None:
+        return None
+    for key in gid:
+        g = gid[key]
+        if not hasattr(g, "attrs") or str(g.attrs.get("name", key)) != phase_name:
+            continue
+        if "refl_d" not in g:
+            return None
+        d = np.asarray(g["refl_d"][:], dtype=float)
+        w = (np.asarray(g["refl_w"][:], dtype=float)
+             if "refl_w" in g else np.ones_like(d))
+        if "refl_hkl" in g:
+            hkl = [x.decode("utf-8", "replace") if isinstance(x, (bytes, bytearray)) else str(x)
+                   for x in g["refl_hkl"][:]]
+        else:
+            hkl = [""] * d.size
+        return d, w, hkl
+    return None
+
+
 def pattern_image(analysis_h5: "str | Path", *, source: str = "clean",
                   x_axis: str = "frame", pressure_phase: "Optional[str]" = None
                   ) -> Dict[str, Any]:
@@ -154,15 +180,22 @@ def reflection_tracks(analysis_h5: "str | Path", phase: Phase, *,
         out["error"] = f"File does not exist: {p}"
         return out
     try:
+        cached = None
         with _open(p) as h5:
             unit = str(h5.attrs.get("unit", ""))
             gid = h5.get("identify")
             wl = float(gid.attrs.get("wavelength", 0.0)) if gid is not None else 0.0
             pr = _pressure_track(h5, phase.name) if gid is not None else None
+            cached = _stored_reflections(h5, phase.name)
             bg = h5.get("background")
             n = int(bg["clean"].shape[0]) if bg is not None and "clean" in bg \
                 else (int(pr.size) if pr is not None else 0)
-        d0, w, hkl = phase_reflections(phase, max_reflections=max_reflections)
+        # Prefer the reflections cached at Step 3a (no pymatgen → no GUI freeze);
+        # fall back to simulating only if they're absent (e.g. a pre-cache file).
+        if cached is not None:
+            d0, w, hkl = cached
+        else:
+            d0, w, hkl = phase_reflections(phase, max_reflections=max_reflections)
         if d0.size == 0 or n == 0:
             out["error"] = "No reflections or frames to track."
             return out

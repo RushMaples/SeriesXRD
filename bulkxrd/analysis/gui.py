@@ -754,8 +754,9 @@ class AnalysisApp:
                         p_txt = f"{pm:.1f} GPa" if pm is not None and pm == pm else "n/a"
                         self.log(
                             f"  {name}: seen in {d['n_frames_seen']} frame(s) "
-                            f"(conf>{d.get('seen_conf', 0.3):.2f}), "
-                            f"max conf {d.get('max_confidence', 0.0):.2f}, "
+                            f"(conf>{d.get('seen_conf', 0.5):.2f}); "
+                            f"best recall {d.get('max_recall', 0.0):.2f}, "
+                            f"best precision {d.get('max_precision', 0.0):.2f}, "
                             f"up to {d.get('max_matched', 0)} line(s) matched, "
                             f"median P={p_txt}"
                         )
