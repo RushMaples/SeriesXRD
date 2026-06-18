@@ -1680,6 +1680,32 @@ class AnalysisApp:
                   foreground=MUTED).grid(row=2, column=0, columnspan=8, sticky="w", pady=(2, 0))
         row += 1
 
+        # Axial (anisotropic) EOS — optional, per-axis K0/K0' for non-cubic phases.
+        ttk.Label(content, text="Axial EOS").grid(row=row, column=0, sticky="nw", **pad)
+        ax_frame = ttk.Frame(content)
+        ax_frame.grid(row=row, column=1, columnspan=3, sticky="w", **pad)
+        ex_ax = (existing.axial_eos or {}) if existing else {}
+        ttk.Label(ax_frame, text="axis").grid(row=0, column=0, padx=(0, 4))
+        ttk.Label(ax_frame, text="K0 (GPa)").grid(row=0, column=1, padx=2)
+        ttk.Label(ax_frame, text="K0'").grid(row=0, column=2, padx=2)
+        axial_vars: "Dict[str, tuple]" = {}
+        for i, axis in enumerate(("a", "b", "c")):
+            e = ex_ax.get(axis) if isinstance(ex_ax.get(axis), dict) else {}
+            k0 = e.get("K0"); kp = e.get("K0p")
+            ttk.Label(ax_frame, text=axis).grid(row=i + 1, column=0, sticky="e", padx=(0, 4))
+            v_k0 = tk.StringVar(value=f"{k0:g}" if k0 is not None else "")
+            v_kp = tk.StringVar(value=f"{kp:g}" if kp is not None else "")
+            ttk.Entry(ax_frame, textvariable=v_k0, width=10).grid(row=i + 1, column=1, padx=2)
+            ttk.Entry(ax_frame, textvariable=v_kp, width=8).grid(row=i + 1, column=2, padx=2)
+            axial_vars[axis] = (v_k0, v_kp)
+        ttk.Label(ax_frame,
+                  text="Optional. Fill per-axis K0 (on the cubed axis length, "
+                       "PASCal/EosFit convention) for anisotropic compression; "
+                       "blank axes fall back to the volume EOS. b inherits a if equal.",
+                  foreground=MUTED, wraplength=420, justify="left").grid(
+            row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        row += 1
+
         # Source
         ttk.Label(content, text="Source").grid(row=row, column=0, sticky="w", **pad)
         v_source = tk.StringVar(value=existing.source if existing else "")
@@ -1721,6 +1747,17 @@ class AnalysisApp:
                 if fv is not None:
                     eos[k] = fv
 
+            # Per-axis EOS (only axes with a K0 entered); same form as the main EOS.
+            axial_eos: "Dict[str, Any]" = {}
+            for axis, (v_k0, v_kp) in axial_vars.items():
+                k0 = _f(v_k0.get())
+                if k0 is not None:
+                    ae = {"type": v_eos_type.get() or "BM3", "K0": k0}
+                    kp = _f(v_kp.get())
+                    if kp is not None:
+                        ae["K0p"] = kp
+                    axial_eos[axis] = ae
+
             notes = notes_text.get("1.0", "end-1c")
 
             phase = Phase(
@@ -1731,7 +1768,7 @@ class AnalysisApp:
                 lattice=lattice,
                 atoms=(existing.atoms if existing else []),
                 eos=eos,
-                axial_eos=(existing.axial_eos if existing else {}),
+                axial_eos=axial_eos,
                 amorphous=(existing.amorphous if existing else False),
                 cif_path=(existing.cif_path if existing else ""),
                 source=v_source.get().strip(),

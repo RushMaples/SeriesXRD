@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .phases import (Phase, simulate_pattern, compression_at_pressure,
-                     pymatgen_available)
+                     pymatgen_available, has_axial_eos, axial_scales)
 from .parallel import resolve_workers, chunk_ranges
 
 SCHEMA_VERSION = "1"
@@ -139,10 +139,65 @@ def _nearest_gap(pred: np.ndarray, obs_sorted: np.ndarray) -> np.ndarray:
     return np.minimum(np.abs(pred - obs_sorted[left]), np.abs(pred - obs_sorted[right]))
 
 
-def score_at_scale(obs_sorted: np.ndarray, d0: np.ndarray, weight: np.ndarray,
-                   s: float, rel_tol: float,
-                   strong_frac: float = 0.1) -> Tuple[float, int, float, float]:
-    """Match score, #matched, recall, and precision for a lattice scale ``s``.
+def _parse_hkl(s) -> "Optional[Tuple[int, int, int]]":
+    """Parse an hkl label like '(1, -1, 0)' or '1 1 1' to a tuple, or None."""
+    nums = re.findall(r"-?\d+", str(s))
+    return (int(nums[0]), int(nums[1]), int(nums[2])) if len(nums) >= 3 else None
+
+
+def _d_from_lattice(H: np.ndarray, lattice: "Dict[str, Any]") -> np.ndarray:
+    """d-spacings (Å) for hkl rows ``H`` (N×3) via the reciprocal metric tensor.
+
+    General triclinic formula 1/d² = hᵀ G* h with G* = inv(G); valid for every
+    crystal system, so anisotropic compression of a, b, c (and angles) is handled
+    exactly."""
+    L = lattice or {}
+    a = float(L.get("a") or 0.0)
+    b = float(L.get("b") or a) or a
+    c = float(L.get("c") or a) or a
+    al = math.radians(float(L.get("alpha", 90.0) or 90.0))
+    be = math.radians(float(L.get("beta", 90.0) or 90.0))
+    ga = math.radians(float(L.get("gamma", 90.0) or 90.0))
+    ca, cb, cg = math.cos(al), math.cos(be), math.cos(ga)
+    G = np.array([[a * a, a * b * cg, a * c * cb],
+                  [a * b * cg, b * b, b * c * ca],
+                  [a * c * cb, b * c * ca, c * c]], dtype=float)
+    Gstar = np.linalg.inv(G)
+    s = np.einsum("ni,ij,nj->n", H, Gstar, H)
+    s = np.where(s > 0, s, np.nan)
+    return 1.0 / np.sqrt(s)
+
+
+def predicted_d(phase: Phase, d0: np.ndarray, hkls, P: float) -> np.ndarray:
+    """Predicted d-spacings (Å) at pressure ``P``.
+
+    Anisotropic when the phase has an axial EOS, a lattice, and parseable hkl:
+    each reflection's d0 is scaled by the *ratio* of its compressed-lattice
+    d-spacing to its ambient one (so it reduces exactly to d0 at P=0 and is
+    independent of any small offset between the simulated d0 and the metric
+    calculation). Otherwise the isotropic ``d0·s``."""
+    d0 = np.asarray(d0, dtype=float)
+    if (P > 0 and has_axial_eos(phase) and phase.lattice
+            and hkls is not None and all(h is not None for h in hkls)):
+        sa, sb, sc = axial_scales(phase, P)
+        Lp = dict(phase.lattice)
+        for k, s in (("a", sa), ("b", sb), ("c", sc)):
+            if Lp.get(k):
+                Lp[k] = float(Lp[k]) * s
+        H = np.asarray(hkls, dtype=float)
+        ratio = _d_from_lattice(H, Lp) / _d_from_lattice(H, phase.lattice)
+        dd = d0 * ratio
+        bad = ~np.isfinite(dd)
+        if bad.any():
+            dd[bad] = d0[bad] * scale_at_pressure(phase, P)
+        return dd
+    return d0 * scale_at_pressure(phase, P)
+
+
+def _score_pred(obs_sorted: np.ndarray, pred: np.ndarray, weight: np.ndarray,
+                rel_tol: float, strong_frac: float = 0.1
+                ) -> Tuple[float, int, float, float]:
+    """Match score, #matched, recall, precision for a predicted d-spacing array.
 
     ``score`` = Σ wᵢ·exp(−½(Δdᵢ/σᵢ)²), σᵢ = rel_tol·d_pred,ᵢ — the optimisation
     target for the pressure fit.
@@ -151,16 +206,11 @@ def score_at_scale(obs_sorted: np.ndarray, d0: np.ndarray, weight: np.ndarray,
 
     * ``recall`` — intensity-weighted fraction of the phase's *strong, observable*
       lines (≥ ``strong_frac`` of the strongest in-window line) that are matched.
-      "Are the lines I'd expect to see present?" Good for simple/cubic phases;
-      intrinsically low for a dense low-symmetry pattern where most strong lines
-      go unobserved (texture, overlap, noise floor).
-    * ``precision`` — fraction of the *observed* peaks lying in the predicted
-      range that are explained by a predicted line. "Do my peaks belong to this
-      phase?" High for the dominant/sample phase even when recall is low.
-
-    A phase is taken as present if *either* is high (see ``fit_pressure_for_phase``).
+    * ``precision`` — fraction of the *observed* peaks in the predicted range
+      explained by a predicted line. High for the dominant/sample phase even when
+      recall is low. A phase is taken as present if EITHER is high.
     """
-    pred = d0 * s
+    pred = np.asarray(pred, dtype=float)
     sigma = np.maximum(rel_tol * pred, 1e-9)
     gap = _nearest_gap(pred, obs_sorted)
     kernel = np.exp(-0.5 * (gap / sigma) ** 2)
@@ -188,19 +238,32 @@ def score_at_scale(obs_sorted: np.ndarray, d0: np.ndarray, weight: np.ndarray,
     return score, n_matched, recall, precision
 
 
+def score_at_scale(obs_sorted: np.ndarray, d0: np.ndarray, weight: np.ndarray,
+                   s: float, rel_tol: float,
+                   strong_frac: float = 0.1) -> Tuple[float, int, float, float]:
+    """Isotropic convenience wrapper: score the predictions ``d0·s``."""
+    return _score_pred(obs_sorted, np.asarray(d0, dtype=float) * s, weight,
+                       rel_tol, strong_frac)
+
+
 def fit_pressure_for_phase(obs_d, phase: Phase,
                            refl: "Optional[Tuple[np.ndarray, np.ndarray, List[str]]]" = None,
                            *, p_min: float = 0.0, p_max: float = 100.0,
                            n_grid: int = 300, rel_tol: float = 0.01) -> Dict[str, Any]:
     """Best-fit pressure for one phase against one frame's observed d-spacings.
 
-    Returns ``{pressure, score, confidence, n_matched, n_pred}``. With no EOS the
-    phase is only scored at ambient (pressure 0). ``refl`` may be precomputed
-    (see :func:`phase_reflections`) to avoid re-simulating across frames.
+    Returns ``{pressure, score, confidence, recall, precision, n_matched,
+    n_pred}``. Compression is anisotropic when the phase carries an ``axial_eos``
+    (per-axis), else isotropic from the volume EOS; with neither, the phase is
+    only scored at ambient (pressure 0). ``refl`` may be precomputed (see
+    :func:`phase_reflections`) to avoid re-simulating across frames.
     """
     if refl is None:
         refl = phase_reflections(phase)
-    d0, weight, _ = refl
+    d0, weight, hkl_raw = refl
+    d0 = np.asarray(d0, dtype=float)
+    weight = np.asarray(weight, dtype=float)
+    hkls = [_parse_hkl(h) for h in hkl_raw] if hkl_raw is not None else None
     obs = np.sort(np.asarray(obs_d, dtype=float))
     obs = obs[np.isfinite(obs) & (obs > 0)]
     out = {"pressure": float("nan"), "score": 0.0, "confidence": 0.0,
@@ -209,19 +272,21 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
         out["pressure"] = 0.0
         return out
 
-    def _record(p_val, s):
-        score, nm, rec, prec = score_at_scale(obs, d0, weight, s, rel_tol)
+    def _score_P(P):
+        return _score_pred(obs, predicted_d(phase, d0, hkls, P), weight, rel_tol)
+
+    def _record(p_val):
+        score, nm, rec, prec = _score_P(p_val)
         out.update({"pressure": p_val, "score": score, "n_matched": nm,
                     "recall": rec, "precision": prec,
                     "confidence": max(rec, prec)})  # present if EITHER is high
 
-    if not phase.has_eos():
-        _record(0.0, 1.0)
+    if not (phase.has_eos() or has_axial_eos(phase)):
+        _record(0.0)
         return out
 
     Ps = np.linspace(float(p_min), float(p_max), int(max(n_grid, 2)))
-    scores = np.array([score_at_scale(obs, d0, weight, scale_at_pressure(phase, P), rel_tol)[0]
-                       for P in Ps])
+    scores = np.array([_score_P(P)[0] for P in Ps])
     best = int(np.argmax(scores))
     p_opt = float(Ps[best])
     # Local refine within the bracketing grid cell.
@@ -230,14 +295,13 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
     if hi > lo:
         try:
             from scipy.optimize import minimize_scalar  # lazy
-            r = minimize_scalar(
-                lambda P: -score_at_scale(obs, d0, weight, scale_at_pressure(phase, P), rel_tol)[0],
-                bounds=(lo, hi), method="bounded")
+            r = minimize_scalar(lambda P: -_score_P(P)[0],
+                                bounds=(lo, hi), method="bounded")
             if r.success and -r.fun >= scores[best]:
                 p_opt = float(r.x)
         except Exception:
             pass
-    _record(p_opt, scale_at_pressure(phase, p_opt))
+    _record(p_opt)
     return out
 
 

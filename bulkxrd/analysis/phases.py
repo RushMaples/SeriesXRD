@@ -463,21 +463,57 @@ def volume_at_pressure(P: float, V0: float, K0: float, K0p: float,
     return float(V0) * r
 
 
+def has_axial_eos(phase: Phase) -> bool:
+    """True if the phase carries a per-axis (anisotropic) EOS for ≥1 axis."""
+    ax = getattr(phase, "axial_eos", None) or {}
+    return any(isinstance(ax.get(k), dict) and ax[k].get("K0") for k in ("a", "b", "c"))
+
+
+def axial_scales(phase: Phase, pressure_gpa: float) -> "tuple":
+    """Per-axis linear scale factors ``(sa, sb, sc)`` at ``pressure_gpa``.
+
+    Each axis in ``axial_eos`` is parameterised on the *cubed* axis length (the
+    PASCal/EosFit convention: fit an EOS to x³ vs P, giving an axial modulus),
+    so the linear scale is ``compression(axial_eos[axis], P)**(1/3)``. Axes with
+    no axial EOS fall back to the isotropic volume scale (and a symmetry-equal
+    second axis, e.g. b=a for hexagonal/tetragonal, inherits the a-axis scale).
+    """
+    if pressure_gpa <= 0:
+        return (1.0, 1.0, 1.0)
+    ax = getattr(phase, "axial_eos", None) or {}
+    iso = (compression_at_pressure(phase.eos, float(pressure_gpa)) ** (1.0 / 3.0)
+           if phase.has_eos() else 1.0)
+
+    def _axis(key: str, fallback: float) -> float:
+        e = ax.get(key)
+        if isinstance(e, dict) and e.get("K0"):
+            return compression_at_pressure(e, float(pressure_gpa)) ** (1.0 / 3.0)
+        return fallback
+
+    sa = _axis("a", iso)
+    L = phase.lattice or {}
+    a = float(L.get("a") or 0.0)
+    b = float(L.get("b") or 0.0)
+    sb = _axis("b", sa if (a and b and abs(a - b) < 1e-6) else iso)
+    sc = _axis("c", iso)
+    return (sa, sb, sc)
+
+
 def compress_lattice(phase: Phase, pressure_gpa: float) -> Dict[str, float]:
     """Lattice parameters of ``phase`` at ``pressure_gpa`` via its EOS.
 
-    Isotropic volume scaling (cube-root of V/V0 applied to a, b, c) unless an
-    ``axial_eos`` is provided (not yet modeled — isotropic is used and a note is
-    implied). Returns a ``{a,b,c,alpha,beta,gamma}`` dict. Raises if the phase
-    has no usable EOS or lattice.
+    Uses the per-axis ``axial_eos`` where present (anisotropic compression);
+    otherwise isotropic volume scaling (cube-root of V/V0 applied to a, b, c).
+    Angles are held fixed. Returns a ``{a,b,c,alpha,beta,gamma}`` dict. Raises if
+    the phase has neither a usable EOS nor an axial EOS, or no lattice.
     """
-    if not phase.has_eos():
+    if not (phase.has_eos() or has_axial_eos(phase)):
         raise ValueError(f"Phase {phase.name!r} has no usable EOS (need K0).")
     if not phase.lattice:
         raise ValueError(f"Phase {phase.name!r} has no lattice to scale.")
-    scale = compression_at_pressure(phase.eos, float(pressure_gpa)) ** (1.0 / 3.0)
+    sa, sb, sc = axial_scales(phase, float(pressure_gpa))
     L = dict(phase.lattice)
-    for k in ("a", "b", "c"):
+    for k, s in (("a", sa), ("b", sb), ("c", sc)):
         if k in L and L[k]:
-            L[k] = float(L[k]) * scale
+            L[k] = float(L[k]) * s
     return L

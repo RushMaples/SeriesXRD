@@ -112,6 +112,48 @@ def test_run_identification():
         assert tr2["ok"] and len(tr2["tracks"]) >= 3
 
 
+def test_axial_eos_anisotropic():
+    """Per-axis (anisotropic) compression: (00l) reflections compress more than
+    (h00) when the c-axis is softer, and the fit recovers the pressure. No
+    pymatgen needed — reflections are built directly."""
+    # d-spacing from the lattice metric (cubic sanity: d = a/sqrt(h²+k²+l²)).
+    Lc = {"a": 4.0, "b": 4.0, "c": 4.0, "alpha": 90, "beta": 90, "gamma": 90}
+    H = np.array([[1, 0, 0], [1, 1, 0], [1, 1, 1]], float)
+    assert np.allclose(idf._d_from_lattice(H, Lc),
+                       [4.0, 4.0 / np.sqrt(2), 4.0 / np.sqrt(3)])
+
+    # Tetragonal phase, c-axis softer (K0=100) than a-axis (K0=300).
+    tet = ph.Phase(name="tet",
+                   lattice={"a": 4.0, "b": 4.0, "c": 6.0,
+                            "alpha": 90, "beta": 90, "gamma": 90},
+                   axial_eos={"a": {"type": "BM3", "K0": 300, "K0p": 4},
+                              "c": {"type": "BM3", "K0": 100, "K0p": 4}})
+    assert ph.has_axial_eos(tet)
+    sa, sb, sc = ph.axial_scales(tet, 10.0)
+    assert sc < sa < 1.0 and abs(sa - sb) < 1e-9   # c compresses more; b inherits a
+
+    # (001) shrinks more than (100) relative to ambient.
+    dp = idf.predicted_d(tet, np.array([4.0, 6.0]), [(1, 0, 0), (0, 0, 1)], 10.0)
+    assert (dp[1] / 6.0) < (dp[0] / 4.0) < 1.0
+
+    # Build observed reflections at a known pressure and recover it.
+    P_true = 8.0
+    sa, sb, sc = ph.axial_scales(tet, P_true)
+    Lp = {"a": 4 * sa, "b": 4 * sb, "c": 6 * sc, "alpha": 90, "beta": 90, "gamma": 90}
+    Hf = np.array([[1, 0, 0], [0, 0, 1], [1, 0, 1], [1, 1, 0], [0, 0, 2]], float)
+    obs = idf._d_from_lattice(Hf, Lp)
+    d0 = idf._d_from_lattice(Hf, tet.lattice)
+    refl = (d0, np.ones(len(Hf)),
+            ["(1, 0, 0)", "(0, 0, 1)", "(1, 0, 1)", "(1, 1, 0)", "(0, 0, 2)"])
+    res = idf.fit_pressure_for_phase(obs, tet, refl, p_min=0, p_max=30, rel_tol=0.004)
+    assert abs(res["pressure"] - P_true) < 1.5, res["pressure"]
+    # An isotropic fit of the same anisotropic data is worse (sanity on the model).
+    iso = ph.Phase(name="iso", lattice=tet.lattice,
+                   eos={"type": "BM3", "K0": 180, "K0p": 4})
+    res_iso = idf.fit_pressure_for_phase(obs, iso, refl, p_min=0, p_max=30, rel_tol=0.004)
+    assert res["score"] >= res_iso["score"]
+
+
 def test_sparse_observation_still_seen():
     """Regression: a DAC frame shows only a few of a phase's strong lines (the
     rest below the noise floor / overlapped). The phase must still register as
@@ -158,6 +200,7 @@ def main() -> None:
     test_scale_monotonic()
     test_pressure_recovery()
     test_run_identification()
+    test_axial_eos_anisotropic()
     test_sparse_observation_still_seen()
     print("IDENTIFY TEST OK")
 
