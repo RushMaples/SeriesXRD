@@ -32,6 +32,7 @@ _DEFAULTS = {
     "contamination_threshold": "",  # optional float; blank = don't flag
     # Step 2 — pseudo-Voigt peak fitting
     "min_snr": "5.0",
+    "min_prominence_snr": "2.0",
     "window_factor": "3.0",
     "max_chi2": "25.0",
     "propagate_seeds": True,

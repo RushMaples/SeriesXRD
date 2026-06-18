@@ -93,8 +93,14 @@ HELP: Dict[str, str] = {
     ),
     # Step 2
     "min_snr": (
-        "Minimum signal-to-noise ratio (peak height / MAD noise floor) for a "
+        "Minimum signal-to-noise ratio (peak HEIGHT / MAD noise floor) for a "
         "peak to be accepted. Lower = more peaks, more noise hits. Default 5."
+    ),
+    "min_prominence_snr": (
+        "Minimum peak PROMINENCE in noise-floor units. Prominence is measured "
+        "against the taller neighbour, so a real peak on the shoulder of a "
+        "stronger one needs this lower than Min SNR to register. Default 2 "
+        "(blank = use Min SNR, the old coupled behaviour)."
     ),
     "window_factor": (
         "Fit-window half-width as a multiple of the initial FWHM estimate. "
@@ -545,9 +551,10 @@ class AnalysisApp:
     def _tab_peaks(self, frame):
         ttk = self.ttk
         self.checkbox(frame, "run_step2", "Run Step 2 — pseudo-Voigt peak fitting", row=0)
-        self.field(frame, "min_snr", "Min SNR", row=2, width=14)
-        self.field(frame, "window_factor", "Window factor (× FWHM)", row=3, width=14)
-        self.field(frame, "max_chi2", "Max reduced χ²", row=4, width=14)
+        self.field(frame, "min_snr", "Min SNR (height)", row=2, width=14)
+        self.field(frame, "min_prominence_snr", "Min prominence SNR", row=3, width=14)
+        self.field(frame, "window_factor", "Window factor (× FWHM)", row=4, width=14)
+        self.field(frame, "max_chi2", "Max reduced χ²", row=5, width=14)
         self.checkbox(frame, "propagate_seeds",
                       "Propagate peak seeds frame-to-frame", row=6)
         ttk.Label(
