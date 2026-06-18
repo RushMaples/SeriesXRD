@@ -105,6 +105,10 @@ def run_analysis(cfg: dict) -> dict:
             min_prominence_snr=_opt_float(cfg.get("min_prominence_snr")),
             window_factor=_as_float(cfg.get("window_factor"), 3.0),
             max_chi2=_as_float(cfg.get("max_chi2"), 25.0),
+            edge_bins=_as_int(cfg.get("edge_bins"), 0),
+            fit_min=_opt_float(cfg.get("fit_min")),
+            fit_max=_opt_float(cfg.get("fit_max")),
+            min_fwhm_bins=_as_float(cfg.get("min_fwhm_bins"), 0.0),
             propagate_seeds=_as_bool(cfg.get("propagate_seeds", True), True),
             num_workers=num_workers,
         )

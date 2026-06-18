@@ -123,6 +123,9 @@ def detect_peaks(x, y, *, min_snr: float = 5.0,
                  min_prominence_snr: Optional[float] = None,
                  sigma: Optional[float] = None,
                  seed_centers: Optional[Sequence[float]] = None,
+                 edge_bins: int = 0,
+                 x_min: Optional[float] = None,
+                 x_max: Optional[float] = None,
                  ) -> List[Dict[str, float]]:
     """Find candidate peaks and seed initial fit parameters.
 
@@ -138,6 +141,11 @@ def detect_peaks(x, y, *, min_snr: float = 5.0,
       coupled behaviour) when not given; set it lower to keep shoulder/adjacent
       peaks.
 
+    Candidates (including re-added seeds) are restricted to a valid window:
+    ``edge_bins`` excludes peaks within that many bins of either array end
+    (kills beamstop-onset and detector-truncation artefacts), and
+    ``x_min``/``x_max`` (in the radial unit) clip to a physically valid range.
+
     If ``seed_centers`` is given, seeds with no detection are added back so peak
     identity survives across a frame series.
     """
@@ -152,6 +160,21 @@ def detect_peaks(x, y, *, min_snr: float = 5.0,
     height = min_snr * sig
     prominence = max(prom_snr * sig, 1e-12)
     idx, _ = find_peaks(yf, height=height, prominence=prominence)
+
+    # Valid x-window: edge-bin guard (order-agnostic) ∩ [x_min, x_max].
+    n = x.size
+    eb = max(int(edge_bins), 0)
+    if n and eb:
+        lo_i, hi_i = min(eb, n - 1), max(n - 1 - eb, 0)
+        w_lo, w_hi = min(x[lo_i], x[hi_i]), max(x[lo_i], x[hi_i])
+    elif n:
+        w_lo, w_hi = float(np.min(x)), float(np.max(x))
+    else:
+        w_lo, w_hi = -np.inf, np.inf
+    if x_min is not None:
+        w_lo = max(w_lo, float(x_min))
+    if x_max is not None:
+        w_hi = min(w_hi, float(x_max))
 
     cands: List[Dict[str, float]] = []
     for k in idx:
@@ -174,6 +197,7 @@ def detect_peaks(x, y, *, min_snr: float = 5.0,
                     cands.append({"center": float(x[k]),
                                   "amplitude": float(max(yf[k], height)),
                                   "fwhm": _half_max_width(x, yf, k)})
+    cands = [c for c in cands if w_lo <= c["center"] <= w_hi]
     cands.sort(key=lambda c: c["center"])
     return cands
 
@@ -276,8 +300,26 @@ def _failed_peak(g: Dict[str, float], flag: int) -> Dict[str, Any]:
             "chi2": np.inf, "flag": int(flag)}
 
 
+def _window_mask(x: np.ndarray, edge_bins: int,
+                 fit_min: "Optional[float]", fit_max: "Optional[float]") -> np.ndarray:
+    """Boolean mask of the valid fit window: edge-bin guard ∩ [fit_min, fit_max]."""
+    n = x.size
+    m = np.ones(n, dtype=bool)
+    eb = max(int(edge_bins), 0)
+    if n and eb:
+        m[:min(eb, n)] = False
+        m[max(n - eb, 0):] = False
+    if fit_min is not None:
+        m &= x >= float(fit_min)
+    if fit_max is not None:
+        m &= x <= float(fit_max)
+    return m
+
+
 def fit_pattern(x, y, *, min_snr: float = 5.0, window_factor: float = 3.0,
                 max_chi2: float = 25.0, min_prominence_snr: Optional[float] = None,
+                edge_bins: int = 0, fit_min: Optional[float] = None,
+                fit_max: Optional[float] = None, min_fwhm_bins: float = 0.0,
                 sigma: Optional[float] = None,
                 seed_centers: Optional[Sequence[float]] = None,
                 keep_flagged: bool = True) -> List[Dict[str, Any]]:
@@ -286,16 +328,38 @@ def fit_pattern(x, y, *, min_snr: float = 5.0, window_factor: float = 3.0,
     Returns a list of peak dicts (``center, amplitude, fwhm, eta, area, chi2,
     flag``) sorted by center. If ``keep_flagged`` is False, peaks whose flag is
     nonzero are dropped from the result.
+
+    The valid fit window (``edge_bins`` end-guard ∩ ``[fit_min, fit_max]``) keeps
+    detection — and, importantly, the noise-floor estimate — off the beamstop
+    onset and the detector-truncation tails, so a steep low-angle shoulder can't
+    inflate σ and hide real peaks. ``min_fwhm_bins`` flags peaks narrower than
+    that many bins (``FLAG_WIDTH_BOUND``) to reject single-bin quantization spikes.
     """
     x = np.asarray(x, float)
     y = np.asarray(y, float)
-    sig = float(sigma) if sigma is not None else mad_sigma(y)
+    mask = _window_mask(x, edge_bins, fit_min, fit_max)
+    # Noise floor from the valid window only (falls back to the whole pattern if
+    # the window is empty), so the onset shoulder/tails don't raise the threshold.
+    if sigma is not None:
+        sig = float(sigma)
+    else:
+        sig = mad_sigma(y[mask]) if mask.any() else mad_sigma(y)
+        if not (sig > 0):
+            sig = mad_sigma(y) or (np.nanstd(y) or 1.0)
     cands = detect_peaks(x, y, min_snr=min_snr, min_prominence_snr=min_prominence_snr,
-                         sigma=sig, seed_centers=seed_centers)
+                         sigma=sig, seed_centers=seed_centers,
+                         edge_bins=edge_bins, x_min=fit_min, x_max=fit_max)
     peaks: List[Dict[str, Any]] = []
     for group in _group_peaks(cands, window_factor):
         peaks.extend(_fit_group(x, y, group, sig, window_factor=window_factor,
                                 max_chi2=max_chi2))
+    # Sub-resolution rejection: a real Bragg peak spans several bins.
+    dx = float(np.median(np.abs(np.diff(x)))) if x.size > 1 else 1.0
+    min_fwhm = float(min_fwhm_bins) * dx
+    if min_fwhm > 0:
+        for p in peaks:
+            if p["fwhm"] < min_fwhm:
+                p["flag"] = int(p["flag"]) | FLAG_WIDTH_BOUND
     peaks.sort(key=lambda p: p["center"])
     if not keep_flagged:
         peaks = [p for p in peaks if p["flag"] == FLAG_OK]
@@ -304,6 +368,8 @@ def fit_pattern(x, y, *, min_snr: float = 5.0, window_factor: float = 3.0,
 
 def fit_dataset(radial, clean, *, min_snr: float = 5.0, window_factor: float = 3.0,
                 max_chi2: float = 25.0, min_prominence_snr: Optional[float] = None,
+                edge_bins: int = 0, fit_min: Optional[float] = None,
+                fit_max: Optional[float] = None, min_fwhm_bins: float = 0.0,
                 propagate_seeds: bool = True,
                 keep_flagged: bool = True) -> List[List[Dict[str, Any]]]:
     """Fit every frame of a (N_frames, N_bins) ``clean`` stack.
@@ -320,6 +386,8 @@ def fit_dataset(radial, clean, *, min_snr: float = 5.0, window_factor: float = 3
         peaks = fit_pattern(radial, clean[i], min_snr=min_snr,
                             window_factor=window_factor, max_chi2=max_chi2,
                             min_prominence_snr=min_prominence_snr,
+                            edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
+                            min_fwhm_bins=min_fwhm_bins,
                             seed_centers=seeds, keep_flagged=keep_flagged)
         results.append(peaks)
         if propagate_seeds:
@@ -344,7 +412,7 @@ def _peaks_chunk(payload):
     frames are skipped (count 0) and do not seed their neighbours.
     """
     (radial, clean_c, excluded_c, min_snr, window_factor, max_chi2,
-     propagate, min_prominence_snr) = payload
+     propagate, min_prominence_snr, edge_bins, fit_min, fit_max, min_fwhm_bins) = payload
     m = clean_c.shape[0]
     counts = [0] * m
     frames_local: List[int] = []
@@ -356,6 +424,8 @@ def _peaks_chunk(payload):
         peaks = fit_pattern(radial, clean_c[j], min_snr=min_snr,
                             window_factor=window_factor, max_chi2=max_chi2,
                             min_prominence_snr=min_prominence_snr,
+                            edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
+                            min_fwhm_bins=min_fwhm_bins,
                             seed_centers=seeds, keep_flagged=True)
         counts[j] = len(peaks)
         for p in peaks:
@@ -376,6 +446,10 @@ def run_peak_fitting(
     window_factor: float = 3.0,
     max_chi2: float = 25.0,
     min_prominence_snr: Optional[float] = None,
+    edge_bins: int = 0,
+    fit_min: Optional[float] = None,
+    fit_max: Optional[float] = None,
+    min_fwhm_bins: float = 0.0,
     propagate_seeds: bool = True,
     num_workers: int = 1,
 ) -> Dict[str, Any]:
@@ -428,9 +502,13 @@ def run_peak_fitting(
         excluded = np.zeros(n, dtype=bool)
     workers = resolve_workers(num_workers)
     prom_txt = min_snr if min_prominence_snr is None else min_prominence_snr
+    win_txt = (f"[{'' if fit_min is None else fit_min},"
+               f"{'' if fit_max is None else fit_max}] edge={edge_bins} "
+               f"min_fwhm_bins={min_fwhm_bins}")
     print(f"[PEAKS] fitting {n} frames ({int(excluded.sum())} excluded), "
           f"radial[{radial.size}] unit={unit or '?'} min_snr={min_snr} "
-          f"min_prom={prom_txt} window={window_factor} workers={workers}", flush=True)
+          f"min_prom={prom_txt} window={window_factor} fit_win={win_txt} "
+          f"workers={workers}", flush=True)
 
     counts = np.zeros(n, dtype="i4")
     cols: Dict[str, list] = {c: [] for c in _PEAK_COLS}
@@ -446,7 +524,8 @@ def run_peak_fitting(
     if workers > 1 and n > 1:
         ranges = chunk_ranges(n, workers)
         payloads = [(radial, clean[a:b], excluded[a:b], min_snr, window_factor,
-                     max_chi2, propagate_seeds, min_prominence_snr) for a, b in ranges]
+                     max_chi2, propagate_seeds, min_prominence_snr,
+                     edge_bins, fit_min, fit_max, min_fwhm_bins) for a, b in ranges]
         done = 0
         with ProcessPoolExecutor(max_workers=workers) as ex:
             for (a, b), result in zip(ranges, ex.map(_peaks_chunk, payloads)):
@@ -455,7 +534,8 @@ def run_peak_fitting(
                 print(f"[PEAKS] {done} {n}", flush=True)
     else:
         _absorb(0, _peaks_chunk((radial, clean, excluded, min_snr, window_factor,
-                                 max_chi2, propagate_seeds, min_prominence_snr)))
+                                 max_chi2, propagate_seeds, min_prominence_snr,
+                                 edge_bins, fit_min, fit_max, min_fwhm_bins)))
         print(f"[PEAKS] {n} {n}", flush=True)
 
     P = int(counts.sum())
@@ -472,6 +552,10 @@ def run_peak_fitting(
                                  min_snr if min_prominence_snr is None else min_prominence_snr),
                              "window_factor": float(window_factor),
                              "max_chi2": float(max_chi2),
+                             "edge_bins": int(edge_bins),
+                             "fit_min": float(fit_min) if fit_min is not None else np.nan,
+                             "fit_max": float(fit_max) if fit_max is not None else np.nan,
+                             "min_fwhm_bins": float(min_fwhm_bins),
                              "propagate_seeds": bool(propagate_seeds)})
             gp.create_dataset("counts", data=counts)
             gp.create_dataset("frame", data=np.asarray(frame_idx, dtype="i4"))
