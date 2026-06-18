@@ -32,13 +32,17 @@ _DEFAULTS = {
     "contamination_threshold": "",  # optional float; blank = don't flag
     # Step 2 — pseudo-Voigt peak fitting
     "min_snr": "5.0",
-    "min_prominence_snr": "2.0",
+    "min_prominence_snr": "",     # blank = coupled to min_snr (standard); opt-in lower
     "window_factor": "3.0",
     "max_chi2": "25.0",
-    "edge_bins": "5",            # drop peaks within N bins of either pattern end
+    "edge_bins": "0",            # opt-in: drop peaks within N bins of either end
     "fit_min": "",               # optional radial-unit (2θ or q) lower fit bound
     "fit_max": "",               # optional upper fit bound; blank = full range
-    "min_fwhm_bins": "2.0",      # reject peaks narrower than this (quantization spikes)
+    "min_fwhm_bins": "0",        # opt-in: reject peaks narrower than this many bins
+    "detrend_bins": "81",        # local-baseline window (bins) for detection; 0 = off.
+                                 # The proven fix: removes residual broad background so the
+                                 # noise floor reflects real noise and small peaks aren't
+                                 # lost under an inflated global threshold.
     "propagate_seeds": True,
     # Step 3 prep — candidate phases (names from the reference-phase library)
     # enabled for compound identification. Edited on the GUI's Phases tab.

@@ -109,6 +109,7 @@ def run_analysis(cfg: dict) -> dict:
             fit_min=_opt_float(cfg.get("fit_min")),
             fit_max=_opt_float(cfg.get("fit_max")),
             min_fwhm_bins=_as_float(cfg.get("min_fwhm_bins"), 0.0),
+            local_baseline_bins=_as_int(cfg.get("detrend_bins"), 0),
             propagate_seeds=_as_bool(cfg.get("propagate_seeds", True), True),
             num_workers=num_workers,
         )

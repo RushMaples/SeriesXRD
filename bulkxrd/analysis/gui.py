@@ -130,6 +130,14 @@ HELP: Dict[str, str] = {
         "several): removes single-bin quantization spikes. Flagged WIDTH_BOUND. "
         "Default 2."
     ),
+    "detrend_bins": (
+        "Local-baseline window (bins) used FOR DETECTION ONLY: a morphological "
+        "opening of this width removes residual broad background (whatever SNIP "
+        "left), so the noise floor reflects real noise and small peaks aren't "
+        "lost under an inflated threshold. Size it a few× a peak width but below "
+        "the background scale. 0 = off. Default 81. (Fitting still uses the raw "
+        "clean intensities.)"
+    ),
     "propagate_seeds": (
         "Seed peak detection for frame k+1 from good centers in frame k. "
         "Recommended — keeps reflections continuous as the lattice compresses "
@@ -578,8 +586,9 @@ class AnalysisApp:
         self.field(frame, "fit_max", "Fit 2θ/q max (blank=auto)", row=7, width=14)
         self.field(frame, "edge_bins", "Edge guard (bins)", row=8, width=14)
         self.field(frame, "min_fwhm_bins", "Min FWHM (bins)", row=9, width=14)
+        self.field(frame, "detrend_bins", "Detrend window (bins, 0=off)", row=10, width=14)
         self.checkbox(frame, "propagate_seeds",
-                      "Propagate peak seeds frame-to-frame", row=10)
+                      "Propagate peak seeds frame-to-frame", row=11)
         ttk.Label(
             frame,
             text=(
@@ -587,8 +596,9 @@ class AnalysisApp:
                 "clean pattern.\n\n"
                 "Profile: A·(η·Lorentzian + (1−η)·Gaussian), both normalised to\n"
                 "peak height A. η is the Lorentzian fraction fitted freely.\n\n"
-                "Detection: scipy find_peaks + MAD noise floor (1.4826·median|x−median|),\n"
-                "computed INSIDE the fit window so a steep onset shoulder can't inflate it.\n"
+                "Detection: scipy find_peaks on a locally-detrended signal (Detrend window\n"
+                "removes residual broad background), with a MAD noise floor from the\n"
+                "residual — so a non-flat clean can't inflate the threshold and hide peaks.\n"
                 "Peaks below min_snr (height) or min prominence are rejected.\n\n"
                 "Fit window: set Fit min/max (in the radial unit) to the physically valid\n"
                 "range; Edge guard drops peaks within N bins of either end (beamstop onset,\n"
@@ -599,7 +609,7 @@ class AnalysisApp:
                 "WIDTH_BOUND=8 (also sub-resolution width), NO_CONVERGE=16."
             ),
             foreground=MUTED, justify="left", wraplength=640,
-        ).grid(row=11, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        ).grid(row=12, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
 
     # ------------------------------------------------------------------
     # Tab 4 — Run
