@@ -71,7 +71,38 @@ def main() -> None:
     assert abs((first[0] - first[-1]) - 0.05) < 0.02, first
 
     _test_prominence_decoupling()
+    _test_edge_window_and_min_width()
     print("PEAKS TEST OK")
+
+
+def _test_edge_window_and_min_width():
+    """Fit window excludes out-of-range/edge artefacts; min-FWHM floor flags
+    single-bin spikes."""
+    from bulkxrd.analysis.peaks import fit_pattern, FLAG_WIDTH_BOUND
+    rng = np.random.default_rng(1)
+    x = np.linspace(2.0, 22.0, 2000)            # 2θ degrees
+    dx = x[1] - x[0]
+    real = pseudo_voigt(x, 9.3, 12.0, 0.08, 0.5) + pseudo_voigt(x, 10.7, 14.0, 0.08, 0.5)
+    onset = pseudo_voigt(x, 3.2, 30.0, 0.10, 0.5)        # beamstop-onset artefact
+    y = onset + real + rng.normal(0, 1.0, x.size)
+
+    full = fit_pattern(x, y, min_snr=4.0, window_factor=2.5, max_chi2=1e9)
+    assert any(abs(p["center"] - 3.2) < 0.2 for p in full)   # artefact detected w/o window
+    win = fit_pattern(x, y, min_snr=4.0, window_factor=2.5, max_chi2=1e9,
+                      fit_min=6.5, fit_max=21.0, edge_bins=5)
+    assert all(6.5 <= p["center"] <= 21.0 for p in win)      # window excludes it
+    assert sum(any(abs(p["center"] - c) < 0.2 for p in win)
+               for c in (9.3, 10.7)) == 2                    # real peaks kept
+
+    # Min-FWHM floor flags a one-bin spike (WIDTH_BOUND) but not the real peaks.
+    y2 = real + rng.normal(0, 1.0, x.size)
+    k = int(np.argmin(np.abs(x - 15.0))); y2[k] += 60.0
+    pk = fit_pattern(x, y2, min_snr=4.0, window_factor=2.5, max_chi2=1e9,
+                     min_fwhm_bins=2.0, fit_min=6.5, fit_max=21.0)
+    spikes = [p for p in pk if abs(p["center"] - 15.0) < 3 * dx]
+    assert spikes and all(p["flag"] & FLAG_WIDTH_BOUND for p in spikes), spikes
+    reals = [p for p in pk if abs(p["center"] - 9.3) < 0.2]
+    assert reals and all(not (p["flag"] & FLAG_WIDTH_BOUND) for p in reals)
 
 
 def _test_prominence_decoupling():

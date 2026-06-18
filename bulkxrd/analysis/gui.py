@@ -111,6 +111,25 @@ HELP: Dict[str, str] = {
         "Higher = more permissive. Default 25 is already generous; tighten for "
         "cleaner peak maps."
     ),
+    "fit_min": (
+        "Lower bound of the valid fit window in the radial unit (2θ° or q). "
+        "Set this just above the beamstop onset so the steep low-angle shoulder "
+        "is excluded — it otherwise inflates the noise floor and hides real "
+        "peaks. Blank = use the full pattern."
+    ),
+    "fit_max": (
+        "Upper bound of the valid fit window (2θ° or q). Set below the detector "
+        "truncation/noisy tail. Blank = use the full pattern."
+    ),
+    "edge_bins": (
+        "Drop peaks within this many bins of either end of the pattern — kills "
+        "beamstop-onset and detector-truncation edge artefacts. Default 5."
+    ),
+    "min_fwhm_bins": (
+        "Reject peaks narrower than this many bins (a real Bragg peak spans "
+        "several): removes single-bin quantization spikes. Flagged WIDTH_BOUND. "
+        "Default 2."
+    ),
     "propagate_seeds": (
         "Seed peak detection for frame k+1 from good centers in frame k. "
         "Recommended — keeps reflections continuous as the lattice compresses "
@@ -555,8 +574,12 @@ class AnalysisApp:
         self.field(frame, "min_prominence_snr", "Min prominence SNR", row=3, width=14)
         self.field(frame, "window_factor", "Window factor (× FWHM)", row=4, width=14)
         self.field(frame, "max_chi2", "Max reduced χ²", row=5, width=14)
+        self.field(frame, "fit_min", "Fit 2θ/q min (blank=auto)", row=6, width=14)
+        self.field(frame, "fit_max", "Fit 2θ/q max (blank=auto)", row=7, width=14)
+        self.field(frame, "edge_bins", "Edge guard (bins)", row=8, width=14)
+        self.field(frame, "min_fwhm_bins", "Min FWHM (bins)", row=9, width=14)
         self.checkbox(frame, "propagate_seeds",
-                      "Propagate peak seeds frame-to-frame", row=6)
+                      "Propagate peak seeds frame-to-frame", row=10)
         ttk.Label(
             frame,
             text=(
@@ -564,15 +587,19 @@ class AnalysisApp:
                 "clean pattern.\n\n"
                 "Profile: A·(η·Lorentzian + (1−η)·Gaussian), both normalised to\n"
                 "peak height A. η is the Lorentzian fraction fitted freely.\n\n"
-                "Detection: scipy find_peaks + MAD noise floor (1.4826·median|x−median|).\n"
-                "Peaks below min_snr are rejected.\n\n"
+                "Detection: scipy find_peaks + MAD noise floor (1.4826·median|x−median|),\n"
+                "computed INSIDE the fit window so a steep onset shoulder can't inflate it.\n"
+                "Peaks below min_snr (height) or min prominence are rejected.\n\n"
+                "Fit window: set Fit min/max (in the radial unit) to the physically valid\n"
+                "range; Edge guard drops peaks within N bins of either end (beamstop onset,\n"
+                "detector truncation). Min FWHM rejects sub-resolution quantization spikes.\n\n"
                 "Seed propagation: good peak centers from frame k seed frame k+1,\n"
                 "keeping reflections continuous as the lattice compresses under pressure.\n\n"
                 "Rejection flags: LOW_AMP=1, BAD_CHI2=2, CENTER_DRIFT=4,\n"
-                "WIDTH_BOUND=8, NO_CONVERGE=16."
+                "WIDTH_BOUND=8 (also sub-resolution width), NO_CONVERGE=16."
             ),
             foreground=MUTED, justify="left", wraplength=640,
-        ).grid(row=8, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        ).grid(row=11, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
 
     # ------------------------------------------------------------------
     # Tab 4 — Run
