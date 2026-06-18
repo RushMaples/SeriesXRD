@@ -817,6 +817,10 @@ class AnalysisApp:
 
         ttk.Button(ctrl, text="Load review", command=self.load_review).pack(
             side="left", padx=4)
+        ttk.Button(ctrl, text="Open in window",
+                   command=lambda: self._open_plot_window(
+                       getattr(self, "_review_fig", None), "Review")
+                   ).pack(side="left", padx=4)
 
         ttk.Label(ctrl, text="Frame:", foreground=MUTED).pack(side="left", padx=(12, 2))
         self._review_idx_var = tk.IntVar(value=0)
@@ -1106,6 +1110,39 @@ class AnalysisApp:
         for s in ax.spines.values():
             s.set_edgecolor(FG)
 
+    def _toggle_identify_help(self):
+        """Show/hide the Identify instructions so the plot can use the space."""
+        if self._identify_help_var.get():
+            self._identify_help.grid()
+        else:
+            self._identify_help.grid_remove()
+
+    def _open_plot_window(self, fig, title="Plot"):
+        """Open ``fig`` in a separate, large, resizable window with its own
+        toolbar. The figure is shared with the inline canvas (these plots are
+        static, rendered once per load), so the pop-out is just a bigger view;
+        reloading the tab refreshes both."""
+        if fig is None:
+            self.messagebox.showinfo("Open in window", "Load a plot first.")
+            return
+        try:
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            win = self.tk.Toplevel(self.root)
+            win.title(f"Bulk-XRD — {title}")
+            try:
+                win.configure(bg=BG)
+                win.geometry("1100x800")
+            except Exception:
+                pass
+            canvas = FigureCanvasTkAgg(fig, master=win)
+            self._add_nav_toolbar(canvas, win)
+            w = canvas.get_tk_widget()
+            w.configure(width=10, height=10)
+            w.pack(side="top", fill="both", expand=True)
+            canvas.draw()
+        except Exception as e:
+            self.messagebox.showerror("Open in window", f"Could not open: {e!r}")
+
     def _attach_hover(self, canvas, status_label):
         """Live frame read-out: show the frame index under the cursor (the x-axis
         of these plots is the frame index) in ``status_label``, restoring its text
@@ -1250,6 +1287,10 @@ class AnalysisApp:
         ).pack(side="left", padx=2)
         ttk.Button(top, text="Refresh", command=self.load_heatmap).pack(
             side="left", padx=4)
+        ttk.Button(top, text="Open in window",
+                   command=lambda: self._open_plot_window(
+                       getattr(self, "_heatmap_fig", None), "Peak map")
+                   ).pack(side="left", padx=4)
 
         self.heatmap_status = ttk.Label(top, text="", foreground=MUTED)
         self.heatmap_status.pack(side="left", padx=12)
@@ -1774,10 +1815,16 @@ class AnalysisApp:
         tk, ttk = self.tk, self.ttk
 
         # -- params area --------------------------------------------------
+        title_row = ttk.Frame(frame)
+        title_row.grid(row=0, column=0, columnspan=3, sticky="we", padx=6, pady=(0, 2))
         ttk.Label(
-            frame, text="Phase identification (EOS matching)",
+            title_row, text="Phase identification (EOS matching)",
             font=("TkDefaultFont", 12, "bold"),
-        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 2))
+        ).pack(side="left")
+        self._identify_help_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(title_row, text="Show instructions",
+                        variable=self._identify_help_var,
+                        command=self._toggle_identify_help).pack(side="left", padx=12)
 
         self.checkbox(frame, "run_step3",
                       "Enable phase identification in the next run", row=1)
@@ -1787,7 +1834,7 @@ class AnalysisApp:
         self.field(frame, "identify_wavelength",
                    "Wavelength (Å, blank=auto)", row=5, width=12)
 
-        ttk.Label(
+        self._identify_help = ttk.Label(
             frame,
             text=(
                 "What this does: for each candidate phase, fit its Birch–Murnaghan "
@@ -1805,7 +1852,9 @@ class AnalysisApp:
                 "Already have a results file? Just click “Load identification” below."
             ),
             foreground=MUTED, justify="left", wraplength=640,
-        ).grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        )
+        self._identify_help.grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        self._identify_help.grid_remove()   # collapsed by default → bigger plot
 
         # -- controls row -------------------------------------------------
         ctrl = ttk.Frame(frame)
@@ -1813,6 +1862,10 @@ class AnalysisApp:
 
         ttk.Button(ctrl, text="Load identification",
                    command=self.load_identify).pack(side="left", padx=4)
+        ttk.Button(ctrl, text="Open in window",
+                   command=lambda: self._open_plot_window(
+                       getattr(self, "_identify_fig", None), "Phase identification")
+                   ).pack(side="left", padx=4)
 
         ttk.Label(ctrl, text="Min confidence:", foreground=MUTED).pack(
             side="left", padx=(12, 2))
@@ -1980,6 +2033,10 @@ class AnalysisApp:
 
         ttk.Button(row1, text="Load pattern map",
                    command=self.load_pattern_map).pack(side="left", padx=4)
+        ttk.Button(row1, text="Open in window",
+                   command=lambda: self._open_plot_window(
+                       getattr(self, "_patternmap_fig", None), "Pattern map")
+                   ).pack(side="left", padx=4)
 
         ttk.Label(row1, text="Source:", foreground=MUTED).pack(side="left", padx=(12, 2))
         self._pm_source = ttk.Combobox(
