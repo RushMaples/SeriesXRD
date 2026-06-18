@@ -593,14 +593,22 @@ def run_peak_fitting(
             tmp.unlink()
         raise
 
-    n_good = int(np.sum(np.asarray(cols["flag"], dtype=int) == FLAG_OK)) if P else 0
+    flags = np.asarray(cols["flag"], dtype=int) if P else np.zeros(0, int)
+    n_good = int(np.sum(flags == FLAG_OK)) if P else 0
+    # Per-flag rejection tally (a peak may carry several flags; counts overlap).
+    flag_defs = (("low_amp", FLAG_LOW_AMP), ("bad_chi2", FLAG_BAD_CHI2),
+                 ("center_drift", FLAG_CENTER_DRIFT), ("width_bound", FLAG_WIDTH_BOUND),
+                 ("no_converge", FLAG_NO_CONVERGE))
+    flag_counts = {name: int(np.sum((flags & bit) != 0)) for name, bit in flag_defs}
     manifest = {
         "tool_version": SCHEMA_VERSION, "source": str(src), "out_h5": str(dst),
         "n_frames": int(n), "n_peaks": P, "n_good": n_good,
-        "n_flagged": P - n_good, "unit": unit,
+        "n_flagged": P - n_good, "unit": unit, "flag_counts": flag_counts,
         "min_snr": float(min_snr), "window_factor": float(window_factor),
         "max_chi2": float(max_chi2),
         "peaks_per_frame_mean": float(counts.mean()) if n else 0.0,
     }
-    print(f"[PEAKS] done -> {dst}  ({P} peaks, {n_good} good)", flush=True)
+    brk = ", ".join(f"{k}={v}" for k, v in flag_counts.items() if v)
+    print(f"[PEAKS] done -> {dst}  ({P} peaks, {n_good} good"
+          f"{'; rejected: ' + brk if brk else ''})", flush=True)
     return manifest
