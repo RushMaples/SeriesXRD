@@ -230,7 +230,15 @@ def _group_peaks(cands: List[Dict[str, float]], window_factor: float
 
 def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
                ) -> List[Dict[str, Any]]:
-    """Jointly fit one cluster of peaks (sum of pseudo-Voigts + constant)."""
+    """Jointly fit one cluster of peaks (sum of pseudo-Voigts + LOCAL LINEAR
+    baseline).
+
+    The baseline under each group is fitted as intercept + slope rather than a
+    constant: real residual background (whatever the global SNIP left) is locally
+    sloped, and — per Girgsdies — an ambiguous/biased baseline corrupts the peak
+    height, FWHM and area, and a flat fit on a slope leaves a sloped residual that
+    inflates chi-square (spurious bad_chi2 rejections). A local slope absorbs that.
+    """
     from scipy.optimize import least_squares  # lazy
 
     centers = np.array([g["center"] for g in group], float)
@@ -241,16 +249,20 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
     m = (x >= lo) & (x <= hi) & np.isfinite(y)
     xw, yw = x[m], y[m]
     K = len(group)
-    if xw.size < 4 * K + 1:                       # too few points to fit
+    if xw.size < 4 * K + 2:                        # too few points to fit
         return [_failed_peak(g, FLAG_NO_CONVERGE) for g in group]
+    xc = float(xw.mean())                          # centre x for slope conditioning
 
-    # parameter vector: [c,a,w,eta]*K + [baseline]
+    # parameter vector: [c,a,w,eta]*K + [b0 (intercept), b1 (slope)]
     p0, lb, ub = [], [], []
     for c, a, w in zip(centers, amps, widths):
         p0 += [c, a, w, 0.5]
         lb += [c - 0.5 * w, 0.0, 0.2 * w, 0.0]
         ub += [c + 0.5 * w, 5.0 * a + 1e-9, 5.0 * w, 1.0]
-    p0.append(0.0); lb.append(-np.inf); ub.append(np.inf)   # constant baseline
+    b0_init = float(np.percentile(yw, 10))         # local floor as the intercept seed
+    p0 += [b0_init, 0.0]
+    lb += [-np.inf, -np.inf]
+    ub += [np.inf, np.inf]
     p0 = np.array(p0); lb = np.array(lb); ub = np.array(ub)
     p0 = np.clip(p0, lb, ub)
     sig = sigma if sigma > 0 else 1.0
@@ -258,7 +270,7 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
     def model(p):
         c = p[0:4 * K:4]; a = p[1:4 * K:4]; w = p[2:4 * K:4]; e = p[3:4 * K:4]
         prof = pseudo_voigt(xw[:, None], c[None, :], a[None, :], w[None, :], e[None, :])
-        return prof.sum(axis=1) + p[-1]
+        return prof.sum(axis=1) + p[-2] + p[-1] * (xw - xc)   # peaks + linear baseline
 
     def resid(p):
         return (model(p) - yw) / sig
@@ -593,14 +605,22 @@ def run_peak_fitting(
             tmp.unlink()
         raise
 
-    n_good = int(np.sum(np.asarray(cols["flag"], dtype=int) == FLAG_OK)) if P else 0
+    flags = np.asarray(cols["flag"], dtype=int) if P else np.zeros(0, int)
+    n_good = int(np.sum(flags == FLAG_OK)) if P else 0
+    # Per-flag rejection tally (a peak may carry several flags; counts overlap).
+    flag_defs = (("low_amp", FLAG_LOW_AMP), ("bad_chi2", FLAG_BAD_CHI2),
+                 ("center_drift", FLAG_CENTER_DRIFT), ("width_bound", FLAG_WIDTH_BOUND),
+                 ("no_converge", FLAG_NO_CONVERGE))
+    flag_counts = {name: int(np.sum((flags & bit) != 0)) for name, bit in flag_defs}
     manifest = {
         "tool_version": SCHEMA_VERSION, "source": str(src), "out_h5": str(dst),
         "n_frames": int(n), "n_peaks": P, "n_good": n_good,
-        "n_flagged": P - n_good, "unit": unit,
+        "n_flagged": P - n_good, "unit": unit, "flag_counts": flag_counts,
         "min_snr": float(min_snr), "window_factor": float(window_factor),
         "max_chi2": float(max_chi2),
         "peaks_per_frame_mean": float(counts.mean()) if n else 0.0,
     }
-    print(f"[PEAKS] done -> {dst}  ({P} peaks, {n_good} good)", flush=True)
+    brk = ", ".join(f"{k}={v}" for k, v in flag_counts.items() if v)
+    print(f"[PEAKS] done -> {dst}  ({P} peaks, {n_good} good"
+          f"{'; rejected: ' + brk if brk else ''})", flush=True)
     return manifest
