@@ -73,7 +73,25 @@ def main() -> None:
     _test_prominence_decoupling()
     _test_edge_window_and_min_width()
     _test_local_detrend_detection()
+    _test_sloped_baseline_fit()
     print("PEAKS TEST OK")
+
+
+def _test_sloped_baseline_fit():
+    """A peak on a strongly sloped local background fits cleanly with the local
+    LINEAR baseline (a constant baseline would leave a sloped residual → high
+    chi-square → bad_chi2 rejection)."""
+    from bulkxrd.analysis.peaks import fit_pattern
+    x = np.linspace(5, 12, 1400)
+    y = (8.0 - 0.6 * (x - 5)) + pseudo_voigt(x, 9.0, 10.0, 0.06, 0.5) \
+        + np.random.default_rng(0).normal(0, 0.3, x.size)
+    pk = [p for p in fit_pattern(x, y, min_snr=4.0, window_factor=3.0,
+                                 max_chi2=15.0, local_baseline_bins=81)
+          if abs(p["center"] - 9.0) < 0.2]
+    assert pk, "peak on a slope not found"
+    p = pk[0]
+    assert p["flag"] == 0 and p["chi2"] < 5.0, (p["flag"], p["chi2"])
+    assert abs(p["amplitude"] - 10.0) < 1.5 and abs(p["fwhm"] - 0.06) < 0.02
 
 
 def _test_local_detrend_detection():
