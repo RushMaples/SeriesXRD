@@ -61,11 +61,24 @@ HELP: Dict[str, str] = {
         "per phase."
     ),
     # Step 3a
+    "identify_all_phases": (
+        "Open-set mode: score every phase in the reference library against each "
+        "frame, so you don't have to mark candidates beforehand. Phases above the "
+        "present-in-frame confidence are reported and removed in the residual step. "
+        "Note: 'the library' is the bundled + your added phases, not all of ICSD/MP — "
+        "true database/ML search is Step 3b. Leave off to restrict to the Phases-tab "
+        "selection (faster, fewer spurious matches)."
+    ),
     "p_min": "Pressure search range (GPa) for the EOS fit.",
     "p_max": "Pressure search range (GPa) for the EOS fit.",
     "rel_tol": (
         "Peak-match tolerance as a fraction of d-spacing (e.g. 0.01 = 1%). "
         "Looser = more tolerant matching, fuzzier pressure."
+    ),
+    "seen_conf": (
+        "Confidence bar (0–1) for calling a phase present in a frame. Phases above "
+        "it are removed from the pattern in the residual step, exposing weaker and "
+        "unknown features underneath."
     ),
     "identify_wavelength": (
         "X-ray wavelength (Å). Needed only for a 2θ axis; leave blank to auto-read it "
@@ -1918,11 +1931,15 @@ class AnalysisApp:
 
         self.checkbox(frame, "run_step3",
                       "Enable phase identification in the next run", row=1)
-        self.field(frame, "p_min", "Pressure min (GPa)", row=2, width=12)
-        self.field(frame, "p_max", "Pressure max (GPa)", row=3, width=12)
-        self.field(frame, "rel_tol", "Match tolerance (Δd/d)", row=4, width=12)
+        self.checkbox(frame, "identify_all_phases",
+                      "Search entire library (identify without pre-selecting candidates)",
+                      row=2)
+        self.field(frame, "p_min", "Pressure min (GPa)", row=3, width=12)
+        self.field(frame, "p_max", "Pressure max (GPa)", row=4, width=12)
+        self.field(frame, "rel_tol", "Match tolerance (Δd/d)", row=5, width=12)
+        self.field(frame, "seen_conf", "Present-in-frame confidence", row=6, width=12)
         self.field(frame, "identify_wavelength",
-                   "Wavelength (Å, blank=auto)", row=5, width=12)
+                   "Wavelength (Å, blank=auto)", row=7, width=12)
 
         self._identify_help = ttk.Label(
             frame,
@@ -1943,7 +1960,7 @@ class AnalysisApp:
             ),
             foreground=MUTED, justify="left", wraplength=640,
         )
-        self._identify_help.grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        self._identify_help.grid(row=8, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
         self._identify_help.grid_remove()   # collapsed by default → bigger plot
 
         # -- controls row -------------------------------------------------
