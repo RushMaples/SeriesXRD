@@ -388,6 +388,18 @@ def run_identification(
     phases = [p for p in phases]
     if not phases:
         raise ValueError("No candidate phases supplied — enable some on the Phases tab.")
+    # Open-set mode sweeps the whole library, which can include phases with no
+    # simulatable structure (e.g. a He pressure medium or a gasket alloy entry).
+    # Drop them up front so one un-simulatable phase can't abort the whole run.
+    no_struct = [p.name for p in phases if not p.has_structure()]
+    phases = [p for p in phases if p.has_structure()]
+    if no_struct:
+        print(f"[IDENTIFY] skipped (no structure to simulate): {no_struct}", flush=True)
+    if not phases:
+        raise ValueError(
+            "None of the selected phases have a simulatable structure "
+            "(need a CIF, or space group + lattice + atoms). Add structure on the "
+            "Phases tab, or enable phases that have one.")
 
     import os
     import shutil
@@ -435,8 +447,20 @@ def run_identification(
               f"phases are evaluated at ambient only (pressure fixed at 0). Add "
               f"V0/K0/K0' on the Phases tab to fit pressure.", flush=True)
 
-    # Reflections simulated once in the parent (needs pymatgen); workers only score.
-    refl_cache = {ph.name: phase_reflections(ph) for ph in phases}
+    # Reflections simulated once in the parent (needs pymatgen); workers only
+    # score. Guard each simulation so one phase that pymatgen chokes on (bad CIF,
+    # exotic element) is skipped with a warning rather than killing the run.
+    refl_cache = {}
+    kept = []
+    for ph in phases:
+        try:
+            refl_cache[ph.name] = phase_reflections(ph)
+            kept.append(ph)
+        except Exception as e:
+            print(f"[IDENTIFY] skipped {ph.name!r}: simulation failed ({e})", flush=True)
+    phases = kept
+    if not phases:
+        raise ValueError("No phases could be simulated for identification.")
     refls = [refl_cache[ph.name] for ph in phases]
     results: Dict[str, Dict[str, np.ndarray]] = {
         ph.name: {"pressure": np.full(n, np.nan, "f8"), "score": np.zeros(n, "f8"),
