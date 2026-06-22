@@ -77,6 +77,10 @@ class ReductionApp:
         self._handoff_state: str = "none"
         self._frame_count: int = 0
         self._worker_status: str = "idle"
+        # Listeners notified with the reduced .h5 path when a reduction finishes,
+        # so the analysis stage can auto-fill its input/output without a manual
+        # "Use latest reduced output" click.
+        self._reduced_listeners: "list" = []
         self._build_gui()
         self._drain_log_queue()
         self.log("GUI initialized")
@@ -352,6 +356,12 @@ class ReductionApp:
         if p:
             self.set_handoff(p)
 
+    def add_reduced_listener(self, fn) -> None:
+        """Register a callback invoked with the reduced .h5 path when a reduction
+        completes (used to auto-wire the analysis stage's input)."""
+        if callable(fn):
+            self._reduced_listeners.append(fn)
+
     def set_handoff(self, handoff_path) -> None:
         """Populate the handoff from an external source (e.g. the calibration
         pane just exported one) and verify it. Quiet — no dialogs — since this
@@ -594,6 +604,11 @@ class ReductionApp:
                 self.load_gallery()
             except Exception as e:
                 self.log(f"Auto gallery load failed: {e!r}", "WARN")
+            for fn in self._reduced_listeners:
+                try:
+                    fn(h5)
+                except Exception as e:
+                    self.log(f"Reduced-output listener failed: {e!r}", "WARN")
         if nf:
             self.messagebox.showwarning("Reduction finished with failures",
                                         f"{nf} of {n} frames failed — see manifest:\n{manifest.get('manifest_file', '')}")
