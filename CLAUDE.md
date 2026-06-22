@@ -92,6 +92,26 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
 
 P = sum(counts). Ragged layout — peak count varies per frame.
 
+### Identify + residual appended by `analysis/identify.py` + `analysis/residual.py` (Step 3a)
+
+```
+/identify/<phase>/pressure,score,confidence,recall,precision,n_matched  (N,)
+/identify/<phase>/refl_d, refl_w, refl_hkl   cached ambient reflections (no pymatgen in GUI)
+/peaks/phase                 (P,) str   phase attributed to each fitted peak ("" = unexplained)
+/residual/clean              (N, N_bins) clean minus the reconstructed peaks of present phases
+/residual/explained_counts   (N,) int   good peaks attributed to a known phase
+/residual/unexplained_counts (N,) int   good peaks left over
+/residual/peaks/counts,frame,center,amplitude   peaks re-detected on the residual (→ Step 3c)
+```
+
+`run_residual` runs automatically after `run_identification` in the worker. It reuses
+the cached `/identify/<phase>/refl_d`+`refl_hkl` and `predicted_d` (same compression
+model as 3a) so it needs **no pymatgen**. A peak is "explained" if it matches a present
+phase's predicted line within `rel_tol`; explained peaks are subtracted (pseudo-Voigt
+reconstruction) and the residual is re-detected to surface weaker/unknown features.
+**Open-set ID**: `identify_all_phases=True` scores the *whole* library per frame (no
+candidate pre-selection); "library" = bundled + user phases, not all of ICSD/MP.
+
 All HDF5 writes are atomic: `.tmp` file + `os.replace`.
 
 ---

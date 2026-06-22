@@ -49,9 +49,13 @@ _DEFAULTS = {
     "candidate_phases": [],
     # Step 3a — deterministic EOS phase matching
     "run_step3": False,
+    "identify_all_phases": False,  # open-set: score the whole library, ignore the
+                                   # candidate selection (identify without pre-marking).
     "p_min": "0",
     "p_max": "100",
     "rel_tol": "0.01",
+    "seen_conf": "0.5",         # confidence bar for "phase present in frame" — also
+                                # which phases get removed in the residual step.
     "identify_wavelength": "",  # Å; blank = auto-read from reduced PONI (2θ data only)
     # Parallelism: 0 = auto (CPU count − 1), 1 = serial, N = N processes.
     "num_workers": "0",

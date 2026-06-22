@@ -24,12 +24,14 @@ if __package__ in (None, ""):
     from bulkxrd.analysis.background import run_background_separation
     from bulkxrd.analysis.peaks import run_peak_fitting
     from bulkxrd.analysis.identify import run_identification
+    from bulkxrd.analysis.residual import run_residual
     from bulkxrd.analysis.phases import load_library
 else:
     from ..core.config import read_json, write_json, print_status
     from .background import run_background_separation
     from .peaks import run_peak_fitting
     from .identify import run_identification
+    from .residual import run_residual
     from .phases import load_library
 
 
@@ -120,29 +122,52 @@ def run_analysis(cfg: dict) -> dict:
     if run_step3:
         if not out_path or not Path(out_path).expanduser().is_file():
             raise FileNotFoundError(f"Analysis HDF5 not found for phase matching: {out_path!r}")
-        names = [str(n) for n in (cfg.get("candidate_phases") or [])]
-        if not names:
-            raise ValueError(
-                "Step 3a needs candidate phases — enable some on the Phases tab.")
         workspace = cfg.get("workspace_root") or str(Path(out_path).expanduser().parent)
         lib = load_library(workspace)
-        phases = [lib[n] for n in names if n in lib]
-        missing = [n for n in names if n not in lib]
-        if missing:
-            print_status(f"Candidate phases not found in library, skipped: {missing}", "WARN")
-        if not phases:
-            raise ValueError("None of the candidate phases resolve in the reference library.")
+        # Open-set mode: score the WHOLE library, so phases need not be marked as
+        # candidates beforehand. Otherwise restrict to the user's selection
+        # (faster, and avoids spurious low-confidence matches).
+        identify_all = _as_bool(cfg.get("identify_all_phases", False), False)
+        if identify_all:
+            phases = list(lib.values())
+            if not phases:
+                raise ValueError("Reference library is empty — add or bundle phases first.")
+        else:
+            names = [str(n) for n in (cfg.get("candidate_phases") or [])]
+            if not names:
+                raise ValueError(
+                    "Step 3a needs candidate phases — enable some on the Phases tab, "
+                    "or turn on 'Search entire library' to identify without pre-selecting.")
+            phases = [lib[n] for n in names if n in lib]
+            missing = [n for n in names if n not in lib]
+            if missing:
+                print_status(f"Candidate phases not found in library, skipped: {missing}", "WARN")
+            if not phases:
+                raise ValueError("None of the candidate phases resolve in the reference library.")
+        rel_tol = _as_float(cfg.get("rel_tol"), 0.01)
         m3 = run_identification(
             out_path, phases,
             wavelength=_opt_float(cfg.get("identify_wavelength")),
             p_min=_as_float(cfg.get("p_min"), 0.0),
             p_max=_as_float(cfg.get("p_max"), 100.0),
-            rel_tol=_as_float(cfg.get("rel_tol"), 0.01),
+            rel_tol=rel_tol,
             num_workers=num_workers,
         )
         out_path = m3["out_h5"]
         manifest["step3"] = m3
         manifest["steps"].append("identify")
+
+        # Remove the identified phases and re-detect on the residual, so weaker
+        # and unknown features the strong peaks were masking become readable.
+        m3r = run_residual(
+            out_path, phases,
+            seen_conf=_as_float(cfg.get("seen_conf"), 0.5),
+            rel_tol=rel_tol,
+            min_snr=_as_float(cfg.get("min_snr"), 5.0),
+        )
+        out_path = m3r["out_h5"]
+        manifest["step3_residual"] = m3r
+        manifest["steps"].append("residual")
 
     manifest["analysis_h5_file"] = out_path
     return manifest
