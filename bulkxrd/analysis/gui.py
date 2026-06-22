@@ -2023,17 +2023,50 @@ class AnalysisApp:
         self._identify_status = ttk.Label(ctrl, text="", foreground=MUTED)
         self._identify_status.pack(side="left", padx=12)
 
-        # -- plot area ----------------------------------------------------
-        self.identify_plot_frame = ttk.Frame(frame)
-        self.identify_plot_frame.grid(
-            row=8, column=0, columnspan=3, sticky="nsew")
+        # -- body: per-frame phase table (left) + plot (right) ------------
+        body = ttk.Frame(frame)
+        body.grid(row=8, column=0, columnspan=3, sticky="nsew")
         frame.rowconfigure(8, weight=1)
         frame.columnconfigure(0, weight=1)
+
+        # Left: a frame selector and a ranked table of phases for that frame.
+        left = ttk.Frame(body)
+        left.pack(side="left", fill="y", padx=(0, 6))
+        sel = ttk.Frame(left)
+        sel.pack(fill="x", pady=(0, 4))
+        ttk.Label(sel, text="Frame", foreground=MUTED).pack(side="left", padx=(0, 4))
+        ttk.Button(sel, text="◀", width=2,
+                   command=lambda: self._step_identify_frame(-1)).pack(side="left")
+        self._identify_frame_var = tk.StringVar(value="0")
+        self._identify_frame_spin = ttk.Spinbox(
+            sel, from_=0, to=0, width=6, textvariable=self._identify_frame_var,
+            command=self._update_identify_table)
+        self._identify_frame_spin.pack(side="left", padx=2)
+        self._identify_frame_spin.bind("<Return>", lambda e: self._update_identify_table())
+        ttk.Button(sel, text="▶", width=2,
+                   command=lambda: self._step_identify_frame(1)).pack(side="left")
+
+        cols = ("phase", "conf", "recall", "prec", "pressure", "lines")
+        tbl = ttk.Treeview(left, columns=cols, show="headings", height=18,
+                           selectmode="browse")
+        for c, txt, w, anc in (("phase", "Phase", 150, "w"), ("conf", "Conf", 56, "center"),
+                               ("recall", "Recall", 56, "center"), ("prec", "Prec", 56, "center"),
+                               ("pressure", "P (GPa)", 64, "center"), ("lines", "#", 40, "center")):
+            tbl.heading(c, text=txt)
+            tbl.column(c, width=w, minwidth=36, anchor=anc, stretch=(c == "phase"))
+        tbl.tag_configure("present", foreground=ACCENT2)
+        tbl.tag_configure("absent", foreground=MUTED)
+        tbl.pack(fill="y", expand=False)
+        self._identify_table = tbl
+
+        # Right: the (decluttered) confidence/pressure plot.
+        self.identify_plot_frame = ttk.Frame(body)
+        self.identify_plot_frame.pack(side="left", fill="both", expand=True)
 
         ttk.Label(
             self.identify_plot_frame,
             text="Enable phase identification and Run (see steps above), or click "
-                 "“Load identification” to plot pressure vs frame from a results file.",
+                 "“Load identification” to view per-frame phases + confidence.",
             foreground=MUTED,
         ).pack(anchor="center", expand=True)
 
@@ -2074,6 +2107,7 @@ class AnalysisApp:
 
         from .review import identify_tracks
         tr = identify_tracks(path)
+        self._identify_tr = tr
         if not tr["ok"]:
             self.ttk.Label(
                 self.identify_plot_frame,
@@ -2083,6 +2117,11 @@ class AnalysisApp:
             if hasattr(self, "_identify_status"):
                 self._identify_status.configure(text=tr["error"])
             return
+
+        # Sync the per-frame table + its frame selector range.
+        if hasattr(self, "_identify_frame_spin"):
+            self._identify_frame_spin.configure(to=max(tr["n_frames"] - 1, 0))
+        self._update_identify_table()
 
         # Parse confidence threshold
         conf_min = 0.5
@@ -2098,7 +2137,17 @@ class AnalysisApp:
         ax_pres = fig.add_subplot(2, 1, 1)
         ax_conf = fig.add_subplot(2, 1, 2)
 
-        for rec in tr["phases"]:
+        # Only plot phases actually seen at least once (max confidence ≥ the bar),
+        # so the figure isn't 22 overlapping flat lines + a giant legend. Fall back
+        # to the strongest few if nothing clears the bar, so it's never blank.
+        def _maxconf(rec):
+            c = rec.get("confidence")
+            return float(np.nanmax(c)) if c is not None and len(c) else 0.0
+        shown = [r for r in tr["phases"] if _maxconf(r) >= conf_min]
+        if not shown:
+            shown = sorted(tr["phases"], key=_maxconf, reverse=True)[:5]
+
+        for rec in shown:
             name = rec["name"]
             pressure = np.asarray(rec["pressure"], dtype=float)
             conf_arr = (
@@ -2126,13 +2175,15 @@ class AnalysisApp:
                 color = ln.get_color()
 
             # Always show confidence trace in the same color.
-            ax_conf.plot(x, conf_arr, linewidth=0.7, color=color)
+            ax_conf.plot(x, conf_arr, linewidth=0.7, color=color, label=label)
 
         ax_pres.set_ylabel("pressure (GPa)")
-        ax_pres.set_title("Best-fit pressure per phase", color=FG)
+        ax_pres.set_title(
+            f"Phases seen (confidence ≥ {conf_min:.2f}) — {len(shown)} shown",
+            color=FG)
         handles, labels = ax_pres.get_legend_handles_labels()
         if handles:
-            ax_pres.legend(fontsize=7, framealpha=0.4)
+            ax_pres.legend(fontsize=7, framealpha=0.4, ncol=2, loc="upper right")
         self._style_ax(ax_pres)
 
         ax_conf.axhline(conf_min, color=MUTED, linewidth=0.8, linestyle="--")
@@ -2147,6 +2198,66 @@ class AnalysisApp:
             self._identify_status.configure(
                 text=f"{len(tr['phases'])} phase(s), {tr['n_frames']} frames")
         self._attach_hover(self._identify_canvas, self._identify_status)
+
+    def _step_identify_frame(self, delta: int):
+        try:
+            cur = int(float(self._identify_frame_var.get()))
+        except (ValueError, AttributeError):
+            cur = 0
+        n = int(getattr(self, "_identify_tr", {}).get("n_frames", 0) or 0)
+        cur = max(0, min(cur + delta, max(n - 1, 0)))
+        self._identify_frame_var.set(str(cur))
+        self._update_identify_table()
+
+    def _update_identify_table(self):
+        """Fill the per-frame table: phases ranked by confidence for the selected
+        frame, with recall / precision / best-fit pressure. Present phases (≥ the
+        Min-confidence bar) are highlighted."""
+        import numpy as np
+        tbl = getattr(self, "_identify_table", None)
+        tr = getattr(self, "_identify_tr", None)
+        if tbl is None or not tr or not tr.get("ok"):
+            return
+        tbl.delete(*tbl.get_children())
+        n = int(tr.get("n_frames", 0) or 0)
+        try:
+            fi = max(0, min(int(float(self._identify_frame_var.get())), max(n - 1, 0)))
+        except (ValueError, AttributeError):
+            fi = 0
+        try:
+            conf_min = max(0.0, min(1.0, float(self._identify_conf_var.get())))
+        except (ValueError, AttributeError):
+            conf_min = 0.5
+
+        def _at(arr, default=np.nan):
+            return float(arr[fi]) if arr is not None and fi < len(arr) else default
+
+        rows = []
+        for rec in tr["phases"]:
+            conf = _at(rec.get("confidence"), 0.0)
+            rows.append((conf, rec))
+        rows.sort(key=lambda t: (-(t[0] if t[0] == t[0] else -1), t[1]["name"].lower()))
+        n_present = 0
+        for conf, rec in rows:
+            recall = _at(rec.get("recall"))
+            prec = _at(rec.get("precision"))
+            press = _at(rec.get("pressure"))
+            nmatch = rec.get("n_matched")
+            nm = int(nmatch[fi]) if nmatch is not None and fi < len(nmatch) else 0
+            present = conf >= conf_min
+            n_present += int(present)
+            name = rec["name"] if rec.get("has_eos") else f"{rec['name']} (no EOS)"
+            pstr = "—" if (press != press or not rec.get("has_eos")) else f"{press:.1f}"
+            tbl.insert("", "end", values=(
+                name, f"{conf:.2f}",
+                "—" if recall != recall else f"{recall:.2f}",
+                "—" if prec != prec else f"{prec:.2f}",
+                pstr, nm),
+                tags=("present" if present else "absent",))
+        if hasattr(self, "_identify_status"):
+            self._identify_status.configure(
+                text=f"frame {fi}: {n_present} phase(s) ≥ {conf_min:.2f} "
+                     f"of {len(tr['phases'])}")
 
     # ------------------------------------------------------------------
     # Helpers shared by Tab 9

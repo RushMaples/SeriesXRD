@@ -321,8 +321,8 @@ def identify_tracks(h5_path: "str | Path") -> Dict[str, Any]:
 
     Returns ``{ok, error, unit, wavelength, p_min, p_max, n_frames, phases}``
     where ``phases`` is a list of ``{name, category, has_eos, n_pred, pressure,
-    score, confidence, n_matched}`` (the last four are arrays of length
-    n_frames).
+    score, confidence, recall, precision, n_matched}`` (the array fields are all
+    length n_frames).
     """
     p = Path(h5_path).expanduser()
     out: Dict[str, Any] = {"ok": False, "error": "", "unit": "", "wavelength": 0.0,
@@ -357,6 +357,8 @@ def identify_tracks(h5_path: "str | Path") -> Dict[str, Any]:
                     "pressure": np.asarray(g["pressure"][:], dtype=float),
                     "score": np.asarray(g["score"][:], dtype=float) if "score" in g else None,
                     "confidence": np.asarray(g["confidence"][:], dtype=float) if "confidence" in g else None,
+                    "recall": np.asarray(g["recall"][:], dtype=float) if "recall" in g else None,
+                    "precision": np.asarray(g["precision"][:], dtype=float) if "precision" in g else None,
                     "n_matched": np.asarray(g["n_matched"][:], dtype=int) if "n_matched" in g else None,
                 }
                 out["n_frames"] = max(out["n_frames"], int(rec["pressure"].size))
