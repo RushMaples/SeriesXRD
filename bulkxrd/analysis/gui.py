@@ -458,10 +458,46 @@ class AnalysisApp:
     # Tab 1 — Input
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _derive_analysis_output(reduced: str) -> str:
+        """Default analysis output path beside the reduced input
+        (``<stem>_analysis.h5``) — mirrors background.run_background_separation."""
+        r = str(reduced or "").strip()
+        if not r:
+            return ""
+        p = Path(r)
+        return str(p.with_name(p.stem + "_analysis.h5"))
+
+    def _autofill_analysis_output(self, *_):
+        """Keep the output Analysis HDF5 in step with the reduced input.
+
+        Fills it from the input's default when the field is blank or still holds
+        the value we last auto-derived (so a path the user typed is never
+        clobbered)."""
+        if "reduced_h5_file" not in self.vars or "analysis_h5_file" not in self.vars:
+            return
+        reduced = str(self.vars["reduced_h5_file"].get() or "").strip()
+        derived = self._derive_analysis_output(reduced)
+        if not derived:
+            return
+        current = str(self.vars["analysis_h5_file"].get() or "").strip()
+        if current == derived:
+            self._auto_out_value = derived   # already matches → adopt as managed
+            return
+        if current and current != getattr(self, "_auto_out_value", ""):
+            return  # user-customized — leave it alone
+        self.vars["analysis_h5_file"].set(derived)
+        self.config["analysis_h5_file"] = derived
+        self._auto_out_value = derived
+
     def _tab_input(self, frame):
         tk, ttk = self.tk, self.ttk
         self.field(frame, "reduced_h5_file", "Reduced HDF5", browse="file", row=0)
         self.field(frame, "analysis_h5_file", "Analysis HDF5 (output)", browse="file", row=1)
+        # Auto-derive the output path whenever the reduced input changes (typed,
+        # browsed, or handed off from the reduction stage).
+        self.vars["reduced_h5_file"].trace_add("write", self._autofill_analysis_output)
+        self._autofill_analysis_output()
         btns = ttk.Frame(frame)
         btns.grid(row=2, column=0, columnspan=3, sticky="w", padx=2, pady=6)
         ttk.Button(

@@ -82,6 +82,10 @@ class BulkXRDApp:
 
         # Embed the analysis pane (Step 1 background + Step 2 peaks + QC views).
         self.analysis_pane = make_analysis_pane(analysis_tab, analysis_cfg)
+        # A finished reduction flows its reduced .h5 straight into the analysis
+        # pane (auto-fills the input + derives the output path), so the analysis
+        # stage is ready without the manual "Use latest reduced output" step.
+        self.reduce_pane.add_reduced_listener(self.analysis_pane.set_reduced)
 
         self._build_menubar()
 

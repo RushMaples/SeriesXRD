@@ -83,6 +83,21 @@ def _make_analysis_with_peaks(path, au, p_true, n_frames=4):
         gp.create_dataset("flag", data=np.zeros(n_frames * k, "i4"))
 
 
+def test_skip_structureless_phase():
+    """Open-set mode sweeps the whole library, which can include phases with no
+    simulatable structure (e.g. He). They must be skipped, not crash the run."""
+    if not ph.pymatgen_available():
+        print("  (pymatgen not installed — skipping structureless test)")
+        return
+    au = ph.load_bundled()["Au"]
+    he = ph.Phase(name="He")                    # no lattice/atoms → not simulatable
+    with tempfile.TemporaryDirectory() as td:
+        h5 = Path(td) / "analysis.h5"
+        _make_analysis_with_peaks(h5, au, p_true=60.0, n_frames=3)
+        manifest = idf.run_identification(h5, [he, au], p_min=0.0, p_max=200.0)
+        assert manifest["phases"] == ["Au"], manifest["phases"]
+
+
 def test_run_identification():
     if not ph.pymatgen_available():
         print("  (pymatgen not installed — skipping run_identification)")
@@ -200,6 +215,7 @@ def main() -> None:
     test_scale_monotonic()
     test_pressure_recovery()
     test_run_identification()
+    test_skip_structureless_phase()
     test_axial_eos_anisotropic()
     test_sparse_observation_still_seen()
     print("IDENTIFY TEST OK")
