@@ -428,6 +428,183 @@ def fit_dataset(radial, clean, *, min_snr: float = 5.0, window_factor: float = 3
 
 
 # ---------------------------------------------------------------------------
+# Fit-source selection, sensitivity presets, auto range (driver-level helpers)
+# ---------------------------------------------------------------------------
+
+# Detection-knob presets. ``window_factor``, ``max_chi2`` and the detrend window
+# are deliberately NOT part of this — they are structural, not sensitivity. A
+# preset value is used only for a knob the caller leaves unset (None); an
+# explicit value always wins.
+SENSITIVITY_PRESETS: Dict[str, Dict[str, float]] = {
+    "conservative": {"min_snr": 6.0, "min_prominence_snr": 3.0, "min_fwhm_bins": 3.0, "edge_bins": 6.0},
+    "normal":       {"min_snr": 5.0, "min_prominence_snr": 2.0, "min_fwhm_bins": 2.0, "edge_bins": 5.0},
+    "sensitive":    {"min_snr": 3.5, "min_prominence_snr": 1.5, "min_fwhm_bins": 2.0, "edge_bins": 4.0},
+}
+
+# Selectable peak-fitting source (see :func:`build_fit_source`).
+FIT_SOURCES = ("auto", "clean", "hybrid", "mean", "sigmaclip")
+
+
+def resolve_sensitivity(sensitivity: "Optional[str]" = "normal", *,
+                        min_snr: "Optional[float]" = None,
+                        min_prominence_snr: "Optional[float]" = None,
+                        min_fwhm_bins: "Optional[float]" = None,
+                        edge_bins: "Optional[int]" = None) -> Dict[str, Any]:
+    """Concrete detection knobs from a named preset, each overridden by any
+    explicitly-given value. Unknown preset name → "normal"."""
+    name = (sensitivity or "normal").strip().lower()
+    base = SENSITIVITY_PRESETS.get(name, SENSITIVITY_PRESETS["normal"])
+    return {
+        "min_snr": float(base["min_snr"] if min_snr is None else min_snr),
+        "min_prominence_snr": float(
+            base["min_prominence_snr"] if min_prominence_snr is None else min_prominence_snr),
+        "min_fwhm_bins": float(base["min_fwhm_bins"] if min_fwhm_bins is None else min_fwhm_bins),
+        "edge_bins": int(round(base["edge_bins"] if edge_bins is None else edge_bins)),
+        "preset": name if name in SENSITIVITY_PRESETS else "normal",
+    }
+
+
+def winsorize_excess(spot_residual, spike_bins: int = 5) -> np.ndarray:
+    """The positive azimuthal-mean excess to ADD back to ``clean`` for a hybrid
+    (winsorized-mean) fit source.
+
+    ``spot_residual = mean − robust`` is the intensity the spot-suppressed median
+    dropped. It mixes two things we must separate using the only discriminator a
+    1-D pattern still carries — the **radial width**:
+
+      * a diamond single-crystal reflection is *narrow* (≈instrumental), a few
+        bins wide — we reject it (fall back to the median there);
+      * a real but azimuthally *sparse* sample ring (texture / spotty powder /
+        incomplete Debye ring) is as wide as the Bragg peak — we keep it.
+
+    A morphological grey-opening of width ``spike_bins`` does exactly this:
+    positive features narrower than the structuring element are eroded to the
+    surrounding floor (diamond spikes → 0) while broader excess keeps its core
+    (so a real peak is never clipped at the tip, unlike a percentile cap).
+    Negative excess is noise → floored to 0; NaNs contribute 0. Accepts a 1-D
+    pattern or a 2-D (N_frames, N_bins) stack (opened along the radial axis).
+
+    Note this is only an *approximation* of a true trimmed mean; the principled
+    channel is the reduce-side ``sigmaclip`` (``source="sigmaclip"``), which
+    rejects spots using the real azimuthal spread per bin.
+    """
+    from scipy.ndimage import grey_opening  # lazy
+    sr = np.asarray(spot_residual, float)
+    pos = np.where(np.isfinite(sr), np.clip(sr, 0.0, None), 0.0)
+    W = max(int(spike_bins), 1) | 1                              # force odd ≥ 1
+    if W <= 1:
+        return pos
+    if sr.ndim == 1:
+        return grey_opening(pos, size=W)
+    return grey_opening(pos, size=(1, W))                        # per-row, radial axis
+
+
+def build_fit_source(source: str, clean, *, spot_residual=None,
+                     sigmaclip_residual=None, hybrid_spike_bins: int = 5
+                     ) -> "Tuple[np.ndarray, str]":
+    """Build the intensity to fit from the Step-1 channels; return ``(data,
+    resolved_source)``.
+
+    Every source is ``clean`` plus an already-baseline-subtracted residual,
+    because ``clean = robust − baseline`` and the smooth background is
+    azimuthally uniform (the same baseline applies to every channel):
+
+        clean      robust − baseline                          (conservative)
+        mean       clean + spot_residual      = mean − baseline
+        hybrid     clean + winsorized(spot_residual)          (analysis-side default)
+        sigmaclip  clean + sigmaclip_residual  = sigmaclip − baseline (reduce-side)
+        auto       sigmaclip if its residual is present, else hybrid
+    """
+    clean = np.asarray(clean, float)
+    s = (source or "auto").strip().lower()
+    if s == "auto":
+        if sigmaclip_residual is not None:
+            s = "sigmaclip"
+        elif spot_residual is not None:
+            s = "hybrid"
+        else:
+            s = "clean"
+    if s == "clean":
+        return clean, s
+    if s == "mean":
+        if spot_residual is None:
+            raise ValueError("source='mean' needs spot_residual.")
+        return clean + np.asarray(spot_residual, float), s
+    if s == "hybrid":
+        if spot_residual is None:
+            raise ValueError("source='hybrid' needs spot_residual.")
+        return clean + winsorize_excess(spot_residual, hybrid_spike_bins), s
+    if s == "sigmaclip":
+        if sigmaclip_residual is None:
+            raise ValueError(
+                "source='sigmaclip' needs /background/sigmaclip_residual — re-run "
+                "reduction with the sigma-clip channel on, then Step 1.")
+        return clean + np.asarray(sigmaclip_residual, float), s
+    raise ValueError(f"Unknown fit source {source!r} (choose from {FIT_SOURCES}).")
+
+
+def auto_fit_range(radial, signal, *, max_trim_frac: float = 0.15,
+                   noise_k: float = 4.0) -> "Tuple[Optional[float], Optional[float]]":
+    """Conservatively infer the valid ``(fit_min, fit_max)`` in the radial unit.
+
+    Trims only what is unambiguously not sample signal, and never more than
+    ``max_trim_frac`` of the axis at either end (interior peaks stay safe):
+
+      * low end  — leading non-finite bins and the monotonically *descending*
+        beamstop-onset ramp (stops at the first turn-up = first real feature);
+      * high end — the trailing dead/flat tail whose intensity never clears
+        ``noise_k`` × MAD noise floor (detector truncation / noisy tail).
+
+    Returns ``(lo, hi)``; an end that needs no trimming is ``None`` (= use the
+    full range there). ``signal`` should be a representative 1-D pattern, e.g.
+    the per-bin median across frames of the chosen fit source.
+    """
+    x = np.asarray(radial, float)
+    y = np.asarray(signal, float)
+    n = x.size
+    if n < 8 or x.shape != y.shape:
+        return None, None
+    order = np.argsort(x)
+    x, y = x[order], y[order]
+    finite = np.isfinite(y)
+    if not finite.any():
+        return None, None
+    i0 = int(np.argmax(finite))                      # first finite bin
+    i1 = int(n - 1 - np.argmax(finite[::-1]))        # last finite bin
+    cap_lo = i0 + int(max_trim_frac * n)
+    cap_hi = i1 - int(max_trim_frac * n)
+
+    # Threshold decisions run on a light smoothing of a NaN-free copy, so
+    # point-to-point noise can't halt the descent early or look like a peak in
+    # the tail. The returned bounds are still real radial values.
+    from scipy.ndimage import uniform_filter1d  # lazy
+    idx = np.arange(n)
+    yfill = y if finite.all() else np.interp(idx, idx[finite], y[finite])
+    ys = uniform_filter1d(yfill, size=max(3, n // 200) | 1)
+
+    # Low: descend the leading beamstop ramp to its first (smoothed) local min.
+    lo_i = i0
+    while lo_i < cap_lo and ys[lo_i + 1] < ys[lo_i]:
+        lo_i += 1
+
+    # High: trim a trailing run sitting at the background within the noise. The
+    # local background is the trailing region's median and the noise its
+    # first-difference MAD — immune to a smooth slope (diff of a ramp is
+    # ~constant) and to peaks — so a real signal tail isn't mistaken for a dead
+    # one. The retreat stops at the first bin above floor (a real peak), keeping it.
+    tail = ys[max(i1 - max(int(0.2 * n), 8), i0): i1 + 1]
+    sig = mad_sigma(np.diff(tail)) / np.sqrt(2.0) if tail.size >= 3 else 0.0
+    floor = float(np.median(tail)) + noise_k * sig
+    hi_i = i1
+    while hi_i > cap_hi and ys[hi_i] < floor:
+        hi_i -= 1
+
+    lo = float(x[lo_i]) if lo_i > i0 or i0 > 0 else None
+    hi = float(x[hi_i]) if hi_i < i1 or i1 < n - 1 else None
+    return lo, hi
+
+
+# ---------------------------------------------------------------------------
 # Dataset driver (analysis HDF5 -> peaks appended)
 # ---------------------------------------------------------------------------
 
@@ -475,23 +652,40 @@ def run_peak_fitting(
     analysis_h5: "str | Path",
     out_h5: "Optional[str | Path]" = None,
     *,
-    min_snr: float = 5.0,
+    source: str = "auto",
+    sensitivity: "Optional[str]" = None,
+    auto_range: bool = True,
+    hybrid_spike_bins: int = 5,
+    min_snr: "Optional[float]" = None,
     window_factor: float = 3.0,
     max_chi2: float = 25.0,
     min_prominence_snr: Optional[float] = None,
-    edge_bins: int = 0,
+    edge_bins: "Optional[int]" = None,
     fit_min: Optional[float] = None,
     fit_max: Optional[float] = None,
-    min_fwhm_bins: float = 0.0,
+    min_fwhm_bins: "Optional[float]" = None,
     local_baseline_bins: int = 0,
     propagate_seeds: bool = True,
     num_workers: int = 1,
 ) -> Dict[str, Any]:
     """Fit peaks for every frame of a Step-1 analysis HDF5 and store the result.
 
-    Reads ``/radial`` and ``/background/clean`` (written by
-    ``background.run_background_separation``). Writes a ``/peaks`` group with a
-    flat, ragged layout so the per-frame peak count can vary:
+    Reads ``/radial`` and the Step-1 ``/background`` channels (written by
+    ``background.run_background_separation``) and builds the fit signal per
+    ``source`` (see :func:`build_fit_source`): the median-based ``clean`` is the
+    conservative channel, but ``hybrid``/``sigmaclip`` recover real peaks that
+    the azimuthal median suppresses on spotty/textured/incomplete rings. With
+    ``source="auto"`` the reduce-side ``sigmaclip`` channel is used when present,
+    else the analysis-side ``hybrid``.
+
+    ``sensitivity`` ("conservative"/"normal"/"sensitive") sets the detection
+    knobs (min_snr, min_prominence_snr, min_fwhm_bins, edge_bins) for any left
+    as ``None``; pass it ``None`` to keep the historical explicit defaults.
+    ``auto_range`` fills a blank ``fit_min``/``fit_max`` from
+    :func:`auto_fit_range`.
+
+    Writes a ``/peaks`` group with a flat, ragged layout so the per-frame peak
+    count can vary:
 
         /peaks/counts      (N_frames,)   peaks fitted per frame
         /peaks/frame       (P,)          frame index of each peak (0..N-1)
@@ -523,25 +717,68 @@ def run_peak_fitting(
             raise ValueError(
                 "Analysis file lacks /background/clean — run Step 1 "
                 "(background.run_background_separation) first.")
-        clean = np.asarray(bg["clean"][:], dtype=float)
+        clean_raw = np.asarray(bg["clean"][:], dtype=float)
+        spot = np.asarray(bg["spot_residual"][:], dtype=float) if "spot_residual" in bg else None
+        sigres = (np.asarray(bg["sigmaclip_residual"][:], dtype=float)
+                  if "sigmaclip_residual" in bg else None)
         radial = np.asarray(h5["radial"][:], dtype=float) if "radial" in h5 else \
-            np.arange(clean.shape[1], dtype=float)
+            np.arange(clean_raw.shape[1], dtype=float)
         unit = str(h5.attrs.get("unit", ""))
         frames = h5.get("frames")
         excluded = (np.asarray(frames["excluded"][:], dtype=bool)
                     if frames is not None and "excluded" in frames else None)
 
+    # Pick the channel to fit on (median-based clean, or a less-lossy hybrid /
+    # reduce-side sigma-clip that keeps spotty/textured sample peaks).
+    clean, used_source = build_fit_source(
+        source, clean_raw, spot_residual=spot, sigmaclip_residual=sigres,
+        hybrid_spike_bins=hybrid_spike_bins)
+
     n = clean.shape[0]
     if excluded is None or excluded.size != n:
         excluded = np.zeros(n, dtype=bool)
+
+    # Detection knobs: a sensitivity preset fills any left unset; explicit values
+    # win. sensitivity=None keeps the historical defaults (prominence coupled to
+    # min_snr, no min-FWHM/edge guard).
+    if sensitivity is not None:
+        kn = resolve_sensitivity(sensitivity, min_snr=min_snr,
+                                 min_prominence_snr=min_prominence_snr,
+                                 min_fwhm_bins=min_fwhm_bins, edge_bins=edge_bins)
+        r_min_snr, r_prom = kn["min_snr"], kn["min_prominence_snr"]
+        r_fwhm, r_edge, preset = kn["min_fwhm_bins"], kn["edge_bins"], kn["preset"]
+    else:
+        r_min_snr = 5.0 if min_snr is None else float(min_snr)
+        r_prom = None if min_prominence_snr is None else float(min_prominence_snr)
+        r_fwhm = 0.0 if min_fwhm_bins is None else float(min_fwhm_bins)
+        r_edge = 0 if edge_bins is None else int(edge_bins)
+        preset = ""
+
+    # Auto valid-range when a bound is blank (conservative; never eats interior
+    # peaks). Inferred from the per-bin median of the chosen fit source.
+    auto_lo = auto_hi = None
+    if auto_range and (fit_min is None or fit_max is None) and n:
+        import warnings as _warnings
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore", RuntimeWarning)
+            rep = np.nanmedian(clean, axis=0)
+        auto_lo, auto_hi = auto_fit_range(radial, rep)
+        if fit_min is None and auto_lo is not None:
+            fit_min = auto_lo
+        if fit_max is None and auto_hi is not None:
+            fit_max = auto_hi
+
     workers = resolve_workers(num_workers)
-    prom_txt = min_snr if min_prominence_snr is None else min_prominence_snr
-    win_txt = (f"[{'' if fit_min is None else fit_min},"
-               f"{'' if fit_max is None else fit_max}] edge={edge_bins} "
-               f"min_fwhm_bins={min_fwhm_bins} detrend_bins={local_baseline_bins}")
+    prom_txt = r_min_snr if r_prom is None else r_prom
+    win_txt = (f"[{'' if fit_min is None else round(fit_min, 4)},"
+               f"{'' if fit_max is None else round(fit_max, 4)}] edge={r_edge} "
+               f"min_fwhm_bins={r_fwhm} detrend_bins={local_baseline_bins}")
+    auto_txt = (f" auto_range=[{'' if auto_lo is None else round(auto_lo, 4)},"
+                f"{'' if auto_hi is None else round(auto_hi, 4)}]") if auto_range else ""
     print(f"[PEAKS] fitting {n} frames ({int(excluded.sum())} excluded), "
-          f"radial[{radial.size}] unit={unit or '?'} min_snr={min_snr} "
-          f"min_prom={prom_txt} window={window_factor} fit_win={win_txt} "
+          f"radial[{radial.size}] unit={unit or '?'} source={used_source} "
+          f"preset={preset or 'off'} min_snr={r_min_snr} min_prom={prom_txt} "
+          f"window={window_factor} fit_win={win_txt}{auto_txt} "
           f"workers={workers}", flush=True)
 
     counts = np.zeros(n, dtype="i4")
@@ -557,9 +794,9 @@ def run_peak_fitting(
 
     if workers > 1 and n > 1:
         ranges = chunk_ranges(n, workers)
-        payloads = [(radial, clean[a:b], excluded[a:b], min_snr, window_factor,
-                     max_chi2, propagate_seeds, min_prominence_snr,
-                     edge_bins, fit_min, fit_max, min_fwhm_bins,
+        payloads = [(radial, clean[a:b], excluded[a:b], r_min_snr, window_factor,
+                     max_chi2, propagate_seeds, r_prom,
+                     r_edge, fit_min, fit_max, r_fwhm,
                      local_baseline_bins) for a, b in ranges]
         done = 0
         with ProcessPoolExecutor(max_workers=workers) as ex:
@@ -568,9 +805,9 @@ def run_peak_fitting(
                 done += (b - a)
                 print(f"[PEAKS] {done} {n}", flush=True)
     else:
-        _absorb(0, _peaks_chunk((radial, clean, excluded, min_snr, window_factor,
-                                 max_chi2, propagate_seeds, min_prominence_snr,
-                                 edge_bins, fit_min, fit_max, min_fwhm_bins,
+        _absorb(0, _peaks_chunk((radial, clean, excluded, r_min_snr, window_factor,
+                                 max_chi2, propagate_seeds, r_prom,
+                                 r_edge, fit_min, fit_max, r_fwhm,
                                  local_baseline_bins)))
         print(f"[PEAKS] {n} {n}", flush=True)
 
@@ -583,15 +820,20 @@ def run_peak_fitting(
             if "peaks" in o:
                 del o["peaks"]
             gp = o.create_group("peaks")
-            gp.attrs.update({"schema_version": SCHEMA_VERSION, "min_snr": float(min_snr),
+            gp.attrs.update({"schema_version": SCHEMA_VERSION,
+                             "source": str(used_source),
+                             "sensitivity": str(preset),
+                             "hybrid_spike_bins": int(hybrid_spike_bins),
+                             "min_snr": float(r_min_snr),
                              "min_prominence_snr": float(
-                                 min_snr if min_prominence_snr is None else min_prominence_snr),
+                                 r_min_snr if r_prom is None else r_prom),
                              "window_factor": float(window_factor),
                              "max_chi2": float(max_chi2),
-                             "edge_bins": int(edge_bins),
+                             "edge_bins": int(r_edge),
                              "fit_min": float(fit_min) if fit_min is not None else np.nan,
                              "fit_max": float(fit_max) if fit_max is not None else np.nan,
-                             "min_fwhm_bins": float(min_fwhm_bins),
+                             "auto_range": bool(auto_range),
+                             "min_fwhm_bins": float(r_fwhm),
                              "local_baseline_bins": int(local_baseline_bins),
                              "propagate_seeds": bool(propagate_seeds)})
             gp.create_dataset("counts", data=counts)
@@ -616,7 +858,10 @@ def run_peak_fitting(
         "tool_version": SCHEMA_VERSION, "source": str(src), "out_h5": str(dst),
         "n_frames": int(n), "n_peaks": P, "n_good": n_good,
         "n_flagged": P - n_good, "unit": unit, "flag_counts": flag_counts,
-        "min_snr": float(min_snr), "window_factor": float(window_factor),
+        "fit_source": str(used_source), "sensitivity": str(preset),
+        "fit_min": float(fit_min) if fit_min is not None else None,
+        "fit_max": float(fit_max) if fit_max is not None else None,
+        "min_snr": float(r_min_snr), "window_factor": float(window_factor),
         "max_chi2": float(max_chi2),
         "peaks_per_frame_mean": float(counts.mean()) if n else 0.0,
     }

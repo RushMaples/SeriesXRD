@@ -11,8 +11,11 @@ The analysis file does NOT store the robust/mean patterns directly; it stores
 ``clean``, ``baseline`` and ``spot_residual`` per frame, from which the rest is
 reconstructed losslessly:
 
-    robust = clean + baseline                 (spot-suppressed powder signal)
-    mean   = robust + spot_residual           (azimuthal mean, with spots)
+    robust    = clean + baseline                 (spot-suppressed powder signal)
+    mean      = robust + spot_residual           (azimuthal mean, with spots)
+    hybrid    = clean + winsorized(spot_residual)  (default Step-2 fit source)
+    sigmaclip = clean + sigmaclip_residual       (only if the reduce-side
+                                                  trimmed-mean channel was stored)
 
 h5py is imported lazily so this module imports without it installed.
 """
@@ -201,14 +204,16 @@ def frame_data(h5_path: "str | Path", frame_index: int) -> Dict[str, Any]:
     """Reconstruct everything needed to plot one frame.
 
     Returns ``{ok, error, index, filename, unit, radial, clean, baseline,
-    spot_residual, robust, mean, contamination, peaks}`` where ``peaks`` is a
-    list of per-peak dicts (the columns of ``/peaks`` for this frame) or [].
+    spot_residual, robust, mean, hybrid, sigmaclip, contamination, peaks}`` where
+    ``peaks`` is a list of per-peak dicts (the columns of ``/peaks`` for this
+    frame) or []. ``hybrid``/``sigmaclip`` are None when their inputs are absent.
     """
     p = Path(h5_path).expanduser()
     out: Dict[str, Any] = {
         "ok": False, "error": "", "index": int(frame_index), "filename": "",
         "unit": "", "radial": None, "clean": None, "baseline": None,
         "spot_residual": None, "robust": None, "mean": None,
+        "sigmaclip": None, "hybrid": None,
         "contamination": None, "peaks": [],
     }
     if not p.is_file():
@@ -236,6 +241,7 @@ def frame_data(h5_path: "str | Path", frame_index: int) -> Dict[str, Any]:
             clean = np.asarray(bg["clean"][i], dtype=float)
             baseline = np.asarray(bg["baseline"][i], dtype=float) if "baseline" in bg else None
             spots = np.asarray(bg["spot_residual"][i], dtype=float) if "spot_residual" in bg else None
+            sigres = np.asarray(bg["sigmaclip_residual"][i], dtype=float) if "sigmaclip_residual" in bg else None
             out["clean"] = clean
             out["baseline"] = baseline
             out["spot_residual"] = spots
@@ -243,6 +249,11 @@ def frame_data(h5_path: "str | Path", frame_index: int) -> Dict[str, Any]:
                 out["robust"] = clean + baseline                # robust = clean + baseline
                 if spots is not None:
                     out["mean"] = out["robust"] + spots          # mean = robust + spot_residual
+            if spots is not None:                                # hybrid fit source (default)
+                from .peaks import winsorize_excess
+                out["hybrid"] = clean + winsorize_excess(spots)
+            if sigres is not None:                               # reduce-side trimmed mean
+                out["sigmaclip"] = clean + sigres
 
             frames = h5.get("frames")
             names = _read_names(frames)

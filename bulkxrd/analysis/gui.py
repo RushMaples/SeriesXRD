@@ -105,15 +105,43 @@ HELP: Dict[str, str] = {
         "spot_residual bins per frame."
     ),
     # Step 2
+    "peak_source": (
+        "Which signal to fit peaks on. 'clean' = robust(azimuthal median) − "
+        "baseline: conservative, but the median drops real intensity on spotty / "
+        "textured / incomplete rings. 'hybrid' adds the broad part of "
+        "(mean − median) back while rejecting narrow diamond single-crystal "
+        "spikes. 'sigmaclip' uses the reduce-side azimuthal trimmed-mean channel "
+        "(most faithful — re-run reduction with it enabled). 'mean' adds the full "
+        "azimuthal mean (keeps diamond spots — diagnostic only). 'auto' = "
+        "sigmaclip if its channel is present, else hybrid. Default auto."
+    ),
+    "sensitivity": (
+        "Preset that sets the detection knobs (Min SNR, Min prominence SNR, Min "
+        "FWHM, Edge guard) for any left blank below — explicit values always win. "
+        "conservative = fewer, cleaner peaks; sensitive = catches weak shoulders. "
+        "Default normal."
+    ),
+    "auto_range": (
+        "Infer the valid fit window automatically when Fit min/max are blank: "
+        "skip the beamstop-onset ramp and the dead/noisy detector tail. "
+        "Conservative — never trims more than the outer ~15 % of the axis, so "
+        "interior peaks are safe. Uncheck to fit the full pattern."
+    ),
+    "hybrid_spike_bins": (
+        "Hybrid source only: radial width (in bins) below which mean-excess is "
+        "treated as a diamond single-crystal spike and removed; broader excess is "
+        "kept as real textured-ring signal. Blank = 5."
+    ),
     "min_snr": (
         "Minimum signal-to-noise ratio (peak HEIGHT / MAD noise floor) for a "
-        "peak to be accepted. Lower = more peaks, more noise hits. Default 5."
+        "peak to be accepted. Lower = more peaks, more noise hits. "
+        "Blank = from the Sensitivity preset (normal = 5)."
     ),
     "min_prominence_snr": (
         "Minimum peak PROMINENCE in noise-floor units. Prominence is measured "
         "against the taller neighbour, so a real peak on the shoulder of a "
-        "stronger one needs this lower than Min SNR to register. Default 2 "
-        "(blank = use Min SNR, the old coupled behaviour)."
+        "stronger one needs this lower than Min SNR to register. "
+        "Blank = from the Sensitivity preset (normal = 2)."
     ),
     "window_factor": (
         "Fit-window half-width as a multiple of the initial FWHM estimate. "
@@ -136,12 +164,13 @@ HELP: Dict[str, str] = {
     ),
     "edge_bins": (
         "Drop peaks within this many bins of either end of the pattern — kills "
-        "beamstop-onset and detector-truncation edge artefacts. Default 5."
+        "beamstop-onset and detector-truncation edge artefacts. "
+        "Blank = from the Sensitivity preset (normal = 5)."
     ),
     "min_fwhm_bins": (
         "Reject peaks narrower than this many bins (a real Bragg peak spans "
         "several): removes single-bin quantization spikes. Flagged WIDTH_BOUND. "
-        "Default 2."
+        "Blank = from the Sensitivity preset (normal = 2)."
     ),
     "detrend_bins": (
         "Local-baseline window (bins) used FOR DETECTION ONLY: a morphological "
@@ -325,6 +354,22 @@ class AnalysisApp:
         cb.grid(row=row, column=0, columnspan=2, sticky="w", padx=4, pady=3)
         txt = HELP.get(key, "")
         if txt:
+            _ToolTip(cb, txt)
+
+    def combo(self, parent, key, label, values, row=None, width=16, default=""):
+        """Read-only combobox bound to a config key."""
+        tk, ttk = self.tk, self.ttk
+        cur = str(self.config.get(key, default) or (default or (values[0] if values else "")))
+        var = tk.StringVar(value=cur)
+        self.vars[key] = var
+        lbl = ttk.Label(parent, text=label)
+        lbl.grid(row=row, column=0, sticky="w", padx=4, pady=3)
+        cb = ttk.Combobox(parent, textvariable=var, values=list(values),
+                          state="readonly", width=width)
+        cb.grid(row=row, column=1, sticky="w", padx=4, pady=3)
+        txt = HELP.get(key, "")
+        if txt:
+            _ToolTip(lbl, txt)
             _ToolTip(cb, txt)
 
     def browse_into(self, key, mode):
@@ -627,38 +672,47 @@ class AnalysisApp:
     def _tab_peaks(self, frame):
         ttk = self.ttk
         self.checkbox(frame, "run_step2", "Run Step 2 — pseudo-Voigt peak fitting", row=0)
-        self.field(frame, "min_snr", "Min SNR (height)", row=2, width=14)
-        self.field(frame, "min_prominence_snr", "Min prominence SNR", row=3, width=14)
-        self.field(frame, "window_factor", "Window factor (× FWHM)", row=4, width=14)
-        self.field(frame, "max_chi2", "Max reduced χ²", row=5, width=14)
-        self.field(frame, "fit_min", "Fit 2θ/q min (blank=auto)", row=6, width=14)
-        self.field(frame, "fit_max", "Fit 2θ/q max (blank=auto)", row=7, width=14)
-        self.field(frame, "edge_bins", "Edge guard (bins)", row=8, width=14)
-        self.field(frame, "min_fwhm_bins", "Min FWHM (bins)", row=9, width=14)
-        self.field(frame, "detrend_bins", "Detrend window (bins, 0=off)", row=10, width=14)
+        # Primary controls: fit source + sensitivity preset + auto range.
+        self.combo(frame, "peak_source", "Peak source",
+                   ["auto", "hybrid", "sigmaclip", "clean", "mean"], row=1, default="auto")
+        self.combo(frame, "sensitivity", "Sensitivity",
+                   ["conservative", "normal", "sensitive"], row=2, default="normal")
+        self.checkbox(frame, "auto_range", "Auto valid q/2θ range (blank Fit min/max)", row=3)
+        ttk.Label(frame, text="Advanced (blank = follow the Sensitivity preset):",
+                  foreground=MUTED).grid(row=4, column=0, columnspan=3, sticky="w",
+                                         padx=4, pady=(10, 0))
+        self.field(frame, "min_snr", "Min SNR (height)", row=5, width=14)
+        self.field(frame, "min_prominence_snr", "Min prominence SNR", row=6, width=14)
+        self.field(frame, "window_factor", "Window factor (× FWHM)", row=7, width=14)
+        self.field(frame, "max_chi2", "Max reduced χ²", row=8, width=14)
+        self.field(frame, "fit_min", "Fit 2θ/q min (blank=auto)", row=9, width=14)
+        self.field(frame, "fit_max", "Fit 2θ/q max (blank=auto)", row=10, width=14)
+        self.field(frame, "edge_bins", "Edge guard (bins)", row=11, width=14)
+        self.field(frame, "min_fwhm_bins", "Min FWHM (bins)", row=12, width=14)
+        self.field(frame, "hybrid_spike_bins", "Hybrid spike width (bins)", row=13, width=14)
+        self.field(frame, "detrend_bins", "Detrend window (bins, 0=off)", row=14, width=14)
         self.checkbox(frame, "propagate_seeds",
-                      "Propagate peak seeds frame-to-frame", row=11)
+                      "Propagate peak seeds frame-to-frame", row=15)
         ttk.Label(
             frame,
             text=(
-                "Step 2 fits pseudo-Voigt profiles to each background-subtracted\n"
-                "clean pattern.\n\n"
-                "Profile: A·(η·Lorentzian + (1−η)·Gaussian), both normalised to\n"
-                "peak height A. η is the Lorentzian fraction fitted freely.\n\n"
-                "Detection: scipy find_peaks on a locally-detrended signal (Detrend window\n"
-                "removes residual broad background), with a MAD noise floor from the\n"
-                "residual — so a non-flat clean can't inflate the threshold and hide peaks.\n"
-                "Peaks below min_snr (height) or min prominence are rejected.\n\n"
-                "Fit window: set Fit min/max (in the radial unit) to the physically valid\n"
-                "range; Edge guard drops peaks within N bins of either end (beamstop onset,\n"
-                "detector truncation). Min FWHM rejects sub-resolution quantization spikes.\n\n"
-                "Seed propagation: good peak centers from frame k seed frame k+1,\n"
-                "keeping reflections continuous as the lattice compresses under pressure.\n\n"
+                "Step 2 fits pseudo-Voigt profiles to a background-subtracted pattern.\n\n"
+                "Peak source — what to fit on. clean (azimuthal median) is conservative\n"
+                "but drops real peaks on spotty/textured/incomplete rings; hybrid adds the\n"
+                "broad part of (mean−median) back (rejecting narrow diamond spikes);\n"
+                "sigmaclip uses the reduce-side trimmed-mean channel (best — re-run reduction\n"
+                "with it on); auto = sigmaclip if present, else hybrid.\n\n"
+                "Sensitivity sets the detection knobs below (any left blank); explicit values\n"
+                "win. Auto range infers the valid window (beamstop onset + dead tail) when\n"
+                "Fit min/max are blank — conservative, never trims interior peaks.\n\n"
+                "Profile: A·(η·Lorentzian + (1−η)·Gaussian). Detection: find_peaks on a\n"
+                "locally-detrended signal with a MAD noise floor. Min FWHM rejects\n"
+                "sub-resolution spikes; Edge guard drops end artefacts.\n\n"
                 "Rejection flags: LOW_AMP=1, BAD_CHI2=2, CENTER_DRIFT=4,\n"
                 "WIDTH_BOUND=8 (also sub-resolution width), NO_CONVERGE=16."
             ),
             foreground=MUTED, justify="left", wraplength=640,
-        ).grid(row=12, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        ).grid(row=16, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
 
     # ------------------------------------------------------------------
     # Tab 4 — Run
@@ -2293,9 +2347,10 @@ class AnalysisApp:
                    ).pack(side="left", padx=4)
 
         ttk.Label(row1, text="Source:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        from .heatmap import SOURCES as _PM_SOURCES
         self._pm_source = ttk.Combobox(
             row1,
-            values=["clean", "robust", "mean", "baseline", "spot_residual"],
+            values=list(_PM_SOURCES),
             state="readonly", width=12,
         )
         self._pm_source.set("clean")

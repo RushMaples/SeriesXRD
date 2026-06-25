@@ -30,15 +30,27 @@ _DEFAULTS = {
     "n_passes": "1",
     "use_lls": True,
     "contamination_threshold": "",  # optional float; blank = don't flag
-    # Step 2 — pseudo-Voigt peak fitting
-    "min_snr": "5.0",
-    "min_prominence_snr": "",     # blank = coupled to min_snr (standard); opt-in lower
+    # Step 2 — pseudo-Voigt peak fitting.
+    # Source + Sensitivity are the primary controls; the individual knobs below
+    # are advanced overrides (blank = follow the sensitivity preset).
+    "peak_source": "auto",        # auto|clean|hybrid|mean|sigmaclip. auto = the reduce-side
+                                  # sigmaclip channel if present, else the analysis-side hybrid.
+                                  # clean (azimuthal median) is conservative but drops real
+                                  # spotty/textured/incomplete-ring peaks; hybrid/sigmaclip keep them.
+    "sensitivity": "normal",      # conservative|normal|sensitive — sets min_snr / min_prominence_snr
+                                  # / min_fwhm_bins / edge_bins for any left blank below.
+    "auto_range": True,           # blank fit_min/fit_max -> inferred valid q/2θ range
+                                  # (conservative: trims only the beamstop ramp + dead tail).
+    "hybrid_spike_bins": "5",     # hybrid source: radial width (bins) below which mean-excess
+                                  # is treated as a diamond spike and removed; broader = real texture, kept.
+    "min_snr": "",                # blank = from sensitivity preset
+    "min_prominence_snr": "",     # blank = from sensitivity preset
     "window_factor": "3.0",
     "max_chi2": "25.0",
-    "edge_bins": "0",            # opt-in: drop peaks within N bins of either end
-    "fit_min": "",               # optional radial-unit (2θ or q) lower fit bound
-    "fit_max": "",               # optional upper fit bound; blank = full range
-    "min_fwhm_bins": "0",        # opt-in: reject peaks narrower than this many bins
+    "edge_bins": "",              # blank = from sensitivity preset
+    "fit_min": "",               # optional radial-unit (2θ or q) lower fit bound; blank = auto
+    "fit_max": "",               # optional upper fit bound; blank = auto
+    "min_fwhm_bins": "",          # blank = from sensitivity preset
     "detrend_bins": "81",        # local-baseline window (bins) for detection; 0 = off.
                                  # The proven fix: removes residual broad background so the
                                  # noise floor reflects real noise and small peaks aren't

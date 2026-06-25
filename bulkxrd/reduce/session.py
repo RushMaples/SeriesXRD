@@ -25,6 +25,10 @@ _DEFAULTS = {
     "method": "csr",
     "polarization_factor": "",
     "robust_1d": True,
+    "sigmaclip_1d": True,        # azimuthal sigma-clipped (trimmed-mean) 1D channel —
+                                 # the less-lossy fit source for spotty/textured rings
+    "sigmaclip_thresh": "3.0",   # sigma threshold for azimuthal outlier rejection
+    "sigmaclip_maxiter": "5",
     "save_cakes": False,
     "npt_radial": "500",
     "npt_azimuthal": "360",
