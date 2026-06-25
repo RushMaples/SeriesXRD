@@ -57,6 +57,9 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
 /  attrs: schema_version, unit, poni_text, radial_written
 /patterns/intensity          (N_frames, N_bins)  azimuthal MEAN
 /patterns/intensity_robust   (N_frames, N_bins)  azimuthal MEDIAN (diamond-spot suppressed)
+/patterns/intensity_sigmaclip (N_frames, N_bins) azimuthal SIGMA-CLIPPED trimmed mean
+                                                  (optional; keeps textured-ring peaks the
+                                                  median drops while rejecting diamond spots)
 /patterns/radial             (N_bins,)            q or 2θ axis
 /cakes/intensity             (N_cakes, N_radial, N_azimuthal)  optional
 /cakes/radial, /cakes/azimuthal, /cakes/frame_index
@@ -66,7 +69,7 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
 ### Analysis HDF5 (output of `analysis/background.py` Step 1)
 
 ```
-/  attrs: schema_version="1", source_reduced, unit, max_half_window, n_passes, use_lls
+/  attrs: schema_version="1", source_reduced, unit, max_half_window, n_passes, use_lls, has_sigmaclip
 /radial                      (N_bins,)
 /frames/filename             (N,)   copied from reduced
 /frames/contamination        (N,)   integrated positive spot residual per frame
@@ -74,7 +77,17 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
 /background/clean            (N, N_bins)  = robust − baseline
 /background/baseline         (N, N_bins)  SNIP estimate
 /background/spot_residual    (N, N_bins)  = mean − robust
+/background/sigmaclip_residual (N, N_bins) = sigmaclip − robust (only if the reduced file
+                                            had intensity_sigmaclip)
 ```
+
+Step 2 picks the **fit source** from these channels (every source is `clean` plus a
+baseline-subtracted residual, since `clean = robust − baseline` and the smooth background
+is azimuthally uniform): `clean` (median, conservative), `mean` (`clean + spot_residual`),
+`hybrid` (`clean + winsorized(spot_residual)` — narrow diamond spikes removed by a
+morphological opening, broad textured-ring excess kept), `sigmaclip`
+(`clean + sigmaclip_residual`, the principled trimmed mean), `auto` (sigmaclip if present,
+else hybrid).
 
 ### Peaks appended by `analysis/peaks.py` Step 2
 
@@ -143,8 +156,11 @@ LLS: `z = log(log(sqrt(y+1)+1)+1)`, inverse baked in `_lls_inv`.
 ### Step 2 — peaks.py
 
 Key design:
+- **Selectable fit source** (`run_peak_fitting(source=...)`): the azimuthal **median** (`clean`) suppresses diamond spots but *also* drops real peaks on spotty/textured/incomplete rings. Default `source="auto"` fits the reduce-side `sigmaclip` trimmed-mean channel when present, else the analysis-side `hybrid`; `clean`/`mean` remain available. `spot_residual` is kept as a diamond-contamination diagnostic, not the only thing thrown away. The whole-pipeline rationale: don't let the background step quietly eat real sample peaks.
+- **Sensitivity presets** (`conservative`/`normal`/`sensitive`) set min_snr / min_prominence_snr / min_fwhm_bins / edge_bins; explicit knobs override. `normal` default = (5, 2, 2, 5). Collapses the per-knob tuning into one physical control.
+- **Auto valid-range** (`auto_fit_range`): blank `fit_min`/`fit_max` → conservatively inferred (skip the beamstop-onset ramp + dead/noisy detector tail, capped to the outer ~15 %, decisions on a smoothed copy so noise can't trim interior peaks). Overridable.
 - **Pseudo-Voigt**: `A*(η·L + (1−η)·G)`, both normalized to peak height A. L = Lorentzian (size broadening), G = Gaussian (strain/instrument). η fitted free.
-- **Detection**: `scipy.signal.find_peaks` + MAD noise floor (`1.4826·median|x−median|`) + SNR threshold (default 5σ). Seeds FWHM from half-max crossings.
+- **Detection**: `scipy.signal.find_peaks` + MAD noise floor (`1.4826·median|x−median|`) + SNR threshold (preset default 5σ). Seeds FWHM from half-max crossings.
 - **Seed propagation**: good centers from frame k seed detection for frame k+1, so a reflection keeps its identity as the lattice compresses. Merge tolerance scales with peak width (not bin size — this was a bug that caused false duplicates at 0.05 Å drift per frame).
 - **Overlapping peaks**: grouped by window overlap, fitted jointly (sum of pseudo-Voigts + constant baseline), still one scipy least_squares call.
 - **Rejection flags**: `FLAG_LOW_AMP=1, FLAG_BAD_CHI2=2, FLAG_CENTER_DRIFT=4, FLAG_WIDTH_BOUND=8, FLAG_NO_CONVERGE=16`
@@ -217,7 +233,7 @@ Notable earlier branches (not merged, potentially useful):
 ## Key design decisions (don't relitigate)
 
 - **Fit in q, not 2θ**: peak width roughly constant in q → uniform window sizing across the pattern.
-- **Robust integration (median)**: pyFAI `medfilt1d` gives the azimuthal median. It has 50% breakdown point so diamond spots (which affect <50% of azimuthal bins) are suppressed.
+- **Robust integration (median)**: pyFAI `medfilt1d` gives the azimuthal median. It has 50% breakdown point so diamond spots (which affect <50% of azimuthal bins) are suppressed. The median is the *baseline reference* (most outlier-free), but it over-suppresses azimuthally-sparse real signal, so it is **not** forced to be the peak-fitting source — see Step 2 "Selectable fit source". The reduce-side `sigma_clip_ng` (`error_model="azimuthal"`, `sigmaclip_1d`) gives a trimmed mean that rejects spots like the median while keeping textured-ring intensity.
 - **SNIP window conservative**: set to ~1.5–2× the broadest Bragg peak half-width. Over-aggressive window erodes real broad peaks — true information loss, not reversible. Step 1 records the baseline so the original data is always recoverable.
 - **HDF5 atomic writes**: `.tmp` + `os.replace` throughout. Never partially-written files.
 - **No JAX yet**: scipy handles the scale; JAX needs fixed peak count per batch (incompatible with variable peak count), heavy dependency, and rarely the bottleneck. Interface is clean enough to add a JAX backend behind it later.

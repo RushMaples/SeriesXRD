@@ -30,6 +30,12 @@ from .peaks import (
     fit_pattern,
     fit_dataset,
     run_peak_fitting,
+    build_fit_source,
+    winsorize_excess,
+    auto_fit_range,
+    resolve_sensitivity,
+    SENSITIVITY_PRESETS,
+    FIT_SOURCES,
 )
 from .review import (
     inspect_analysis,
@@ -77,6 +83,8 @@ __all__ = [
     "separate_background", "run_background_separation",
     "pseudo_voigt", "pseudo_voigt_area", "mad_sigma", "detect_peaks",
     "fit_pattern", "fit_dataset", "run_peak_fitting",
+    "build_fit_source", "winsorize_excess", "auto_fit_range",
+    "resolve_sensitivity", "SENSITIVITY_PRESETS", "FIT_SOURCES",
     "inspect_analysis", "frame_data", "peak_map", "identify_tracks",
     "structure_report", "review_analysis",
     "radial_to_d", "phase_reflections", "scale_at_pressure",

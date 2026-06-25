@@ -40,6 +40,7 @@ HELP = {
     "npt_1d":         "Number of bins in the 1D intensity pattern.",
     "method":         "pyFAI 1D integration method. csr is fast after the first frame.",
     "robust_1d":      "Also compute an azimuthal-median pattern that suppresses single-crystal spots (diamond).",
+    "sigmaclip_1d":   "Also compute an azimuthal sigma-clipped (trimmed-mean) pattern: rejects diamond spots like the median but keeps azimuthally-sparse real sample peaks (textured/incomplete rings). The recommended Step-2 fit source.",
     "save_cakes":     "Also save 2D cakes (larger output file; needed for azimuthal analysis).",
     "cake_every":     "Save a cake for every Nth frame only, to bound file size.",
     "num_workers":    "Parallel worker processes. 0 = automatic (CPU count - 1).",
@@ -477,6 +478,7 @@ class ReductionApp:
         self.field(frame, "method", "pyFAI 1D method", row=3, width=14)
         self.field(frame, "polarization_factor", "Polarization factor (optional)", row=5, width=14)
         self.checkbox(frame, "robust_1d", "Robust 1D pattern (azimuthal median — suppresses diamond spots)", row=7)
+        self.checkbox(frame, "sigmaclip_1d", "Sigma-clip 1D pattern (azimuthal trimmed mean — keeps textured-ring peaks)", row=8)
         self.checkbox(frame, "save_cakes", "Save 2D cakes", row=9)
         self.field(frame, "npt_radial", "Cake radial bins", row=11, width=14)
         self.field(frame, "npt_azimuthal", "Cake azimuth bins", row=12, width=14)

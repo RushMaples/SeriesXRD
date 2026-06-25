@@ -53,6 +53,8 @@ def _run(args) -> int:
     if "2" in steps:
         run_peak_fitting(
             analysis_path, None,
+            source=args.source, sensitivity=args.sensitivity,
+            auto_range=not args.no_auto_range, hybrid_spike_bins=args.hybrid_spike_bins,
             min_snr=args.min_snr, window_factor=args.window_factor,
             max_chi2=args.max_chi2, propagate_seeds=not args.no_seeds,
             num_workers=args.workers)
@@ -106,7 +108,21 @@ def main(argv: "list[str] | None" = None) -> int:
     p.add_argument("--no-lls", action="store_true", help="Disable the LLS transform.")
     p.add_argument("--contamination-threshold", type=float, default=None)
     # Step 2
-    p.add_argument("--min-snr", type=float, default=5.0)
+    p.add_argument("--source", default="auto",
+                   choices=["auto", "hybrid", "sigmaclip", "clean", "mean"],
+                   help="Peak-fit source. auto = reduce-side sigmaclip if present, else hybrid. "
+                        "clean (azimuthal median) is conservative; hybrid/sigmaclip keep "
+                        "spotty/textured-ring peaks. Default auto.")
+    p.add_argument("--sensitivity", default="normal",
+                   choices=["conservative", "normal", "sensitive"],
+                   help="Detection-knob preset (fills any knob not explicitly set). Default normal.")
+    p.add_argument("--no-auto-range", action="store_true",
+                   help="Disable automatic valid-range inference; fit the full pattern.")
+    p.add_argument("--hybrid-spike-bins", type=int, default=5,
+                   help="Hybrid source: radial width (bins) below which mean-excess is a "
+                        "diamond spike and removed. Default 5.")
+    p.add_argument("--min-snr", type=float, default=None,
+                   help="Override the sensitivity preset's min SNR (height). Default: preset.")
     p.add_argument("--window-factor", type=float, default=3.0)
     p.add_argument("--max-chi2", type=float, default=25.0)
     p.add_argument("--no-seeds", action="store_true", help="Disable seed propagation.")

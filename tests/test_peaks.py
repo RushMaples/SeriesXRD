@@ -6,7 +6,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bulkxrd.analysis.peaks import (
     pseudo_voigt, pseudo_voigt_area, mad_sigma, detect_peaks,
-    fit_pattern, fit_dataset, FLAG_OK)
+    fit_pattern, fit_dataset, FLAG_OK,
+    resolve_sensitivity, winsorize_excess, auto_fit_range, build_fit_source,
+    SENSITIVITY_PRESETS)
 
 
 def main() -> None:
@@ -74,7 +76,83 @@ def main() -> None:
     _test_edge_window_and_min_width()
     _test_local_detrend_detection()
     _test_sloped_baseline_fit()
+    _test_sensitivity_presets()
+    _test_winsorize_and_sources()
+    _test_auto_fit_range()
     print("PEAKS TEST OK")
+
+
+def _test_sensitivity_presets():
+    """A preset fills unset knobs; an explicit value overrides it; an unknown
+    name falls back to 'normal'."""
+    n = resolve_sensitivity("normal")
+    assert (n["min_snr"], n["min_prominence_snr"], n["min_fwhm_bins"], n["edge_bins"]) \
+        == (5.0, 2.0, 2.0, 5), n
+    # sensitive is looser than conservative on every knob.
+    s, c = resolve_sensitivity("sensitive"), resolve_sensitivity("conservative")
+    assert s["min_snr"] < c["min_snr"] and s["min_prominence_snr"] < c["min_prominence_snr"]
+    # explicit overrides win; others still come from the preset.
+    o = resolve_sensitivity("normal", min_snr=7.5, edge_bins=0)
+    assert o["min_snr"] == 7.5 and o["edge_bins"] == 0 and o["min_prominence_snr"] == 2.0
+    assert resolve_sensitivity("bogus")["preset"] == "normal"
+    assert set(SENSITIVITY_PRESETS) == {"conservative", "normal", "sensitive"}
+
+
+def _test_winsorize_and_sources():
+    """Hybrid keeps a broad azimuthally-sparse real peak but drops a narrow
+    diamond spike; build_fit_source composes the right channel and 'auto' prefers
+    sigmaclip when present."""
+    q = np.linspace(0.0, 6.0, 1500)
+    clean = pseudo_voigt(q, 2.5, 100.0, 0.05, 0.4)                 # already in the median
+    texture = pseudo_voigt(q, 4.0, 30.0, 0.08, 0.5)               # broad real mean-excess
+    spike = np.zeros_like(q); spike[np.argmin(np.abs(q - 5.0))] += 4000.0  # diamond spot
+    spot_residual = texture + spike
+
+    add = winsorize_excess(spot_residual, spike_bins=5)
+    ktex, ksp = np.argmin(np.abs(q - 4.0)), np.argmin(np.abs(q - 5.0))
+    assert add[ktex] > 0.8 * texture[ktex], (add[ktex], texture[ktex])   # texture core kept
+    assert add[ksp] < 1.0, add[ksp]                                       # spike removed
+
+    sigres = texture                                              # principled trimmed-mean excess
+    # mean keeps the diamond; hybrid removes it; both keep the real texture.
+    mean_src, sm = build_fit_source("mean", clean, spot_residual=spot_residual)
+    hyb_src, sh = build_fit_source("hybrid", clean, spot_residual=spot_residual)
+    auto_src, sa = build_fit_source("auto", clean, spot_residual=spot_residual,
+                                    sigmaclip_residual=sigres)
+    assert (sm, sh, sa) == ("mean", "hybrid", "sigmaclip")
+    assert mean_src[ksp] > 1000 and abs(hyb_src[ksp] - clean[ksp]) < 50
+    assert hyb_src[ktex] > clean[ktex] + 0.8 * texture[ktex]
+    # auto falls back to hybrid with no sigmaclip channel.
+    _, sb = build_fit_source("auto", clean, spot_residual=spot_residual)
+    assert sb == "hybrid"
+    try:
+        build_fit_source("sigmaclip", clean, spot_residual=spot_residual)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("sigmaclip source without its channel should raise")
+
+
+def _test_auto_fit_range():
+    """Conservative range inference trims the beamstop ramp and the dead tail,
+    never an interior peak."""
+    x = np.linspace(0.2, 6.0, 1400)
+    y = 60.0 / np.maximum(x - 0.1, 0.05)            # steep beamstop falloff at low q
+    y[x < 0.4] = np.nan                             # masked beamstop
+    y = np.where(x < 2.4, y, 0.0)
+    y = (y + pseudo_voigt(x, 3.0, 200.0, 0.05, 0.5)
+         + pseudo_voigt(x, 4.2, 150.0, 0.05, 0.5)
+         + pseudo_voigt(x, 5.3, 120.0, 0.05, 0.5))
+    y = y + np.random.default_rng(0).normal(0.0, 0.3, x.size)  # noisy throughout + dead tail >5.4
+    lo, hi = auto_fit_range(x, y)
+    assert lo is not None and 0.4 <= lo < 3.0, lo   # past beamstop, before first peak
+    assert hi is not None and 5.3 < hi < 5.8, hi    # trims dead tail, stops at the last peak
+    # All three interior peaks survive the inferred window.
+    assert lo < 3.0 and hi > 5.3
+    # A pattern that rises into both ends needs no trimming → (None, None).
+    xs = np.linspace(1.0, 8.0, 1000)
+    ys = 1.0 + (xs - 1.0)                            # gently rising, no ramp/dead tail
+    assert auto_fit_range(xs, ys) == (None, None)
 
 
 def _test_sloped_baseline_fit():

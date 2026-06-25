@@ -67,6 +67,11 @@ def _opt_float(v):
         return None
 
 
+def _opt_int(v):
+    f = _opt_float(v)
+    return None if f is None else int(round(f))
+
+
 def run_analysis(cfg: dict) -> dict:
     """Drive Step 1 (background), Step 2 (peaks), and/or Step 3a (EOS phase
     matching) from a config dict. Returns a merged manifest."""
@@ -103,14 +108,20 @@ def run_analysis(cfg: dict) -> dict:
             raise FileNotFoundError(f"Analysis HDF5 not found for peak fitting: {out_path!r}")
         m2 = run_peak_fitting(
             out_path, None,
-            min_snr=_as_float(cfg.get("min_snr"), 5.0),
+            source=(str(cfg.get("peak_source", "auto") or "auto").strip() or "auto"),
+            sensitivity=(str(cfg.get("sensitivity", "normal") or "normal").strip() or "normal"),
+            auto_range=_as_bool(cfg.get("auto_range", True), True),
+            hybrid_spike_bins=_as_int(cfg.get("hybrid_spike_bins"), 5),
+            # Blank detection knobs fall back to the sensitivity preset; an
+            # explicit value overrides it.
+            min_snr=_opt_float(cfg.get("min_snr")),
             min_prominence_snr=_opt_float(cfg.get("min_prominence_snr")),
             window_factor=_as_float(cfg.get("window_factor"), 3.0),
             max_chi2=_as_float(cfg.get("max_chi2"), 25.0),
-            edge_bins=_as_int(cfg.get("edge_bins"), 0),
+            edge_bins=_opt_int(cfg.get("edge_bins")),
             fit_min=_opt_float(cfg.get("fit_min")),
             fit_max=_opt_float(cfg.get("fit_max")),
-            min_fwhm_bins=_as_float(cfg.get("min_fwhm_bins"), 0.0),
+            min_fwhm_bins=_opt_float(cfg.get("min_fwhm_bins")),
             local_baseline_bins=_as_int(cfg.get("detrend_bins"), 0),
             propagate_seeds=_as_bool(cfg.get("propagate_seeds", True), True),
             num_workers=num_workers,

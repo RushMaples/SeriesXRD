@@ -28,10 +28,12 @@ import numpy as np
 from .phases import Phase
 from .identify import radial_to_d, scale_at_pressure, phase_reflections
 
-# Background channels available as the image source. mean/robust are reconstructed
-# (see review.frame_data): robust = clean + baseline, mean = robust + spot_residual.
+# Background channels available as the image source. robust/mean/sigmaclip/hybrid
+# are reconstructed from the stored clean/baseline/spot_residual(/sigmaclip_residual):
+#   robust = clean + baseline,  mean = robust + spot_residual,
+#   sigmaclip = clean + sigmaclip_residual,  hybrid = clean + winsorized(spot_residual).
 _DIRECT = ("clean", "baseline", "spot_residual")
-SOURCES = ("clean", "robust", "mean", "baseline", "spot_residual")
+SOURCES = ("clean", "hybrid", "robust", "mean", "sigmaclip", "baseline", "spot_residual")
 
 
 def _open(path):
@@ -119,9 +121,21 @@ def pattern_image(analysis_h5: "str | Path", *, source: str = "clean",
                 data = np.asarray(bg[source][:], dtype=float)
             elif source == "robust":
                 data = clean + np.asarray(bg["baseline"][:], dtype=float)
-            else:  # mean = robust + spot_residual
+            elif source == "mean":  # mean = robust + spot_residual
                 data = clean + np.asarray(bg["baseline"][:], dtype=float) \
                     + np.asarray(bg["spot_residual"][:], dtype=float)
+            elif source == "hybrid":  # clean + winsorized mean-excess (fit default)
+                from .peaks import winsorize_excess
+                if "spot_residual" not in bg:
+                    out["error"] = "/background/spot_residual not present."
+                    return out
+                data = clean + winsorize_excess(np.asarray(bg["spot_residual"][:], dtype=float))
+            else:  # sigmaclip = clean + sigmaclip_residual (reduce-side trimmed mean)
+                if "sigmaclip_residual" not in bg:
+                    out["error"] = ("/background/sigmaclip_residual not present — re-run "
+                                    "reduction with the sigma-clip channel, then Step 1.")
+                    return out
+                data = clean + np.asarray(bg["sigmaclip_residual"][:], dtype=float)
             n = data.shape[0]
             radial = np.asarray(h5["radial"][:], dtype=float) if "radial" in h5 \
                 else np.arange(data.shape[1], dtype=float)

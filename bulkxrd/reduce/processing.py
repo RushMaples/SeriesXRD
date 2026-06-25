@@ -137,6 +137,30 @@ def _integrate_one(task: "Tuple[int, str, bool]") -> Dict[str, Any]:
                 out["intensity_robust"] = np.asarray(rres.intensity)
             except Exception as e:
                 out["robust_error"] = repr(e)
+        if s.get("sigmaclip_1d"):
+            # Azimuthal sigma-clipping = robust trimmed mean: iteratively reject
+            # azimuthal bins that deviate from the per-radial mean (diamond
+            # single-crystal spots) while KEEPING azimuthally-sparse real sample
+            # intensity that the median would drop on a textured/incomplete ring.
+            # error_model="azimuthal" derives each bin's variance from the
+            # azimuthal spread itself. Degrades gracefully like robust above.
+            try:
+                sclip = getattr(ai, "sigma_clip_ng", None) or getattr(ai, "sigma_clip", None)
+                if sclip is None:
+                    raise AttributeError("AzimuthalIntegrator has no sigma_clip_ng/sigma_clip")
+                thr = float(s.get("sigmaclip_thresh", 3.0) or 3.0)
+                mit = int(s.get("sigmaclip_maxiter", 5) or 5)
+                try:
+                    sres = sclip(image, int(s["npt_1d"]), mask=mask, unit=s["unit"],
+                                 error_model="azimuthal", thres=thr, max_iter=mit,
+                                 polarization_factor=s.get("polarization_factor"))
+                except TypeError:
+                    # Older signature: no error_model/polarization kwargs.
+                    sres = sclip(image, int(s["npt_1d"]), mask=mask, unit=s["unit"],
+                                 thres=thr, max_iter=mit)
+                out["intensity_sigmaclip"] = np.asarray(sres.intensity)
+            except Exception as e:
+                out["sigmaclip_error"] = repr(e)
         if want_cake:
             cres = ai.integrate2d(
                 image, int(s["npt_radial"]), int(s["npt_azimuthal"]),
@@ -202,6 +226,9 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
         "method": config.get("method", "csr") or "csr",
         "polarization_factor": float(config["polarization_factor"]) if str(config.get("polarization_factor", "")).strip() else None,
         "robust_1d": bool(config.get("robust_1d", True)),
+        "sigmaclip_1d": bool(config.get("sigmaclip_1d", True)),
+        "sigmaclip_thresh": float(config.get("sigmaclip_thresh", 3.0) or 3.0),
+        "sigmaclip_maxiter": int(config.get("sigmaclip_maxiter", 5) or 5),
         "npt_radial": int(config.get("npt_radial", 500) or 500),
         "npt_azimuthal": int(config.get("npt_azimuthal", 360) or 360),
     }
@@ -245,6 +272,7 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
 
     failures: List[Dict[str, str]] = []
     robust_errors: List[str] = []
+    sigmaclip_errors: List[str] = []
     t_start = time.time()
 
     dataset_root = Path(config.get("dataset_dir", "")).expanduser().resolve()
@@ -267,6 +295,7 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
             g_pat = h5.create_group("patterns")
             ds_int = g_pat.create_dataset("intensity", shape=(total, settings["npt_1d"]), dtype="f4", fillvalue=np.nan)
             ds_rob = g_pat.create_dataset("intensity_robust", shape=(total, settings["npt_1d"]), dtype="f4", fillvalue=np.nan) if settings["robust_1d"] else None
+            ds_sc = g_pat.create_dataset("intensity_sigmaclip", shape=(total, settings["npt_1d"]), dtype="f4", fillvalue=np.nan) if settings["sigmaclip_1d"] else None
             ds_rad = g_pat.create_dataset("radial", shape=(settings["npt_1d"],), dtype="f8")
             g_frames = h5.create_group("frames")
             g_frames.attrs["dataset_dir"] = str(dataset_root)
@@ -317,16 +346,22 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
                         radial_written = True
                     if ds_rob is not None and "intensity_robust" in r:
                         ds_rob[i] = r["intensity_robust"]
-                    
+                    if ds_sc is not None and "intensity_sigmaclip" in r:
+                        ds_sc[i] = r["intensity_sigmaclip"]
+
                     # THUMBNAILS: Save thumb path
                     if ds_thumb is not None and "thumb" in r:
                         ds_thumb[i] = r["thumb"]
-                        
+
                     # B3: collect robust_error messages (deduplicated).
                     if "robust_error" in r:
                         msg = r["robust_error"]
                         if msg not in robust_errors:
                             robust_errors.append(msg)
+                    if "sigmaclip_error" in r:
+                        msg = r["sigmaclip_error"]
+                        if msg not in sigmaclip_errors:
+                            sigmaclip_errors.append(msg)
                     if g_cake is not None and "cake" in r:
                         if ds_cake is None:
                             cshape = r["cake"].shape
@@ -416,6 +451,9 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
     if robust_errors:
         manifest["robust_warnings"] = robust_errors[:10]
         print(f"[REDUCE] WARNING: robust pattern unavailable: {robust_errors[0]}", flush=True)
+    if sigmaclip_errors:
+        manifest["sigmaclip_warnings"] = sigmaclip_errors[:10]
+        print(f"[REDUCE] WARNING: sigma-clip pattern unavailable: {sigmaclip_errors[0]}", flush=True)
     write_json(manifest_path, manifest)
     manifest["manifest_file"] = str(manifest_path)
     print(f"[REDUCE] done: {total - len(failures)}/{total} frames in {elapsed:.1f}s -> {h5_path}", flush=True)

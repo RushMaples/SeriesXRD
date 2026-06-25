@@ -204,6 +204,8 @@ def run_background_separation(
         /background/clean            (N, N_bins)
         /background/baseline         (N, N_bins)
         /background/spot_residual    (N, N_bins)
+        /background/sigmaclip_residual (N, N_bins)  only if the reduced file has
+                                     patterns/intensity_sigmaclip (= sigmaclip − robust)
 
     Returns a manifest dict (also has ``out_h5`` and per-run stats). Progress
     lines ``[ANALYSIS] <done> <total>`` go to stdout for a supervising UI.
@@ -225,6 +227,12 @@ def run_background_separation(
                 "for diamond-spot separation.")
         mean_all = np.asarray(pat["intensity"][:], dtype=float)
         robust_all = np.asarray(pat["intensity_robust"][:], dtype=float)
+        # Optional reduce-side azimuthal sigma-clipped (trimmed-mean) channel —
+        # keeps azimuthally-sparse real sample intensity that the median drops,
+        # while still rejecting diamond single-crystal spots. Carried into the
+        # analysis file as a residual so Step 2 can fit on it.
+        sigmaclip_all = (np.asarray(pat["intensity_sigmaclip"][:], dtype=float)
+                         if "intensity_sigmaclip" in pat else None)
         radial = np.asarray(pat["radial"][:], dtype=float) if "radial" in pat else None
         unit = str(h5.attrs.get("unit", ""))
         poni = h5.attrs.get("poni_text", "")
@@ -272,6 +280,13 @@ def run_background_separation(
             if (i + 1) % 25 == 0 or i + 1 == n:
                 print(f"[ANALYSIS] {i + 1} {n}", flush=True)
 
+    # sigmaclip channel as a residual on the spot-suppressed median (mirrors how
+    # spot_residual = mean − robust is stored), so any source can be rebuilt as
+    # clean + <residual> in Step 2 without re-reading the reduced file.
+    sigmaclip_residual = None
+    if sigmaclip_all is not None and sigmaclip_all.shape == robust_all.shape:
+        sigmaclip_residual = (sigmaclip_all - robust_all).astype("f4")
+
     flagged = None
     if contamination_threshold is not None:
         flagged = contam > float(contamination_threshold)
@@ -285,6 +300,7 @@ def run_background_separation(
                 "wavelength": float(wavelength),
                 "max_half_window": int(max_half_window), "n_passes": int(n_passes),
                 "use_lls": bool(use_lls),
+                "has_sigmaclip": bool(sigmaclip_residual is not None),
             })
             if radial is not None:
                 o.create_dataset("radial", data=radial)
@@ -301,6 +317,9 @@ def run_background_separation(
             gb.create_dataset("clean", data=clean, compression="gzip", compression_opts=1)
             gb.create_dataset("baseline", data=baseline, compression="gzip", compression_opts=1)
             gb.create_dataset("spot_residual", data=spots, compression="gzip", compression_opts=1)
+            if sigmaclip_residual is not None:
+                gb.create_dataset("sigmaclip_residual", data=sigmaclip_residual,
+                                  compression="gzip", compression_opts=1)
         import os
         os.replace(tmp, out)
     except Exception:
@@ -321,6 +340,7 @@ def run_background_separation(
         "n_passes": int(n_passes),
         "contamination_threshold": contamination_threshold,
         "n_flagged": int(flagged.sum()) if flagged is not None else None,
+        "has_sigmaclip": bool(sigmaclip_residual is not None),
         "contamination_min": float(np.min(contam)) if n else 0.0,
         "contamination_max": float(np.max(contam)) if n else 0.0,
     }
