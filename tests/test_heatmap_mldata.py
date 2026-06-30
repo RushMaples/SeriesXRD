@@ -74,6 +74,50 @@ def test_pattern_image():
         assert not bad["ok"]
 
 
+def test_metadata_pressure_axis_and_anisotropic_tracks():
+    """x_axis='pressure' from /frames/pressure (no phase needed), and reflection
+    tracks driven by the anisotropic predicted_d (soft axis compresses more).
+    Both run without pymatgen — tracks read the Step-3a reflection cache."""
+    import h5py
+    nb, n = 40, 5
+    with tempfile.TemporaryDirectory() as td:
+        h5 = Path(td) / "a.h5"
+        with h5py.File(str(h5), "w") as f:
+            f.attrs["unit"] = "q_A^-1"
+            f.create_dataset("radial", data=np.linspace(1.0, 8.0, nb))
+            f.create_group("background").create_dataset(
+                "clean", data=np.random.rand(n, nb).astype("f4"))
+            gf = f.create_group("frames")
+            gf.create_dataset("pressure", data=np.array([0.0, 5.0, 10.0, 15.0, 20.0]))
+            # Cache reflections for a tetragonal phase with a soft c-axis.
+            g = f.require_group("identify").require_group("tet")
+            g.attrs["name"] = "tet"
+            g.create_dataset("refl_d", data=np.array([4.0, 6.0]))     # (100), (001)
+            g.create_dataset("refl_w", data=np.array([1.0, 1.0]))
+            g.create_dataset("refl_hkl",
+                             data=np.array(["(1, 0, 0)", "(0, 0, 1)"], dtype=object),
+                             dtype=h5py.string_dtype(encoding="utf-8"))
+
+        # Metadata pressure axis: no pressure_phase -> uses /frames/pressure.
+        img = hm.pattern_image(h5, source="clean", x_axis="pressure")
+        assert img["ok"], img["error"]
+        assert np.allclose(img["x"], [0, 5, 10, 15, 20])
+        assert "metadata" in img["x_label"]
+
+        tet = ph.Phase(name="tet",
+                       lattice={"a": 4.0, "b": 4.0, "c": 6.0,
+                                "alpha": 90, "beta": 90, "gamma": 90},
+                       axial_eos={"a": {"type": "BM3", "K0": 300, "K0p": 4},
+                                  "c": {"type": "BM3", "K0": 100, "K0p": 4}})
+        tr = hm.reflection_tracks(h5, tet)
+        assert tr["ok"] and len(tr["tracks"]) == 2
+        c100 = tr["tracks"][0]["centers"]      # (100) on the stiff a-axis
+        c001 = tr["tracks"][1]["centers"]      # (001) on the soft c-axis
+        # q rises with pressure for both; the soft c-axis reflection rises more.
+        assert c100[-1] > c100[0] and c001[-1] > c001[0]
+        assert (c001[-1] / c001[0]) > (c100[-1] / c100[0])
+
+
 def test_resample():
     grid = ml.make_d_grid()
     assert grid.size == 3501 and abs(grid[0] - 1.199) < 1e-6 and abs(grid[-1] - 8.853) < 1e-6
@@ -130,6 +174,7 @@ def test_simulated_dataset():
 
 def main() -> None:
     test_pattern_image()
+    test_metadata_pressure_axis_and_anisotropic_tracks()
     test_resample()
     test_tracks_layers_and_export()
     test_simulated_dataset()

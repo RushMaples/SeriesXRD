@@ -194,47 +194,88 @@ def predicted_d(phase: Phase, d0: np.ndarray, hkls, P: float) -> np.ndarray:
     return d0 * scale_at_pressure(phase, P)
 
 
+def _match_pairs(pred: np.ndarray, obs: np.ndarray, rel_tol: float,
+                 factor: float = 2.0) -> "List[Tuple[int, int, float]]":
+    """Greedy ONE-TO-ONE assignment of predicted lines to observed peaks.
+
+    A predicted line and an observed peak can be paired only once: closest pairs
+    (within ``factor·σᵢ``, σᵢ = rel_tol·predᵢ) are consumed first. This stops a
+    single observed peak from "explaining" several predicted reflections (which
+    inflated n_matched / recall and let wrong phases look present in DAC data).
+    Returns ``[(i_pred, j_obs, gap)]``.
+    """
+    pred = np.asarray(pred, dtype=float)
+    obs = np.asarray(obs, dtype=float)
+    if pred.size == 0 or obs.size == 0:
+        return []
+    cand: "List[Tuple[float, int, int]]" = []
+    for i, pi in enumerate(pred):
+        if not np.isfinite(pi) or pi <= 0:
+            continue
+        tol = factor * max(rel_tol * pi, 1e-9)
+        for j, oj in enumerate(obs):
+            g = abs(pi - oj)
+            if g < tol:
+                cand.append((g, i, j))
+    cand.sort()
+    used_p: set = set()
+    used_o: set = set()
+    out: "List[Tuple[int, int, float]]" = []
+    for g, i, j in cand:
+        if i in used_p or j in used_o:
+            continue
+        used_p.add(i)
+        used_o.add(j)
+        out.append((i, j, g))
+    return out
+
+
 def _score_pred(obs_sorted: np.ndarray, pred: np.ndarray, weight: np.ndarray,
                 rel_tol: float, strong_frac: float = 0.1
                 ) -> Tuple[float, int, float, float]:
     """Match score, #matched, recall, precision for a predicted d-spacing array.
 
-    ``score`` = Σ wᵢ·exp(−½(Δdᵢ/σᵢ)²), σᵢ = rel_tol·d_pred,ᵢ — the optimisation
-    target for the pressure fit.
+    ``score`` = Σ wᵢ·exp(−½(Δdᵢ/σᵢ)²), σᵢ = rel_tol·d_pred,ᵢ — a smooth
+    optimisation target for the pressure fit (nearest-neighbour, so it stays
+    differentiable as P sweeps).
 
-    Two complementary figures of merit, because neither alone survives DAC data:
+    The reported *evidence* (n_matched, recall, precision), by contrast, uses a
+    hard ONE-TO-ONE assignment so a wrong phase cannot reuse one peak many times:
 
     * ``recall`` — intensity-weighted fraction of the phase's *strong, observable*
-      lines (≥ ``strong_frac`` of the strongest in-window line) that are matched.
-    * ``precision`` — fraction of the *observed* peaks in the predicted range
-      explained by a predicted line. High for the dominant/sample phase even when
-      recall is low. A phase is taken as present if EITHER is high.
+      lines (≥ ``strong_frac`` of the strongest in-window line) that are matched
+      one-to-one.
+    * ``precision`` — fraction of the *observed* peaks in the predicted range that
+      a predicted line claims (matched-pairs / observed-in-range, ≤ 1).
     """
     pred = np.asarray(pred, dtype=float)
     sigma = np.maximum(rel_tol * pred, 1e-9)
     gap = _nearest_gap(pred, obs_sorted)
     kernel = np.exp(-0.5 * (gap / sigma) ** 2)
     score = float(np.sum(weight * kernel))
-    n_matched = int(np.sum(gap < 2.0 * sigma))
+    pairs = _match_pairs(pred, obs_sorted, rel_tol, factor=2.0)
+    n_matched = len(pairs)
+    matched_pred = np.zeros(pred.size, dtype=bool)
+    for i, _j, _g in pairs:
+        matched_pred[i] = True
     recall = 0.0
     precision = 0.0
     if obs_sorted.size and pred.size:
         span = 2.0 * float(sigma.max())
-        # Recall over the strong in-window predicted lines.
+        # Recall over the strong in-window predicted lines (matched one-to-one).
         in_win = (pred >= obs_sorted[0] - span) & (pred <= obs_sorted[-1] + span)
         w_win = weight[in_win]
         if w_win.size:
             strong = w_win >= strong_frac * float(w_win.max())
             denom = float(np.sum(w_win[strong]))
-            num = float(np.sum((weight * kernel)[in_win][strong]))
+            num = float(np.sum((weight * kernel * matched_pred)[in_win][strong]))
             recall = num / denom if denom > 0 else 0.0
-        # Precision over observed peaks falling in the predicted d-range.
+        # Precision: matched pairs / observed peaks in the predicted d-range.
         pred_sorted = np.sort(pred)
         lo, hi = pred_sorted[0] - span, pred_sorted[-1] + span
-        obs_in = obs_sorted[(obs_sorted >= lo) & (obs_sorted <= hi)]
-        if obs_in.size:
-            gap_obs = _nearest_gap(obs_in, pred_sorted)
-            precision = float(np.mean(gap_obs < 2.0 * rel_tol * obs_in))
+        n_obs_in = int(np.sum((obs_sorted >= lo) & (obs_sorted <= hi)))
+        if n_obs_in:
+            precision = min(1.0, n_matched / float(n_obs_in))
     return score, n_matched, recall, precision
 
 
@@ -246,10 +287,55 @@ def score_at_scale(obs_sorted: np.ndarray, d0: np.ndarray, weight: np.ndarray,
                        rel_tol, strong_frac)
 
 
+DEFAULT_MIN_MATCHED = 3
+# Floor on the half-width of the pressure search/penalty window (GPa), so a
+# near-zero metadata sigma can't collapse the window to nothing.
+_MIN_PRESSURE_WINDOW = 0.3
+
+
+def pressure_window_halfwidth(sigma: "Optional[float]", default_window: float,
+                              sigma_k: float = 2.0) -> float:
+    """Half-width (GPa) of the pressure prior window for one frame.
+
+    Uses ``sigma_k·sigma`` when a per-frame pressure uncertainty is known,
+    otherwise the ``default_window``; floored at :data:`_MIN_PRESSURE_WINDOW`."""
+    if sigma is not None and np.isfinite(sigma) and sigma > 0:
+        w = float(sigma_k) * float(sigma)
+    else:
+        w = float(default_window)
+    return max(w, _MIN_PRESSURE_WINDOW)
+
+
+def conservative_confidence(recall: float, precision: float, n_matched: int,
+                            *, min_matched: int = DEFAULT_MIN_MATCHED,
+                            prior_penalty: float = 1.0) -> float:
+    """Combine the figures of merit into ONE conservative confidence in [0, 1].
+
+    Replaces the old ``max(recall, precision)`` — which let a phase explaining a
+    couple of the busiest peaks score 1.0 — with three multiplicative factors:
+
+    * ``balanced`` = F1(recall, precision): demands the phase both shows its own
+      strong lines *and* accounts for what is observed (neither alone suffices).
+    * ``evidence`` = min(1, n_matched / min_matched): penalises matches resting on
+      too few reflections (the DARA/RADAR-PD "minimum evidence" lesson).
+    * ``prior_penalty`` ∈ (0, 1]: Gaussian falloff when the fitted pressure
+      disagrees with the frame's metadata pressure (1.0 when no prior).
+    """
+    r = max(0.0, float(recall))
+    p = max(0.0, float(precision))
+    balanced = (2.0 * r * p / (r + p)) if (r + p) > 0 else 0.0
+    mm = max(1, int(min_matched))
+    evidence = min(1.0, max(0, int(n_matched)) / float(mm))
+    return float(balanced * evidence * max(0.0, min(1.0, prior_penalty)))
+
+
 def fit_pressure_for_phase(obs_d, phase: Phase,
                            refl: "Optional[Tuple[np.ndarray, np.ndarray, List[str]]]" = None,
                            *, p_min: float = 0.0, p_max: float = 100.0,
-                           n_grid: int = 300, rel_tol: float = 0.01) -> Dict[str, Any]:
+                           n_grid: int = 300, rel_tol: float = 0.01,
+                           p_prior: "Optional[float]" = None,
+                           p_window: "Optional[float]" = None,
+                           min_matched: int = DEFAULT_MIN_MATCHED) -> Dict[str, Any]:
     """Best-fit pressure for one phase against one frame's observed d-spacings.
 
     Returns ``{pressure, score, confidence, recall, precision, n_matched,
@@ -257,6 +343,14 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
     (per-axis), else isotropic from the volume EOS; with neither, the phase is
     only scored at ambient (pressure 0). ``refl`` may be precomputed (see
     :func:`phase_reflections`) to avoid re-simulating across frames.
+
+    Pressure prior — the key DAC fix. When ``p_prior`` (a frame's metadata
+    pressure, GPa) is given, the search is *confined* to ``p_prior ± p_window``
+    instead of the whole ``[p_min, p_max]`` range, so a wrong phase can no longer
+    slide along pressure until a few lines happen to coincide. The fitted
+    pressure is additionally weighed against the prior by a Gaussian penalty in
+    :func:`conservative_confidence` (tolerance = ``p_window``). The prior is not
+    applied to phases without an EOS (their pressure is fixed at ambient).
     """
     if refl is None:
         refl = phase_reflections(phase)
@@ -272,20 +366,43 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
         out["pressure"] = 0.0
         return out
 
+    has_prior = (p_prior is not None and np.isfinite(p_prior))
+    has_eos = phase.has_eos() or has_axial_eos(phase)
+    # Penalty tolerance only when both a prior and a pressure d.o.f. exist.
+    pen_prior = float(p_prior) if (has_prior and has_eos) else None
+    pen_tol = float(p_window) if (p_window and p_window > 0) else None
+
     def _score_P(P):
         return _score_pred(obs, predicted_d(phase, d0, hkls, P), weight, rel_tol)
 
     def _record(p_val):
         score, nm, rec, prec = _score_P(p_val)
+        prior_pen = 1.0
+        if pen_prior is not None and pen_tol:
+            prior_pen = float(np.exp(-0.5 * ((p_val - pen_prior) / pen_tol) ** 2))
         out.update({"pressure": p_val, "score": score, "n_matched": nm,
                     "recall": rec, "precision": prec,
-                    "confidence": max(rec, prec)})  # present if EITHER is high
+                    "confidence": conservative_confidence(
+                        rec, prec, nm, min_matched=min_matched,
+                        prior_penalty=prior_pen)})
 
-    if not (phase.has_eos() or has_axial_eos(phase)):
+    if not has_eos:
         _record(0.0)
         return out
 
-    Ps = np.linspace(float(p_min), float(p_max), int(max(n_grid, 2)))
+    # Confine the search to the prior window when we have one.
+    lo_b, hi_b = float(p_min), float(p_max)
+    if has_prior and p_window and p_window > 0:
+        lo_b = max(lo_b, float(p_prior) - float(p_window))
+        hi_b = min(hi_b, float(p_prior) + float(p_window))
+        if hi_b <= lo_b:                       # prior sits outside [p_min, p_max]
+            lo_b = hi_b = min(max(float(p_prior), float(p_min)), float(p_max))
+
+    if hi_b <= lo_b:
+        _record(lo_b)
+        return out
+
+    Ps = np.linspace(lo_b, hi_b, int(max(n_grid, 2)))
     scores = np.array([_score_P(P)[0] for P in Ps])
     best = int(np.argmax(scores))
     p_opt = float(Ps[best])
@@ -319,7 +436,8 @@ def _identify_chunk(payload):
     Reflections are precomputed in the parent and passed in, so the workers need
     no pymatgen. Excluded frames are left as NaN/zero.
     """
-    phases, refls, obs_chunk, excluded_chunk, p_min, p_max, rel_tol = payload
+    (phases, refls, obs_chunk, excluded_chunk, prior_chunk, window_chunk,
+     p_min, p_max, rel_tol, min_matched) = payload
     m = len(obs_chunk)
     res = {ph.name: {"pressure": np.full(m, np.nan, "f8"), "score": np.zeros(m, "f8"),
                      "confidence": np.zeros(m, "f8"), "recall": np.zeros(m, "f8"),
@@ -329,9 +447,14 @@ def _identify_chunk(payload):
         if excluded_chunk[j]:
             continue
         obs = obs_chunk[j]
+        pp = None
+        if prior_chunk is not None and np.isfinite(prior_chunk[j]):
+            pp = float(prior_chunk[j])
+        pw = float(window_chunk[j]) if (window_chunk is not None and pp is not None) else None
         for ph, refl in zip(phases, refls):
             r = fit_pressure_for_phase(obs, ph, refl, p_min=p_min, p_max=p_max,
-                                       rel_tol=rel_tol)
+                                       rel_tol=rel_tol, p_prior=pp, p_window=pw,
+                                       min_matched=min_matched)
             rr = res[ph.name]
             rr["pressure"][j] = r["pressure"]; rr["score"][j] = r["score"]
             rr["confidence"][j] = r["confidence"]; rr["recall"][j] = r["recall"]
@@ -366,16 +489,35 @@ def run_identification(
     rel_tol: float = 0.01,
     out_h5: "Optional[str | Path]" = None,
     num_workers: int = 1,
+    pressure_by_frame: "Optional[Sequence[float]]" = None,
+    pressure_sigma_by_frame: "Optional[Sequence[float]]" = None,
+    use_frame_pressure: bool = True,
+    pressure_window: float = 2.0,
+    pressure_sigma_k: float = 2.0,
+    min_matched: int = DEFAULT_MIN_MATCHED,
+    marker_prior: bool = False,
 ) -> Dict[str, Any]:
     """Match every frame's good peaks against each candidate phase and store the
     per-frame best-fit pressure / score / confidence under ``/identify``.
 
-        /identify  attrs: schema_version, unit, wavelength, p_min, p_max, rel_tol, phases
+        /identify  attrs: schema_version, unit, wavelength, p_min, p_max, rel_tol,
+                          phases, pressure_window, pressure_sigma_k, min_matched
         /identify/<phase>/pressure    (N,)  best-fit pressure (GPa)
         /identify/<phase>/score       (N,)  match score
-        /identify/<phase>/confidence  (N,)  matched-weight fraction in window
-        /identify/<phase>/n_matched   (N,) int
-                          attrs: name, n_pred, has_eos
+        /identify/<phase>/confidence  (N,)  conservative confidence (see
+                                            conservative_confidence)
+        /identify/<phase>/recall, /precision (N,)
+        /identify/<phase>/n_matched   (N,) int  one-to-one matched reflections
+                          attrs: name, n_pred, has_eos, category
+
+    Pressure prior (the DAC accuracy fix): if ``pressure_by_frame`` is given — or
+    the analysis file already carries ``/frames/pressure`` (from filenames or a
+    CSV import, see ``frame_metadata.py``) — each phase is fitted only within
+    ``±window`` of that frame's pressure rather than the full ``[p_min, p_max]``.
+    The window is ``pressure_sigma_k·σ`` where a per-frame ``pressure_sigma`` is
+    known, else ``pressure_window`` (GPa). With ``marker_prior=True`` and no
+    metadata pressure, a first pass over the marker-category phases estimates the
+    per-frame pressure, which then primes the full pass.
 
     ``phases`` are Phase objects (resolve names via ``phases.load_library``).
     Requires pymatgen. Prints ``[IDENTIFY] <done> <total>`` progress.
@@ -419,8 +561,26 @@ def run_identification(
         frames = h5.get("frames")
         excluded = (np.asarray(frames["excluded"][:], dtype=bool)
                     if frames is not None and "excluded" in frames else None)
+        # Frame pressure prior (+ optional per-frame uncertainty) — written by
+        # Step 1 from filenames, or by a frame_metadata CSV import. An explicit
+        # pressure_by_frame argument overrides whatever is on disk.
+        file_pressure = (np.asarray(frames["pressure"][:], dtype=float)
+                         if frames is not None and "pressure" in frames else None)
+        file_sigma = (np.asarray(frames["pressure_sigma"][:], dtype=float)
+                      if frames is not None and "pressure_sigma" in frames else None)
     if excluded is None or excluded.size != n:
         excluded = np.zeros(n, dtype=bool)
+
+    def _as_n(arr):
+        if arr is None:
+            return None
+        a = np.asarray(arr, dtype=float)
+        return a if a.size == n else None
+
+    prior_pressure = _as_n(pressure_by_frame if pressure_by_frame is not None
+                           else (file_pressure if use_frame_pressure else None))
+    prior_sigma = _as_n(pressure_sigma_by_frame if pressure_sigma_by_frame is not None
+                        else (file_sigma if use_frame_pressure else None))
 
     # Wavelength is only needed for a 2theta axis: prefer the value stored at
     # Step 1, then an explicit arg, then the reduced PONI.
@@ -462,6 +622,51 @@ def run_identification(
     if not phases:
         raise ValueError("No phases could be simulated for identification.")
     refls = [refl_cache[ph.name] for ph in phases]
+
+    # Marker-derived prior: when no metadata pressure exists but the user asked
+    # for it, fit only the pressure-marker phases first and adopt the best
+    # marker's per-frame pressure as the prior that primes the full pass.
+    if marker_prior and (prior_pressure is None or not np.any(np.isfinite(prior_pressure))):
+        markers = [ph for ph in phases
+                   if ph.category == "marker" and (ph.has_eos() or has_axial_eos(ph))]
+        if markers:
+            print(f"[IDENTIFY] marker-prior pass over {[m.name for m in markers]}", flush=True)
+            est = np.full(n, np.nan, "f8")
+            best_conf = np.zeros(n, "f8")
+            for j in range(n):
+                if excluded[j]:
+                    continue
+                obs = obs_d_by_frame[j]
+                if obs.size == 0:
+                    continue
+                for m in markers:
+                    r = fit_pressure_for_phase(obs, m, refl_cache[m.name], p_min=p_min,
+                                               p_max=p_max, rel_tol=rel_tol,
+                                               min_matched=min_matched)
+                    if (r["n_matched"] >= min_matched and np.isfinite(r["pressure"])
+                            and r["confidence"] > best_conf[j]):
+                        best_conf[j] = r["confidence"]
+                        est[j] = r["pressure"]
+            if np.any(np.isfinite(est)):
+                prior_pressure = est
+                print(f"[IDENTIFY] marker prior set for "
+                      f"{int(np.sum(np.isfinite(est)))}/{n} frames", flush=True)
+
+    # Per-frame search/penalty window (half-width, GPa); None when no prior.
+    n_prior = int(np.sum(np.isfinite(prior_pressure))) if prior_pressure is not None else 0
+    if prior_pressure is not None and n_prior:
+        windows = np.array([
+            pressure_window_halfwidth(
+                (prior_sigma[j] if (prior_sigma is not None and np.isfinite(prior_sigma[j]))
+                 else None),
+                pressure_window, pressure_sigma_k)
+            for j in range(n)], dtype="f8")
+        print(f"[IDENTIFY] pressure prior on {n_prior}/{n} frames "
+              f"(window ±{pressure_window} GPa or {pressure_sigma_k}σ)", flush=True)
+    else:
+        prior_pressure = None
+        windows = None
+
     results: Dict[str, Dict[str, np.ndarray]] = {
         ph.name: {"pressure": np.full(n, np.nan, "f8"), "score": np.zeros(n, "f8"),
                   "confidence": np.zeros(n, "f8"), "recall": np.zeros(n, "f8"),
@@ -473,10 +678,14 @@ def run_identification(
             for k, v in rr.items():
                 results[name][k][a:a + len(v)] = v
 
+    def _slice(arr, a, b):
+        return arr[a:b] if arr is not None else None
+
     if workers > 1 and n > 1:
         ranges = chunk_ranges(n, workers)
         payloads = [(phases, refls, obs_d_by_frame[a:b], excluded[a:b],
-                     p_min, p_max, rel_tol) for a, b in ranges]
+                     _slice(prior_pressure, a, b), _slice(windows, a, b),
+                     p_min, p_max, rel_tol, min_matched) for a, b in ranges]
         done = 0
         with ProcessPoolExecutor(max_workers=workers) as ex:
             for (a, b), chunk_res in zip(ranges, ex.map(_identify_chunk, payloads)):
@@ -485,7 +694,8 @@ def run_identification(
                 print(f"[IDENTIFY] {done} {n}", flush=True)
     else:
         _absorb(0, _identify_chunk((phases, refls, obs_d_by_frame, excluded,
-                                    p_min, p_max, rel_tol)))
+                                    prior_pressure, windows,
+                                    p_min, p_max, rel_tol, min_matched)))
         print(f"[IDENTIFY] {n} {n}", flush=True)
 
     tmp = dst.with_name(dst.name + ".tmp")
@@ -501,6 +711,10 @@ def run_identification(
                 "wavelength": float(wavelength) if wavelength else 0.0,
                 "p_min": float(p_min), "p_max": float(p_max), "rel_tol": float(rel_tol),
                 "phases": ", ".join(p.name for p in phases),
+                "pressure_window": float(pressure_window),
+                "pressure_sigma_k": float(pressure_sigma_k),
+                "min_matched": int(min_matched),
+                "n_pressure_prior": int(n_prior),
             })
             for ph in phases:
                 g = gid.create_group(_h5_safe(ph.name))
@@ -526,9 +740,11 @@ def run_identification(
             tmp.unlink()
         raise
 
-    # Per-phase summary. "Seen" uses a deliberately modest confidence bar (a
-    # DAC pattern rarely shows every strong line); the richer stats below let the
-    # user judge partial matches instead of collapsing them to a single 0.
+    # Per-phase summary. "Seen" requires both a modest confidence bar (a DAC
+    # pattern rarely shows every strong line) AND minimum reflection evidence
+    # (≥ min_matched one-to-one matches), so a phase can't be called present off
+    # one or two coincidental peaks. The richer stats let the user judge partial
+    # matches instead of collapsing them to a single 0.
     SEEN_CONF = 0.5
     summary = {}
     live = ~excluded
@@ -537,13 +753,14 @@ def run_identification(
         conf = res["confidence"]
         nm = res["n_matched"]
         conf_live = conf[live] if live.any() else conf
-        seen = (conf > SEEN_CONF) & live
+        seen = (conf > SEEN_CONF) & (nm >= int(min_matched)) & live
         summary[ph.name] = {
             "mean_confidence": float(np.mean(conf_live)) if conf_live.size else 0.0,
             "max_confidence": float(np.max(conf_live)) if conf_live.size else 0.0,
             "max_recall": float(np.max(res["recall"][live])) if live.any() else 0.0,
             "max_precision": float(np.max(res["precision"][live])) if live.any() else 0.0,
             "seen_conf": SEEN_CONF,
+            "seen_min_matched": int(min_matched),
             "n_frames_seen": int(np.sum(seen)),
             "n_frames_matched": int(np.sum((nm > 0) & live)),
             "max_matched": int(np.max(nm)) if nm.size else 0,

@@ -210,6 +210,132 @@ def test_sparse_observation_still_seen():
         assert summ["pressure_median"] == summ["pressure_median"], "pressure_median is NaN"
 
 
+# ---------------------------------------------------------------------------
+# Pressure-aware identification + hardened scoring (no pymatgen — synthetic FCC
+# reflections built straight from the cubic metric, like test_axial_eos above).
+# ---------------------------------------------------------------------------
+
+def _synth_au():
+    """An FCC-gold-like phase + its (d, weight, hkl) reflection list, no pymatgen."""
+    a0 = 4.078
+    rows = [("111", 3, 100), ("200", 4, 46), ("220", 8, 26), ("311", 11, 28),
+            ("222", 12, 8), ("400", 16, 4), ("331", 19, 12), ("420", 20, 12),
+            ("422", 24, 10), ("511", 27, 8)]
+    d0 = np.array([a0 / math.sqrt(s) for _, s, _ in rows])
+    w = np.array([i for *_, i in rows], float)
+    w /= w.max()
+    hkl = ["(%s, %s, %s)" % (h[0], h[1], h[2]) for h, _, _ in rows]
+    au = ph.Phase(name="Au", category="marker",
+                  eos={"type": "BM3", "K0": 167, "K0p": 5.0}, space_group="Fm-3m",
+                  lattice={"a": a0, "b": a0, "c": a0, "alpha": 90, "beta": 90, "gamma": 90},
+                  atoms=[{"element": "Au", "x": 0, "y": 0, "z": 0, "occ": 1.0}])
+    return au, (d0, w, hkl)
+
+
+def test_conservative_confidence():
+    cc = idf.conservative_confidence
+    # Old max(recall,precision)=1.0 here; the balanced+evidence form is < that.
+    assert cc(1.0, 1.0, 10, min_matched=3) == 1.0
+    assert 0.0 < cc(0.2, 1.0, 10, min_matched=3) < 0.5          # imbalanced -> low
+    # Evidence penalty: too few matched reflections drags it down.
+    assert cc(1.0, 1.0, 1, min_matched=3) < cc(1.0, 1.0, 3, min_matched=3)
+    assert cc(1.0, 1.0, 3, min_matched=3) == 1.0
+    # Pressure-prior penalty multiplies in (0,1].
+    assert cc(1.0, 1.0, 5, min_matched=3, prior_penalty=0.5) == 0.5
+    assert cc(0.0, 0.0, 0, min_matched=3) == 0.0
+
+
+def test_one_to_one_matching():
+    # Two predicted lines crowd one observed peak: only ONE may claim it.
+    pred = np.array([2.000, 2.001])
+    obs = np.array([2.0005])
+    pairs = idf._match_pairs(pred, obs, rel_tol=0.01)
+    assert len(pairs) == 1, pairs
+    # Two observed, two predicted -> two distinct pairs.
+    pairs2 = idf._match_pairs(np.array([2.0, 3.0]), np.array([2.0, 3.0]), rel_tol=0.01)
+    assert len(pairs2) == 2 and {p[0] for p in pairs2} == {0, 1}
+
+
+def test_pressure_prior_confines_search():
+    au, refl = _synth_au()
+    d0, _, _ = refl
+    obs = d0 * idf.scale_at_pressure(au, 20.0)        # observed at 20 GPa
+    free = idf.fit_pressure_for_phase(obs, au, refl, p_min=0, p_max=200, rel_tol=0.01)
+    assert abs(free["pressure"] - 20.0) < 1.0 and free["confidence"] > 0.8
+    good = idf.fit_pressure_for_phase(obs, au, refl, p_min=0, p_max=200, rel_tol=0.01,
+                                      p_prior=20.0, p_window=2.0)
+    assert abs(good["pressure"] - 20.0) < 1.0 and good["confidence"] > 0.8
+    # A wrong prior confines the fit far from the real pressure -> confidence collapses.
+    bad = idf.fit_pressure_for_phase(obs, au, refl, p_min=0, p_max=200, rel_tol=0.01,
+                                     p_prior=80.0, p_window=2.0)
+    assert abs(bad["pressure"] - 80.0) <= 2.0
+    assert bad["confidence"] < 0.3, bad["confidence"]
+
+
+def _run_identification_synthetic(tmp_h5, phases, refl_map, p_true, **kw):
+    """Drive run_identification without pymatgen by patching the simulation."""
+    import h5py
+    real_avail, real_refl = idf.pymatgen_available, idf.phase_reflections
+    idf.pymatgen_available = lambda: True
+    idf.phase_reflections = lambda phase, **k: refl_map[phase.name]
+    try:
+        return idf.run_identification(tmp_h5, phases, p_min=0, p_max=200,
+                                      rel_tol=0.01, **kw)
+    finally:
+        idf.pymatgen_available, idf.phase_reflections = real_avail, real_refl
+
+
+def test_pressure_prior_rejects_decoy_end_to_end():
+    """Metadata pressure on /frames rejects a decoy phase that, given free
+    pressure, can otherwise pair up enough lines to look present."""
+    import h5py
+    au, au_refl = _synth_au()
+    d0 = au_refl[0]
+    decoy = ph.Phase(name="Decoy", category="sample",
+                     eos={"type": "BM3", "K0": 80, "K0p": 4.0}, space_group="Fm-3m",
+                     lattice={"a": 4.5, "b": 4.5, "c": 4.5, "alpha": 90, "beta": 90, "gamma": 90},
+                     atoms=[{"element": "Si", "x": 0, "y": 0, "z": 0, "occ": 1.0}])
+    decoy_refl = (np.array([4.5 / math.sqrt(s) for s in (3, 4, 8, 11, 12)]),
+                  np.array([1., .8, .6, .5, .3]),
+                  ["(1, 1, 1)", "(2, 0, 0)", "(2, 2, 0)", "(3, 1, 1)", "(2, 2, 2)"])
+    P = [10.0, 20.0, 30.0]
+    with tempfile.TemporaryDirectory() as td:
+        h5 = Path(td) / "an.h5"
+        allq, frame, counts = [], [], []
+        for i, p in enumerate(P):
+            q = 2 * np.pi / (d0 * idf.scale_at_pressure(au, p))
+            allq.extend(q); frame.extend([i] * len(q)); counts.append(len(q))
+        with h5py.File(str(h5), "w") as f:
+            f.attrs["unit"] = "q_A^-1"; f.attrs["source_reduced"] = "syn"
+            gp = f.create_group("peaks")
+            gp.create_dataset("counts", data=np.array(counts, "i4"))
+            gp.create_dataset("frame", data=np.array(frame, "i4"))
+            gp.create_dataset("center", data=np.array(allq, "f8"))
+            gp.create_dataset("flag", data=np.zeros(len(allq), "i4"))
+            gf = f.create_group("frames")
+            gf.create_dataset("pressure", data=np.array(P))        # exact metadata prior
+            gf.create_dataset("excluded", data=np.zeros(len(P), "?"))
+        man = _run_identification_synthetic(
+            h5, [au, decoy], {"Au": au_refl, "Decoy": decoy_refl}, P, pressure_window=2.0)
+        assert man["summary"]["Au"]["n_frames_seen"] == 3
+        assert man["summary"]["Decoy"]["n_frames_seen"] == 0, man["summary"]["Decoy"]
+        with h5py.File(str(h5), "r") as f:
+            assert np.allclose(np.round(f["identify/Au/pressure"][:]), P)
+            assert f["identify"].attrs["n_pressure_prior"] == 3
+            assert np.max(f["identify/Decoy/confidence"][:]) < 0.5
+
+        # marker_prior path: same data, but no metadata pressure -> derive from Au.
+        with h5py.File(str(h5), "r+") as f:
+            f["frames/pressure"][...] = np.nan
+            if "identify" in f:
+                del f["identify"]
+        man2 = _run_identification_synthetic(
+            h5, [au, decoy], {"Au": au_refl, "Decoy": decoy_refl}, P,
+            marker_prior=True, pressure_window=2.0)
+        assert man2["summary"]["Au"]["n_frames_seen"] == 3
+        assert man2["summary"]["Decoy"]["n_frames_seen"] == 0
+
+
 def main() -> None:
     test_radial_to_d()
     test_scale_monotonic()
@@ -218,6 +344,10 @@ def main() -> None:
     test_skip_structureless_phase()
     test_axial_eos_anisotropic()
     test_sparse_observation_still_seen()
+    test_conservative_confidence()
+    test_one_to_one_matching()
+    test_pressure_prior_confines_search()
+    test_pressure_prior_rejects_decoy_end_to_end()
     print("IDENTIFY TEST OK")
 
 
