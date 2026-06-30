@@ -20,14 +20,14 @@ if __package__ in (None, ""):
     _pkg_parent = str(Path(__file__).resolve().parents[2])
     if _pkg_parent not in sys.path:
         sys.path.insert(0, _pkg_parent)
-    from bulkxrd.core.config import read_json, write_json, print_status
+    from bulkxrd.core.config import read_json, write_json, print_status, make_stdio_robust
     from bulkxrd.analysis.background import run_background_separation
     from bulkxrd.analysis.peaks import run_peak_fitting
     from bulkxrd.analysis.identify import run_identification
     from bulkxrd.analysis.residual import run_residual
     from bulkxrd.analysis.phases import load_library
 else:
-    from ..core.config import read_json, write_json, print_status
+    from ..core.config import read_json, write_json, print_status, make_stdio_robust
     from .background import run_background_separation
     from .peaks import run_peak_fitting
     from .identify import run_identification
@@ -224,6 +224,7 @@ def run_analysis(cfg: dict) -> dict:
 
 
 def main() -> int:
+    make_stdio_robust()   # never let a non-ASCII log line crash on a cp1252 console
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--output-json", required=True)

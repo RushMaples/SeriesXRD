@@ -118,9 +118,11 @@ def _run(args) -> int:
 
 
 def main(argv: "list[str] | None" = None) -> int:
+    from ..core.config import make_stdio_robust
+    make_stdio_robust()   # tolerate non-ASCII log lines on a cp1252 console
     p = argparse.ArgumentParser(
         prog="bulkxrd-analyze",
-        description="Headless batch analysis (background → peaks → EOS phase matching).")
+        description="Headless batch analysis (background -> peaks -> EOS phase matching).")
     p.add_argument("reduced", help="Path to a reduced_*.h5 (output of the reduce stage).")
     p.add_argument("-o", "--out", default="",
                    help="Output analysis .h5 (default: <reduced_stem>_analysis.h5).")

@@ -665,7 +665,7 @@ def run_identification(
                 pressure_window, pressure_sigma_k)
             for j in range(n)], dtype="f8")
         print(f"[IDENTIFY] pressure prior on {n_prior}/{n} frames "
-              f"(window ±{pressure_window} GPa or {pressure_sigma_k}σ)", flush=True)
+              f"(window +/-{pressure_window} GPa or {pressure_sigma_k}*sigma)", flush=True)
         # Auto-widen the global search range to cover the metadata pressures (+window).
         # Otherwise a frame whose prior sits outside [p_min, p_max] would clamp its
         # search to the boundary while the prior penalty still measures against the

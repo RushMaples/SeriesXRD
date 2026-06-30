@@ -33,8 +33,35 @@ def now_iso() -> str:
     return _dt.datetime.now().isoformat(timespec="seconds")
 
 
+def make_stdio_robust() -> None:
+    """Stop a non-ASCII print from crashing a process on a legacy console.
+
+    Windows consoles default to cp1252, which cannot encode the Greek letters,
+    arrows, etc. that appear in our log lines, docstrings, and tracebacks — a
+    stray one raises ``UnicodeEncodeError`` and aborts the run (and then the
+    error handler, when it echoes the offending source line, crashes again).
+    Switching the *error handler* to ``replace`` (without changing the encoding,
+    so a parent process reading the pipe still decodes it the same way) turns an
+    unencodable character into ``?`` instead of an exception. Best-effort; a noop
+    where ``reconfigure`` is unavailable. Call once at a process entry point.
+    """
+    import sys
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")            # TextIOWrapper, py3.7+
+        except Exception:
+            pass
+
+
 def print_status(message: str, level: str = "INFO") -> None:
-    print(f"[{now_iso()}] [{level}] {message}", flush=True)
+    line = f"[{now_iso()}] [{level}] {message}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        # Console can't encode some character (e.g. cp1252 + a Greek letter):
+        # degrade it rather than abort the run.
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(line.encode(enc, "replace").decode(enc, "replace"), flush=True)
 
 
 def safe_stem(value: str, default: str = "calibration") -> str:
