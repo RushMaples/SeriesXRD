@@ -53,6 +53,7 @@ from .identify import (
     run_identification,
     conservative_confidence,
     pressure_window_halfwidth,
+    pressure_model,
 )
 from .frame_metadata import (
     parse_pressure,
@@ -103,7 +104,7 @@ __all__ = [
     "structure_report", "review_analysis",
     "radial_to_d", "phase_reflections", "scale_at_pressure",
     "fit_pressure_for_phase", "run_identification",
-    "conservative_confidence", "pressure_window_halfwidth",
+    "conservative_confidence", "pressure_window_halfwidth", "pressure_model",
     "parse_pressure", "parse_pressure_from_path", "extract_pressures",
     "summarize_pressures", "read_pressure_csv", "map_csv_to_frames",
     "read_frame_metadata", "apply_to_analysis", "extract_to_analysis",

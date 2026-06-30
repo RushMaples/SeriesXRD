@@ -2361,14 +2361,15 @@ class AnalysisApp:
         ttk.Button(sel, text="▶", width=2,
                    command=lambda: self._step_identify_frame(1)).pack(side="left")
 
-        cols = ("phase", "conf", "recall", "prec", "pressure", "lines")
+        cols = ("phase", "model", "conf", "recall", "prec", "pressure", "lines")
         tbl = ttk.Treeview(left, columns=cols, show="headings", height=18,
                            selectmode="browse")
-        for c, txt, w, anc in (("phase", "Phase", 150, "w"), ("conf", "Conf", 56, "center"),
-                               ("recall", "Recall", 56, "center"), ("prec", "Prec", 56, "center"),
-                               ("pressure", "P (GPa)", 64, "center"), ("lines", "#", 40, "center")):
+        for c, txt, w, anc in (("phase", "Phase", 140, "w"), ("model", "P-model", 78, "center"),
+                               ("conf", "Conf", 52, "center"),
+                               ("recall", "Recall", 52, "center"), ("prec", "Prec", 52, "center"),
+                               ("pressure", "P (GPa)", 60, "center"), ("lines", "#", 36, "center")):
             tbl.heading(c, text=txt)
-            tbl.column(c, width=w, minwidth=36, anchor=anc, stretch=(c == "phase"))
+            tbl.column(c, width=w, minwidth=34, anchor=anc, stretch=(c == "phase"))
         tbl.tag_configure("present", foreground=ACCENT2)
         tbl.tag_configure("absent", foreground=MUTED)
         tbl.pack(fill="y", expand=False)
@@ -2552,19 +2553,27 @@ class AnalysisApp:
             conf = _at(rec.get("confidence"), 0.0)
             rows.append((conf, rec))
         rows.sort(key=lambda t: (-(t[0] if t[0] == t[0] else -1), t[1]["name"].lower()))
+        # Short labels for the pressure model the phase was fit under.
+        _MODEL_LABEL = {"eos": "EOS", "axial_eos": "axial", "ambient_only": "ambient"}
         n_present = 0
         for conf, rec in rows:
             recall = _at(rec.get("recall"))
             prec = _at(rec.get("precision"))
             press = _at(rec.get("pressure"))
+            penalty = _at(rec.get("prior_penalty"), 1.0)
             nmatch = rec.get("n_matched")
             nm = int(nmatch[fi]) if nmatch is not None and fi < len(nmatch) else 0
             present = conf >= conf_min
             n_present += int(present)
-            name = rec["name"] if rec.get("has_eos") else f"{rec['name']} (no EOS)"
-            pstr = "—" if (press != press or not rec.get("has_eos")) else f"{press:.1f}"
+            model = rec.get("pressure_model") or ("eos" if rec.get("has_eos") else "ambient_only")
+            mlabel = _MODEL_LABEL.get(model, model)
+            # Flag a frame whose confidence the pressure prior pulled down.
+            if penalty == penalty and penalty < 0.95:
+                mlabel += " ↓P"
+            name = rec["name"]
+            pstr = "—" if (press != press or model == "ambient_only") else f"{press:.1f}"
             tbl.insert("", "end", values=(
-                name, f"{conf:.2f}",
+                name, mlabel, f"{conf:.2f}",
                 "—" if recall != recall else f"{recall:.2f}",
                 "—" if prec != prec else f"{prec:.2f}",
                 pstr, nm),

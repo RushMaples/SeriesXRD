@@ -386,6 +386,57 @@ def test_no_eos_penalized_and_range_auto_widens():
             assert f["identify"].attrs["p_max"] >= 150.0, "range not widened to cover prior"
 
 
+def test_pressure_model_and_penalty_surfaced():
+    """pressure_model (eos|axial_eos|ambient_only), prior_penalty per frame, and
+    prior_penalized are surfaced on /identify, the summary, and review.identify_tracks."""
+    import h5py
+    from bulkxrd.analysis.review import identify_tracks
+    au, au_refl = _synth_au()
+    d0 = au_refl[0]
+    no_eos = ph.Phase(name="NoEOS", category="sample", space_group="Fm-3m",
+                      lattice=au.lattice, atoms=au.atoms)
+    tet = ph.Phase(name="Tet", lattice={"a": 4, "b": 4, "c": 6, "alpha": 90, "beta": 90, "gamma": 90},
+                   axial_eos={"a": {"type": "BM3", "K0": 300, "K0p": 4},
+                              "c": {"type": "BM3", "K0": 100, "K0p": 4}})
+    assert idf.pressure_model(au) == "eos"
+    assert idf.pressure_model(no_eos) == "ambient_only"
+    assert idf.pressure_model(tet) == "axial_eos"
+
+    with tempfile.TemporaryDirectory() as td:
+        h5 = Path(td) / "an.h5"
+        q = 2 * np.pi / (d0 * idf.scale_at_pressure(au, 30.0))
+        with h5py.File(str(h5), "w") as f:
+            f.attrs["unit"] = "q_A^-1"; f.attrs["source_reduced"] = "syn"
+            gp = f.create_group("peaks")
+            gp.create_dataset("counts", data=np.array([q.size], "i4"))
+            gp.create_dataset("frame", data=np.zeros(q.size, "i4"))
+            gp.create_dataset("center", data=q.astype("f8"))
+            gp.create_dataset("flag", data=np.zeros(q.size, "i4"))
+            gf = f.create_group("frames")
+            gf.create_dataset("pressure", data=np.array([30.0]))      # high-pressure frame
+            gf.create_dataset("excluded", data=np.zeros(1, "?"))
+        man = _run_identification_synthetic(h5, [au, no_eos],
+                                            {"Au": au_refl, "NoEOS": au_refl}, [30.0],
+                                            pressure_window=2.0)
+        # Summary carries the model + penalty flags.
+        assert man["summary"]["Au"]["pressure_model"] == "eos"
+        assert man["summary"]["Au"]["prior_penalized"] is False
+        assert man["summary"]["NoEOS"]["pressure_model"] == "ambient_only"
+        assert man["summary"]["NoEOS"]["prior_penalized"] is True
+        assert man["summary"]["NoEOS"]["n_frames_penalized"] == 1
+        # HDF5 attrs + per-frame prior_penalty dataset.
+        with h5py.File(str(h5), "r") as f:
+            assert str(f["identify/NoEOS"].attrs["pressure_model"]) == "ambient_only"
+            assert bool(f["identify/NoEOS"].attrs["prior_penalized"]) is True
+            assert f["identify/NoEOS/prior_penalty"][0] < 0.1        # 0 GPa vs 30 GPa prior
+            assert f["identify/Au/prior_penalty"][0] > 0.99
+        # review surfaces them for the GUI.
+        tr = identify_tracks(h5)
+        by = {r["name"]: r for r in tr["phases"]}
+        assert by["NoEOS"]["pressure_model"] == "ambient_only" and by["NoEOS"]["prior_penalized"]
+        assert by["Au"]["pressure_model"] == "eos"
+
+
 def main() -> None:
     test_radial_to_d()
     test_scale_monotonic()
@@ -399,6 +450,7 @@ def main() -> None:
     test_pressure_prior_confines_search()
     test_pressure_prior_rejects_decoy_end_to_end()
     test_no_eos_penalized_and_range_auto_widens()
+    test_pressure_model_and_penalty_surfaced()
     print("IDENTIFY TEST OK")
 
 

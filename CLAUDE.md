@@ -120,7 +120,8 @@ P = sum(counts). Ragged layout — peak count varies per frame.
 ```
 /identify  attrs: ... p_min, p_max, rel_tol, pressure_window, pressure_sigma_k,
                   min_matched, n_pressure_prior
-/identify/<phase>/pressure,score,confidence,recall,precision,n_matched  (N,)
+/identify/<phase>/pressure,score,confidence,recall,precision,n_matched,prior_penalty (N,)
+/identify/<phase>  attrs: pressure_model (eos|axial_eos|ambient_only), prior_penalized
 /identify/<phase>/refl_d, refl_w, refl_hkl   cached ambient reflections (no pymatgen in GUI)
 /peaks/phase                 (P,) str   phase attributed to each fitted peak ("" = unexplained)
 /residual/clean              (N, N_bins) clean minus the reconstructed peaks of present phases
