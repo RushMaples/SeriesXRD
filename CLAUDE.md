@@ -23,8 +23,12 @@ bulkxrd/
     session.py      config seeding
     review.py       read-only reduced-HDF5 inspector + gallery frame metadata
   analysis/      analysis stage (THIS IS THE ACTIVE WORK)
-    background.py   Step 1 — DONE
+    background.py   Step 1 — DONE (also carries /frames pressure/temp/timestamp)
     peaks.py        Step 2 — DONE
+    frame_metadata.py  pressure-prior seam — parse filenames / import CSV → /frames/pressure
+    identify.py     Step 3a — pressure-aware EOS matching (consumes the prior)
+    residual.py     Step 3a removal — evidence-gated subtraction + residual re-fit
+    heatmap.py      waterfall + reflection tracks + per-phase layers
     categorization.py  user's workflow spec (read-only notes)
   app.py         top-level launcher that embeds all stages
 tests/
@@ -64,6 +68,8 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
 /cakes/intensity             (N_cakes, N_radial, N_azimuthal)  optional
 /cakes/radial, /cakes/azimuthal, /cakes/frame_index
 /frames/filename, ok, seconds, excluded, frame_index, thumb
+/frames/pressure, temperature, timestamp   placeholders (pressure seeded NaN; populated
+                                            downstream by analysis/frame_metadata.py)
 ```
 
 ### Analysis HDF5 (output of `analysis/background.py` Step 1)
@@ -74,6 +80,10 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
 /frames/filename             (N,)   copied from reduced
 /frames/contamination        (N,)   integrated positive spot residual per frame
 /frames/flagged              (N,)   bool, contamination > threshold (optional)
+/frames/pressure             (N,)   GPa; carried from reduced, else parsed from filenames
+                                     (frame_metadata.py). NaN where unknown. Step-3 prior.
+/frames/pressure_sigma       (N,)   GPa per-frame uncertainty (only if a CSV supplied it)
+/frames/temperature, timestamp (N,) carried from reduced when present
 /background/clean            (N, N_bins)  = robust − baseline
 /background/baseline         (N, N_bins)  SNIP estimate
 /background/spot_residual    (N, N_bins)  = mean − robust
@@ -108,22 +118,36 @@ P = sum(counts). Ragged layout — peak count varies per frame.
 ### Identify + residual appended by `analysis/identify.py` + `analysis/residual.py` (Step 3a)
 
 ```
+/identify  attrs: ... p_min, p_max, rel_tol, pressure_window, pressure_sigma_k,
+                  min_matched, n_pressure_prior
 /identify/<phase>/pressure,score,confidence,recall,precision,n_matched  (N,)
 /identify/<phase>/refl_d, refl_w, refl_hkl   cached ambient reflections (no pymatgen in GUI)
 /peaks/phase                 (P,) str   phase attributed to each fitted peak ("" = unexplained)
 /residual/clean              (N, N_bins) clean minus the reconstructed peaks of present phases
 /residual/explained_counts   (N,) int   good peaks attributed to a known phase
 /residual/unexplained_counts (N,) int   good peaks left over
-/residual/peaks/counts,frame,center,amplitude   peaks re-detected on the residual (→ Step 3c)
+/residual/peaks/counts,frame,center,amplitude,fwhm   peaks RE-FIT on the residual (→ Step 3c)
 ```
+
+**Pressure prior (the DAC accuracy seam).** Identification reads `/frames/pressure`
+(+ optional `/frames/pressure_sigma`) and confines each phase's fit to that frame's
+pressure ± window (`pressure_sigma_k·σ` if known, else `pressure_window` GPa) instead of
+searching all of `[p_min, p_max]`. This stops a wrong phase sliding along pressure until
+a few lines coincide. `marker_prior=True` (no metadata) first fits the marker-category
+phases, then reuses the best marker's per-frame pressure as the prior. `confidence` is
+now conservative: F1(recall, precision) × evidence(min_matched) × Gaussian pressure-prior
+penalty — **not** the old `max(recall, precision)`. Matching is **one-to-one** (an
+observed peak can't satisfy several predicted lines).
 
 `run_residual` runs automatically after `run_identification` in the worker. It reuses
 the cached `/identify/<phase>/refl_d`+`refl_hkl` and `predicted_d` (same compression
-model as 3a) so it needs **no pymatgen**. A peak is "explained" if it matches a present
-phase's predicted line within `rel_tol`; explained peaks are subtracted (pseudo-Voigt
-reconstruction) and the residual is re-detected to surface weaker/unknown features.
-**Open-set ID**: `identify_all_phases=True` scores the *whole* library per frame (no
-candidate pre-selection); "library" = bundled + user phases, not all of ICSD/MP.
+model as 3a) so it needs **no pymatgen**. A phase is only subtracted when it clears
+`seen_conf` AND has ≥ `min_matched` one-to-one matched reflections (`allow_sparse`
+relaxes this for markers); explained peaks are subtracted (pseudo-Voigt reconstruction)
+and the residual is **re-fit with the Step-2 pipeline** (not raw detection) to surface
+weaker/unknown features. **Open-set ID**: `identify_all_phases=True` scores the *whole*
+library per frame (no candidate pre-selection); "library" = bundled + user phases, not
+all of ICSD/MP.
 
 All HDF5 writes are atomic: `.tmp` file + `os.replace`.
 
@@ -134,10 +158,11 @@ All HDF5 writes are atomic: `.tmp` file + `os.replace`.
 ```
 Step 1 DONE  background.py   diamond spot removal + SNIP baseline
 Step 2 DONE  peaks.py        pseudo-Voigt peak/profile fitting
-Step 3 TODO  compound ID:
-    3a  Deterministic EOS matching (peak tracks → lattice → known phase)
-    3b  ML on simulated patterns (SimXRD-4M approach + pressure augmentation)
-    3c  Unknown clustering (co-occurrence of unmatched peak tracks)
+Step 3 compound ID:
+    3a  DONE  Deterministic EOS matching, pressure-aware (frame_metadata prior),
+              one-to-one match, evidence gate, residual removal
+    3b  TODO  ML on simulated patterns (SimXRD-4M approach + pressure augmentation)
+    3c  TODO  Unknown clustering (co-occurrence of unmatched peak tracks)
 → per-substance heatmaps (pressure vs frame, filterable by phase)
 ```
 

@@ -51,6 +51,20 @@ from .identify import (
     scale_at_pressure,
     fit_pressure_for_phase,
     run_identification,
+    conservative_confidence,
+    pressure_window_halfwidth,
+)
+from .frame_metadata import (
+    parse_pressure,
+    parse_pressure_from_path,
+    extract_pressures,
+    summarize_pressures,
+    read_pressure_csv,
+    map_csv_to_frames,
+    read_frame_metadata,
+    apply_to_analysis,
+    extract_to_analysis,
+    import_csv_to_analysis,
 )
 from .heatmap import pattern_image, reflection_tracks, phase_layers
 from .mldata import (
@@ -89,6 +103,11 @@ __all__ = [
     "structure_report", "review_analysis",
     "radial_to_d", "phase_reflections", "scale_at_pressure",
     "fit_pressure_for_phase", "run_identification",
+    "conservative_confidence", "pressure_window_halfwidth",
+    "parse_pressure", "parse_pressure_from_path", "extract_pressures",
+    "summarize_pressures", "read_pressure_csv", "map_csv_to_frames",
+    "read_frame_metadata", "apply_to_analysis", "extract_to_analysis",
+    "import_csv_to_analysis",
     "pattern_image", "reflection_tracks", "phase_layers",
     "make_d_grid", "resample_to_d", "export_ml_dataset",
     "simulate_training_pattern", "build_simulated_dataset",

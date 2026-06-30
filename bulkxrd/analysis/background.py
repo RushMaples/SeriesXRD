@@ -201,6 +201,11 @@ def run_background_separation(
         /frames/contamination        (N,)   per-frame spot score
         /frames/excluded             (N,)   bool, carried over from the reduce stage
         /frames/flagged              (N,)   contamination > threshold (if given)
+        /frames/pressure             (N,)   GPa; carried from the reduced file, or
+                                            parsed from the filenames when that is
+                                            empty. NaN where unknown. (Step-3 prior.)
+        /frames/temperature          (N,)   K; carried from the reduced file (if any)
+        /frames/timestamp            (N,)   str; carried from the reduced file (if any)
         /background/clean            (N, N_bins)
         /background/baseline         (N, N_bins)
         /background/spot_residual    (N, N_bins)
@@ -246,6 +251,18 @@ def run_background_separation(
                      for x in frames["filename"][:]]
         excluded = (np.asarray(frames["excluded"][:], dtype=bool)
                     if frames is not None and "excluded" in frames else None)
+        # Per-frame metadata carried straight through to the analysis file so
+        # Step 3 can use pressure as a prior (see frame_metadata.py). The reduce
+        # stage seeds /frames/pressure as an all-NaN placeholder; we backfill it
+        # from the filenames below when it arrives empty.
+        red_pressure = (np.asarray(frames["pressure"][:], dtype=float)
+                        if frames is not None and "pressure" in frames else None)
+        red_temperature = (np.asarray(frames["temperature"][:], dtype=float)
+                           if frames is not None and "temperature" in frames else None)
+        red_timestamp = (
+            [x.decode("utf-8", "replace") if isinstance(x, (bytes, bytearray)) else str(x)
+             for x in frames["timestamp"][:]]
+            if frames is not None and "timestamp" in frames else None)
 
     n, nb = mean_all.shape
     if excluded is None or excluded.size != n:
@@ -291,6 +308,20 @@ def run_background_separation(
     if contamination_threshold is not None:
         flagged = contam > float(contamination_threshold)
 
+    # Resolve the per-frame pressure channel: carry the reduced value through,
+    # but if it is absent / all-NaN (the usual placeholder case) parse it from
+    # the filenames so phase identification has a pressure prior with no manual
+    # step. A later CSV import (frame_metadata.import_csv_to_analysis) overrides.
+    pressure = red_pressure if (red_pressure is not None and red_pressure.size == n) else None
+    n_pressure_parsed = 0
+    if (pressure is None or not np.any(np.isfinite(pressure))) and names is not None:
+        from .frame_metadata import extract_pressures
+        parsed = extract_pressures(names)
+        if np.any(np.isfinite(parsed)):
+            pressure = parsed
+    if pressure is not None:
+        n_pressure_parsed = int(np.sum(np.isfinite(pressure)))
+
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
         with h5py.File(str(tmp), "w") as o:
@@ -313,6 +344,18 @@ def run_background_separation(
             gf.create_dataset("excluded", data=excluded)
             if flagged is not None:
                 gf.create_dataset("flagged", data=flagged)
+            # Frame metadata (pressure prior + provenance). pressure is always
+            # written (NaN where unknown) so Step 3 can read a consistent channel.
+            gf.create_dataset("pressure",
+                              data=(pressure if pressure is not None
+                                    else np.full(n, np.nan, "f8")).astype("f8"))
+            if red_temperature is not None and red_temperature.size == n:
+                gf.create_dataset("temperature", data=red_temperature.astype("f8"))
+            if red_timestamp is not None and len(red_timestamp) == n:
+                import h5py as _h5t
+                gf.create_dataset("timestamp",
+                                  data=np.array(red_timestamp, dtype=object),
+                                  dtype=_h5t.string_dtype(encoding="utf-8"))
             gb = o.create_group("background")
             gb.create_dataset("clean", data=clean, compression="gzip", compression_opts=1)
             gb.create_dataset("baseline", data=baseline, compression="gzip", compression_opts=1)
@@ -336,6 +379,7 @@ def run_background_separation(
         "unit": unit,
         "wavelength": float(wavelength) or None,
         "n_excluded": int(excluded.sum()),
+        "n_pressure": int(n_pressure_parsed),
         "max_half_window": int(max_half_window),
         "n_passes": int(n_passes),
         "contamination_threshold": contamination_threshold,

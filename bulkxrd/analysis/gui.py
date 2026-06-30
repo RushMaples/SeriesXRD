@@ -54,7 +54,9 @@ HELP: Dict[str, str] = {
     ),
     # Run scope
     "run_step1": "Run Step 1: SNIP baseline estimation + diamond-spot residual extraction.",
-    "run_step2": "Run Step 2: pseudo-Voigt peak fitting on the clean (baseline-subtracted) patterns.",
+    "run_step2": ("Run Step 2: pseudo-Voigt peak fitting on the selected Peak source "
+                  "(default auto → the reduce-side sigmaclip channel if present, else the "
+                  "analysis-side hybrid; 'clean' is the conservative alternative)."),
     "run_step3": (
         "Run Step 3a: match the fitted peaks against the enabled candidate phases by fitting "
         "each phase's Birch–Murnaghan EOS — gives a per-frame pressure and match confidence "
@@ -185,6 +187,35 @@ HELP: Dict[str, str] = {
         "Recommended — keeps reflections continuous as the lattice compresses "
         "under pressure."
     ),
+    # Step 3a pressure-prior knobs
+    "use_pressure_prior": (
+        "Confine each phase's pressure fit to the frame's metadata pressure ± window, "
+        "instead of searching the whole p_min..p_max range. This is the key DAC accuracy "
+        "fix: pressure stops being a free parameter every candidate can exploit. Needs a "
+        "frame pressure (Frame metadata tab). Uncheck for the old free search."
+    ),
+    "pressure_window": (
+        "Half-width (GPa) of the pressure search/penalty window used where a frame has "
+        "no per-frame pressure uncertainty. Typical 0.5–2 GPa."
+    ),
+    "pressure_sigma_k": (
+        "When a per-frame pressure_sigma is known (from a CSV), the window half-width is "
+        "this k times sigma instead of the fixed window."
+    ),
+    "marker_prior": (
+        "If no frame pressure metadata exists, first identify the marker-category phases, "
+        "take the best marker's pressure per frame, and reuse it as the prior for all "
+        "other phases."
+    ),
+    "min_matched": (
+        "Minimum number of one-to-one matched reflections to call a phase present in a "
+        "frame (and to subtract it in the residual). Guards against one- or two-line "
+        "coincidences. Default 3."
+    ),
+    "allow_sparse": (
+        "Permit phases with fewer than 'Min matched reflections' to still be subtracted "
+        "in the residual step (e.g. sparse pressure markers). Off by default."
+    ),
 }
 
 
@@ -279,8 +310,9 @@ class AnalysisApp:
             ("5 Review",     self._tab_review),
             ("6 Heatmap",    self._tab_heatmap),
             ("7 Phases",     self._tab_phases),
-            ("8 Identify",   self._tab_identify),
-            ("9 Pattern map", self._tab_patternmap),
+            ("8 Frame meta", self._tab_frame_metadata),
+            ("9 Identify",   self._tab_identify),
+            ("10 Pattern map", self._tab_patternmap),
         ]:
             frame = ttk.Frame(self.nb, padding=10)
             builder(frame)
@@ -660,7 +692,9 @@ class AnalysisApp:
                 "  Peak-clipping on the robust (median) pattern, optionally with LLS\n"
                 "  transform for dynamic-range compression under intense peaks.\n\n"
                 "clean = robust − baseline\n"
-                "  This is what goes to peak fitting in Step 2."
+                "  The conservative peak-fit source. Step 2 defaults to 'auto'\n"
+                "  (the sigmaclip / hybrid channel) — see the Peaks tab — and keeps\n"
+                "  clean available; all are rebuilt from what Step 1 stores here."
             ),
             foreground=MUTED, justify="left", wraplength=640,
         ).grid(row=8, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
@@ -2001,7 +2035,220 @@ class AnalysisApp:
         self._phase_dialog(self._phases_by_name.get(phase.name, phase))
 
     # ------------------------------------------------------------------
-    # Tab 8 — Identify (Step 3a: deterministic EOS phase matching)
+    # Tab 8 — Frame metadata (pressure prior)
+    # ------------------------------------------------------------------
+
+    def _tab_frame_metadata(self, frame):
+        ttk = self.ttk
+
+        ttk.Label(
+            frame, text="Frame metadata — pressure prior",
+            font=("TkDefaultFont", 12, "bold"),
+        ).pack(anchor="w", padx=6, pady=(4, 0))
+        ttk.Label(
+            frame,
+            text=(
+                "Pressures drive Step-3 phase identification; populate them here."
+            ),
+            foreground=MUTED, justify="left",
+        ).pack(anchor="w", padx=6, pady=(0, 6))
+
+        # Controls row
+        ctrl = ttk.Frame(frame)
+        ctrl.pack(fill="x", pady=(0, 4))
+        ttk.Button(ctrl, text="Extract from filenames",
+                   command=self.extract_pressures_clicked).pack(side="left", padx=4)
+        ttk.Button(ctrl, text="Import CSV…",
+                   command=self.import_pressure_csv_clicked).pack(side="left", padx=4)
+        ttk.Button(ctrl, text="Preview pressure vs frame",
+                   command=self.preview_pressure_clicked).pack(side="left", padx=4)
+
+        self._fm_status = ttk.Label(frame, text="", foreground=MUTED)
+        self._fm_status.pack(anchor="w", padx=6, pady=(0, 4))
+
+        self.fm_plot_frame = ttk.Frame(frame)
+        self.fm_plot_frame.pack(fill="both", expand=True)
+        ttk.Label(
+            self.fm_plot_frame,
+            text="Extract from filenames or Import CSV to populate frame pressures.",
+            foreground=MUTED,
+        ).pack(anchor="center", expand=True)
+
+        ttk.Label(
+            frame,
+            text=(
+                "CSV columns: a `frame` (0-based index) or `filename` column, plus "
+                "`pressure_gpa`; optional `pressure_sigma_gpa`, `temperature_K`. "
+                "Pressures are also auto-parsed from filenames during Step 1 "
+                "(e.g. UOTe-1p5GPa → 1.5 GPa); use this tab to override or to add "
+                "ruby/membrane-gauge pressures."
+            ),
+            foreground=MUTED, justify="left", wraplength=700,
+        ).pack(anchor="w", padx=6, pady=(4, 4))
+
+    def extract_pressures_clicked(self):
+        from .frame_metadata import extract_to_analysis, import_csv_to_analysis, read_frame_metadata
+        self.pull_vars()
+        path = self.config.get("analysis_h5_file", "")
+        if not path or not Path(path).is_file():
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(
+                    text="Run Step 1 first (no analysis file yet).")
+            return
+        try:
+            result = extract_to_analysis(path)
+            summary = result.get("summary", {})
+            n_parsed = summary.get("n_parsed", 0)
+            n_frames = summary.get("n_frames", 0)
+            p_min = summary.get("p_min")
+            p_max = summary.get("p_max")
+            p_range = (
+                f"P {p_min:.2f}–{p_max:.2f} GPa"
+                if p_min is not None and p_max is not None
+                else "P unknown"
+            )
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(
+                    text=(
+                        f"Parsed {n_parsed}/{n_frames} frames from filenames "
+                        f"({p_range})."
+                    )
+                )
+            self._draw_pressure_preview(path)
+        except Exception as e:
+            self.log(f"extract_to_analysis failed: {e!r}", "WARN")
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(text=str(e))
+
+    def import_pressure_csv_clicked(self):
+        from .frame_metadata import extract_to_analysis, import_csv_to_analysis, read_frame_metadata
+        self.pull_vars()
+        path = self.config.get("analysis_h5_file", "")
+        if not path or not Path(path).is_file():
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(
+                    text="Run Step 1 first (no analysis file yet).")
+            return
+        csv_path = self.filedialog.askopenfilename(
+            filetypes=[("CSV", "*.csv"), ("All", "*.*")]
+        )
+        if not csv_path:
+            return
+        try:
+            result = import_csv_to_analysis(path, csv_path)
+            summary = result.get("summary", {})
+            csv_info = result.get("csv", {})
+            n_parsed = summary.get("n_parsed", 0)
+            n_frames = summary.get("n_frames", 0)
+            p_min = summary.get("p_min")
+            p_max = summary.get("p_max")
+            p_range = (
+                f"P {p_min:.2f}–{p_max:.2f} GPa"
+                if p_min is not None and p_max is not None
+                else "P unknown"
+            )
+            cols = csv_info.get("columns", [])
+            n_rows = csv_info.get("n_rows", 0)
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(
+                    text=(
+                        f"Imported {n_rows}-row CSV ({', '.join(cols)}): "
+                        f"{n_parsed}/{n_frames} frames have pressure ({p_range})."
+                    )
+                )
+            self._draw_pressure_preview(path)
+        except Exception as e:
+            self.log(f"import_csv_to_analysis failed: {e!r}", "WARN")
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(text=str(e))
+
+    def preview_pressure_clicked(self):
+        self.pull_vars()
+        path = self.config.get("analysis_h5_file", "")
+        if not path or not Path(path).is_file():
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(
+                    text="Run Step 1 first (no analysis file yet).")
+            return
+        self._draw_pressure_preview(path)
+
+    def _draw_pressure_preview(self, path):
+        from .frame_metadata import read_frame_metadata
+        import numpy as np
+
+        meta = read_frame_metadata(path)
+
+        for w in self.fm_plot_frame.winfo_children():
+            w.destroy()
+
+        # Close previous figure if any
+        prev = getattr(self, "_fm_fig", None)
+        if prev is not None:
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.close(prev)
+            except Exception:
+                pass
+            self._fm_fig = None
+
+        pressure = meta.get("pressure")
+        if pressure is None:
+            pressure = np.array([])
+        pressure = np.asarray(pressure, dtype=float)
+
+        if pressure.size == 0 or not np.any(np.isfinite(pressure)):
+            self.ttk.Label(
+                self.fm_plot_frame,
+                text="No pressures yet — Extract from filenames or Import CSV.",
+                foreground=MUTED,
+            ).pack(anchor="center", expand=True)
+            return
+
+        try:
+            import matplotlib
+            matplotlib.use("TkAgg", force=False)
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        except Exception as e:
+            # matplotlib unavailable — show text summary instead
+            n_frames = int(meta.get("n_frames", 0))
+            from .frame_metadata import summarize_pressures
+            try:
+                summ = summarize_pressures(pressure)
+            except Exception:
+                summ = {}
+            n_parsed = int(summ.get("n_parsed", 0)) if summ else 0
+            p_min = summ.get("p_min")
+            p_max = summ.get("p_max")
+            p_txt = (
+                f"P {p_min:.2f}–{p_max:.2f} GPa"
+                if p_min is not None and p_max is not None else "P unknown"
+            )
+            self.ttk.Label(
+                self.fm_plot_frame,
+                text=(
+                    f"matplotlib unavailable: {e}\n\n"
+                    f"{n_parsed}/{n_frames} frames have pressure ({p_txt})."
+                ),
+                foreground=MUTED, justify="left",
+            ).pack(anchor="center", expand=True)
+            return
+
+        fig = Figure(figsize=(7, 4), dpi=100, layout="constrained")
+        self._fm_fig = fig
+        fig.patch.set_facecolor(BG)
+        ax = fig.add_subplot(1, 1, 1)
+        x = np.arange(pressure.size, dtype=float)
+        ax.plot(x, pressure, marker=".", markersize=3, linewidth=0.8, color=ACCENT2)
+        ax.set_xlabel("frame index")
+        ax.set_ylabel("pressure (GPa)")
+        ax.set_title("Frame pressure", color=FG)
+        self._style_ax(ax)
+
+        self._fm_canvas = self._embed_figure(self.fm_plot_frame, fig)
+
+    # ------------------------------------------------------------------
+    # Tab 9 — Identify (Step 3a: deterministic EOS phase matching)
     # ------------------------------------------------------------------
 
     def _tab_identify(self, frame):
@@ -2031,6 +2278,20 @@ class AnalysisApp:
         self.field(frame, "identify_wavelength",
                    "Wavelength (Å, blank=auto)", row=7, width=12)
 
+        # -- pressure-prior knobs -----------------------------------------
+        self.checkbox(frame, "use_pressure_prior",
+                      "Use frame-pressure prior (confine fit to ±window)", row=8)
+        self.field(frame, "pressure_window",
+                   "Pressure window ± (GPa)", row=9, width=12)
+        self.field(frame, "pressure_sigma_k",
+                   "Window = k·σ (when σ known)", row=10, width=12)
+        self.checkbox(frame, "marker_prior",
+                      "Estimate pressure from marker phases first", row=11)
+        self.field(frame, "min_matched",
+                   "Min matched reflections", row=12, width=12)
+        self.checkbox(frame, "allow_sparse",
+                      "Allow sparse/marker-only matches in residual", row=13)
+
         self._identify_help = ttk.Label(
             frame,
             text=(
@@ -2050,12 +2311,12 @@ class AnalysisApp:
             ),
             foreground=MUTED, justify="left", wraplength=640,
         )
-        self._identify_help.grid(row=8, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        self._identify_help.grid(row=15, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
         self._identify_help.grid_remove()   # collapsed by default → bigger plot
 
         # -- controls row -------------------------------------------------
         ctrl = ttk.Frame(frame)
-        ctrl.grid(row=7, column=0, columnspan=3, sticky="w", pady=(4, 2))
+        ctrl.grid(row=14, column=0, columnspan=3, sticky="w", pady=(4, 2))
 
         ttk.Button(ctrl, text="Load identification",
                    command=self.load_identify).pack(side="left", padx=4)
@@ -2079,8 +2340,8 @@ class AnalysisApp:
 
         # -- body: per-frame phase table (left) + plot (right) ------------
         body = ttk.Frame(frame)
-        body.grid(row=8, column=0, columnspan=3, sticky="nsew")
-        frame.rowconfigure(8, weight=1)
+        body.grid(row=15, column=0, columnspan=3, sticky="nsew")
+        frame.rowconfigure(15, weight=1)
         frame.columnconfigure(0, weight=1)
 
         # Left: a frame selector and a ranked table of phases for that frame.
@@ -2120,7 +2381,7 @@ class AnalysisApp:
         ttk.Label(
             self.identify_plot_frame,
             text="Enable phase identification and Run (see steps above), or click "
-                 "“Load identification” to view per-frame phases + confidence.",
+                 "\"Load identification\" to view per-frame phases + confidence.",
             foreground=MUTED,
         ).pack(anchor="center", expand=True)
 
@@ -2358,6 +2619,17 @@ class AnalysisApp:
         self._pm_source.bind("<<ComboboxSelected>>",
                              lambda e: self.load_pattern_map())
 
+        ttk.Label(row1, text="X axis:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        self._pm_xaxis = ttk.Combobox(
+            row1,
+            values=["frame", "pressure"],
+            state="readonly", width=10,
+        )
+        self._pm_xaxis.set("frame")
+        self._pm_xaxis.pack(side="left", padx=2)
+        self._pm_xaxis.bind("<<ComboboxSelected>>",
+                            lambda e: self.load_pattern_map())
+
         self._pm_tracks = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             row1, text="Overlay reflection tracks",
@@ -2448,7 +2720,10 @@ class AnalysisApp:
                     foreground=WARN,
                 )
 
-        img = pattern_image(path, source=self._pm_source.get(), x_axis="frame")
+        x_axis = getattr(self._pm_xaxis, "get", lambda: "frame")()
+        if not x_axis:
+            x_axis = "frame"
+        img = pattern_image(path, source=self._pm_source.get(), x_axis=x_axis)
         if not img["ok"]:
             self.ttk.Label(
                 self.patternmap_plot_frame,
@@ -2486,18 +2761,36 @@ class AnalysisApp:
             vmin = None
             vmax = None
 
+        # X-axis extent: frame index (default) or pressure
+        if x_axis == "pressure" and img.get("x") is not None:
+            x_arr = np.asarray(img["x"], dtype=float)
+            finite_x = x_arr[np.isfinite(x_arr)]
+            if finite_x.size >= 2:
+                x_extent_min = float(np.nanmin(x_arr))
+                x_extent_max = float(np.nanmax(x_arr))
+            else:
+                x_extent_min = 0.0
+                x_extent_max = float(max(n - 1, 1))
+            x_label = img.get("x_label") or "pressure (GPa)"
+        else:
+            x_extent_min = 0.0
+            x_extent_max = float(max(n - 1, 1))
+            x_label = "frame index"
+
         ax.imshow(
             Z, aspect="auto", origin="lower", cmap="magma",
-            extent=[0, max(n - 1, 1), float(radial.min()), float(radial.max())],
+            extent=[x_extent_min, x_extent_max,
+                    float(radial.min()), float(radial.max())],
             vmin=vmin, vmax=vmax,
         )
-        ax.set_xlabel("frame index")
+        ax.set_xlabel(x_label)
         ax.set_ylabel(img["unit"] or "radial")
         ax.set_title(f"Pattern waterfall — {img['source']}", color=FG)
         self._style_ax(ax)
 
-        # Reflection-track overlays
-        if self._pm_tracks.get() and pymatgen_available():
+        # Reflection-track overlays (frame x-axis only — pressure axis uses
+        # a different grid that track coordinates don't align to)
+        if self._pm_tracks.get() and pymatgen_available() and x_axis == "frame":
             any_phase_plotted = False
             for phase_obj in self._enabled_phase_objects():
                 tr = reflection_tracks(path, phase_obj)

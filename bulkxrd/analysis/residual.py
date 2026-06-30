@@ -32,8 +32,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .identify import radial_to_d, predicted_d, _parse_hkl, _h5_safe
-from .peaks import pseudo_voigt, detect_peaks
+from .identify import radial_to_d, predicted_d, _parse_hkl, _h5_safe, DEFAULT_MIN_MATCHED
+from .peaks import pseudo_voigt, fit_pattern
 from .phases import Phase
 
 SCHEMA_VERSION = "1"
@@ -126,19 +126,31 @@ def run_residual(
     seen_conf: float = 0.5,
     rel_tol: float = 0.01,
     min_snr: float = 5.0,
+    min_matched: int = DEFAULT_MIN_MATCHED,
+    allow_sparse: bool = False,
     out_h5: "Optional[str | Path]" = None,
 ) -> Dict[str, Any]:
     """Subtract identified phases per frame and write the residual + attribution.
 
-        /residual  attrs: schema_version, seen_conf, rel_tol, min_snr, phases
+        /residual  attrs: schema_version, seen_conf, rel_tol, min_snr,
+                          min_matched, allow_sparse, phases
         /residual/clean             (N, N_bins)  clean minus explained-phase peaks
         /residual/explained_counts  (N,) int     #peaks attributed to a known phase
         /residual/unexplained_counts(N,) int     #good peaks left unexplained
-        /residual/peaks/counts      (N,) int     re-detected on the residual
+        /residual/peaks/counts      (N,) int     re-fitted on the residual
         /residual/peaks/frame       (Q,) int
-        /residual/peaks/center      (Q,)         radial-axis position
-        /residual/peaks/amplitude   (Q,)         height above the residual floor
+        /residual/peaks/center      (Q,)         radial-axis position (fitted)
+        /residual/peaks/amplitude   (Q,)         fitted peak height
+        /residual/peaks/fwhm        (Q,)         fitted FWHM
         /peaks/phase                (P,) str      per fitted peak: phase name or ""
+
+    A phase is only subtracted from a frame when it both clears ``seen_conf`` AND
+    has ≥ ``min_matched`` one-to-one matched reflections there (read from
+    ``/identify/<phase>/n_matched``); ``allow_sparse`` relaxes the evidence
+    requirement for marker/sparse phases. This prevents a one- or two-line
+    coincidence from being subtracted as a confidently-present phase. The
+    residual is then re-fit with the Step-2 pseudo-Voigt pipeline (not raw
+    local-maxima detection), so the surfaced unknowns carry real fitted profiles.
 
     ``phases`` are the Phase objects used in Step 3a (resolve via
     ``phases.load_library``). Requires ``/identify`` to already exist.
@@ -174,6 +186,8 @@ def run_residual(
                 "phase": ph,
                 "conf": np.asarray(g["confidence"][:], float),
                 "press": np.asarray(g["pressure"][:], float),
+                "n_matched": (np.asarray(g["n_matched"][:], int)
+                              if "n_matched" in g else None),
                 "refl_d": np.asarray(g["refl_d"][:], float),
                 "refl_hkl": [s.decode() if isinstance(s, bytes) else str(s)
                              for s in g["refl_hkl"][:]] if "refl_hkl" in g else None,
@@ -197,6 +211,7 @@ def run_residual(
     rd_frame: List[int] = []
     rd_center: List[float] = []
     rd_amp: List[float] = []
+    rd_fwhm: List[float] = []
 
     # Row offsets of each frame's peaks in the ragged /peaks arrays.
     order = np.argsort(pk["frame"], kind="stable")
@@ -213,12 +228,18 @@ def run_residual(
             centers = pk["center"][good_rows]
             obs_d = radial_to_d(centers, unit, wavelength)
             valid = np.isfinite(obs_d) & (obs_d > 0)
-            # Phases present in this frame.
+            # Phases present in this frame: confidence over the bar AND enough
+            # one-to-one matched reflections (the evidence gate), unless the user
+            # explicitly allows sparse/marker-only matches.
             preds: Dict[str, np.ndarray] = {}
             for name, info in pinfo.items():
-                if info["conf"][i] > float(seen_conf):
-                    preds[name] = _phase_pred_d(info["phase"], info["refl_d"],
-                                                info["refl_hkl"], info["press"][i])
+                if info["conf"][i] <= float(seen_conf):
+                    continue
+                nm = info["n_matched"]
+                if (not allow_sparse) and nm is not None and nm[i] < int(min_matched):
+                    continue
+                preds[name] = _phase_pred_d(info["phase"], info["refl_d"],
+                                            info["refl_hkl"], info["press"][i])
             n_present_total += len(preds)
             labels, explained = attribute_peaks(np.where(valid, obs_d, np.inf),
                                                 preds, rel_tol)
@@ -232,11 +253,15 @@ def run_residual(
                 radial, cln, centers, pk["amplitude"][good_rows],
                 pk["fwhm"][good_rows], pk["eta"][good_rows], explained).astype("f4")
 
-        # Re-detect on the residual to surface what the strong peaks were hiding.
-        cands = detect_peaks(radial, residual[i], min_snr=min_snr)
+        # Re-fit the residual with the Step-2 pseudo-Voigt pipeline (not raw
+        # local-maxima detection) so the surfaced unknowns carry real fitted
+        # profiles — the proper input for Step 3c unknown-clustering. Keep only
+        # good (unflagged) peaks.
+        cands = fit_pattern(radial, residual[i], min_snr=min_snr, keep_flagged=False)
         rd_counts[i] = len(cands)
         for c in cands:
-            rd_frame.append(i); rd_center.append(c["center"]); rd_amp.append(c["amplitude"])
+            rd_frame.append(i); rd_center.append(c["center"])
+            rd_amp.append(c["amplitude"]); rd_fwhm.append(c["fwhm"])
 
     tmp = dst.with_name(dst.name + ".tmp")
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -249,6 +274,7 @@ def run_residual(
             g.attrs.update({
                 "schema_version": SCHEMA_VERSION, "seen_conf": float(seen_conf),
                 "rel_tol": float(rel_tol), "min_snr": float(min_snr),
+                "min_matched": int(min_matched), "allow_sparse": bool(allow_sparse),
                 "phases": ", ".join(by_name),
             })
             g.create_dataset("clean", data=residual, compression="gzip", compression_opts=1)
@@ -259,6 +285,7 @@ def run_residual(
             gp.create_dataset("frame", data=np.asarray(rd_frame, dtype="i4"))
             gp.create_dataset("center", data=np.asarray(rd_center, dtype="f8"))
             gp.create_dataset("amplitude", data=np.asarray(rd_amp, dtype="f8"))
+            gp.create_dataset("fwhm", data=np.asarray(rd_fwhm, dtype="f8"))
             # Per-fitted-peak attribution alongside /peaks.
             if "peaks" in o:
                 if "phase" in o["peaks"]:

@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import numpy as np
 
 from .phases import Phase
-from .identify import radial_to_d, scale_at_pressure, phase_reflections
+from .identify import radial_to_d, phase_reflections, predicted_d, _parse_hkl
 
 # Background channels available as the image source. robust/mean/sigmaclip/hybrid
 # are reconstructed from the stored clean/baseline/spot_residual(/sigmaclip_residual):
@@ -39,6 +39,16 @@ SOURCES = ("clean", "hybrid", "robust", "mean", "sigmaclip", "baseline", "spot_r
 def _open(path):
     import h5py  # type: ignore
     return h5py.File(str(Path(path).expanduser()), "r")
+
+
+def _frame_pressure(h5) -> "Optional[np.ndarray]":
+    """Per-frame metadata pressure (GPa) from ``/frames/pressure``, or None when
+    absent / entirely NaN (i.e. nothing was parsed or imported)."""
+    fr = h5.get("frames")
+    if fr is None or "pressure" not in fr:
+        return None
+    pr = np.asarray(fr["pressure"][:], dtype=float)
+    return pr if np.any(np.isfinite(pr)) else None
 
 
 def _pressure_track(h5, phase_name: str) -> "Optional[np.ndarray]":
@@ -85,9 +95,12 @@ def pattern_image(analysis_h5: "str | Path", *, source: str = "clean",
 
     Returns ``{ok, error, Z, radial, x, x_label, unit, source, n_frames}`` where
     ``Z`` has shape (n_bins, n_frames) — radial down the rows, frames across the
-    columns — ready for ``imshow``/``pcolormesh``. With ``x_axis="pressure"`` and
-    a ``pressure_phase`` that has a Step-3a track, ``x`` holds that phase's
-    per-frame pressure (else the frame index, with an explanatory ``x_label``).
+    columns — ready for ``imshow``/``pcolormesh``. With ``x_axis="pressure"``,
+    ``x`` holds a per-frame pressure: the frame-metadata pressure
+    (``/frames/pressure``, from filenames or a CSV import) when no
+    ``pressure_phase`` is given, otherwise that phase's Step-3a inferred track.
+    Falls back to the frame index (with an explanatory ``x_label``) if neither
+    pressure source is available.
     """
     p = Path(analysis_h5).expanduser()
     out: Dict[str, Any] = {"ok": False, "error": "", "Z": None, "radial": None,
@@ -142,16 +155,22 @@ def pattern_image(analysis_h5: "str | Path", *, source: str = "clean",
             x = np.arange(n, dtype=float)
             x_label = "frame index"
             if x_axis == "pressure":
-                if not pressure_phase:
-                    out["error"] = "x_axis='pressure' needs a pressure_phase."
-                    return out
-                pr = _pressure_track(h5, pressure_phase)
-                if pr is None:
-                    out["error"] = (f"No Step-3a pressure track for {pressure_phase!r} "
-                                    "— run Step 3a first.")
-                    return out
+                if pressure_phase:
+                    pr = _pressure_track(h5, pressure_phase)
+                    if pr is None:
+                        out["error"] = (f"No Step-3a pressure track for {pressure_phase!r} "
+                                        "— run Step 3a first.")
+                        return out
+                    x_label = f"pressure (GPa) — {pressure_phase}"
+                else:
+                    pr = _frame_pressure(h5)
+                    if pr is None:
+                        out["error"] = ("x_axis='pressure' needs a frame pressure: import "
+                                        "or extract one on the Frame metadata tab, or pass "
+                                        "a pressure_phase with a Step-3a track.")
+                        return out
+                    x_label = "pressure (GPa) — frame metadata"
                 x = pr
-                x_label = f"pressure (GPa) — {pressure_phase}"
             out.update({"ok": True, "Z": data.T, "radial": radial, "x": x,
                         "x_label": x_label, "n_frames": int(n)})
     except Exception as e:
@@ -181,11 +200,15 @@ def reflection_tracks(analysis_h5: "str | Path", phase: Phase, *,
     """Predicted reflection positions of ``phase`` across frames, on the reduced
     radial axis — curves to overlay on :func:`pattern_image`.
 
-    Uses the phase's Step-3a per-frame pressure (``/identify``) to scale d0·s(P);
-    falls back to ambient where no track exists. Returns ``{ok, error, unit,
-    n_frames, tracks}`` with ``tracks`` a list (one per kept reflection) of
-    ``{hkl, d0, centers}`` where ``centers`` is length-n_frames on the radial
-    axis (NaN where pressure is unknown). Requires pymatgen.
+    Pressure per frame comes from the phase's Step-3a track (``/identify``) when
+    present, else the frame-metadata pressure (``/frames/pressure``), else
+    ambient. Compression uses the same anisotropic :func:`identify.predicted_d`
+    as identification (per-axis EOS + hkl when available, isotropic otherwise),
+    so a softer axis's reflections shift correctly relative to a stiff one.
+    Returns ``{ok, error, unit, n_frames, tracks}`` with ``tracks`` a list (one
+    per kept reflection) of ``{hkl, d0, centers}`` where ``centers`` is
+    length-n_frames on the radial axis (NaN where pressure is unknown). Requires
+    pymatgen only when the Step-3a reflection cache is absent.
     """
     p = Path(analysis_h5).expanduser()
     out: Dict[str, Any] = {"ok": False, "error": "", "unit": "", "n_frames": 0,
@@ -200,6 +223,8 @@ def reflection_tracks(analysis_h5: "str | Path", phase: Phase, *,
             gid = h5.get("identify")
             wl = float(gid.attrs.get("wavelength", 0.0)) if gid is not None else 0.0
             pr = _pressure_track(h5, phase.name) if gid is not None else None
+            if pr is None:                       # no Step-3a track → metadata pressure
+                pr = _frame_pressure(h5)
             cached = _stored_reflections(h5, phase.name)
             bg = h5.get("background")
             n = int(bg["clean"].shape[0]) if bg is not None and "clean" in bg \
@@ -215,10 +240,18 @@ def reflection_tracks(analysis_h5: "str | Path", phase: Phase, *,
             return out
         if pr is None:
             pr = np.zeros(n)  # ambient everywhere
-        s = np.array([scale_at_pressure(phase, P) if np.isfinite(P) else np.nan for P in pr])
+        d0 = np.asarray(d0, dtype=float)
+        hkls = [_parse_hkl(h) for h in hkl]
+        # Predicted d for every reflection at each frame's pressure (anisotropic
+        # via predicted_d). dmat[reflection, frame].
+        dmat = np.full((d0.size, n), np.nan)
+        for fi, P in enumerate(pr):
+            if not np.isfinite(P):
+                continue
+            dmat[:, fi] = predicted_d(phase, d0, hkls, float(max(P, 0.0)))
         tracks = []
-        for di, hi in zip(d0, hkl):
-            d_at_P = di * s                      # (n,)
+        for ri, (di, hi) in enumerate(zip(d0, hkl)):
+            d_at_P = dmat[ri]                     # (n,)
             centers = np.full(n, np.nan)
             ok = np.isfinite(d_at_P)
             if ok.any():

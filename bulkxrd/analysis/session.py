@@ -69,6 +69,19 @@ _DEFAULTS = {
     "seen_conf": "0.5",         # confidence bar for "phase present in frame" — also
                                 # which phases get removed in the residual step.
     "identify_wavelength": "",  # Å; blank = auto-read from reduced PONI (2θ data only)
+    # Frame metadata (pressure prior). pressure is auto-parsed from filenames at
+    # Step 1; a CSV here overrides it before Step 3 (frame|filename, pressure_gpa
+    # [, pressure_sigma_gpa, temperature_K]).
+    "pressure_csv": "",
+    # Step 3a pressure prior + evidence — the DAC accuracy controls.
+    "use_pressure_prior": True,    # confine each phase's fit to the frame's pressure ± window
+                                   # (turns pressure from a free per-phase parameter into a prior).
+    "pressure_window": "2.0",      # GPa half-window used where no per-frame sigma is known
+    "pressure_sigma_k": "2.0",     # window = k·sigma where a pressure_sigma is present
+    "marker_prior": False,         # no metadata pressure -> estimate it from marker phases first,
+                                   # then reuse that as the prior for all other phases.
+    "min_matched": "3",            # min one-to-one matched reflections to call a phase "present"
+    "allow_sparse": False,         # permit marker/sparse phases below min_matched in the residual
     # Parallelism: 0 = auto (CPU count − 1), 1 = serial, N = N processes.
     "num_workers": "0",
 }

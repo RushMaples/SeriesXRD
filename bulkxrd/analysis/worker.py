@@ -103,6 +103,18 @@ def run_analysis(cfg: dict) -> dict:
         # Steps 2/3 operate on an already-written analysis file.
         raise ValueError("Step 1 is off and no analysis_h5_file given to operate on.")
 
+    # Optional pressure-CSV import onto /frames before Step 3 (the metadata seam).
+    # Filename-parsed pressures are already populated by Step 1; a CSV overrides.
+    csv_path = str(cfg.get("pressure_csv", "") or "").strip()
+    if csv_path and out_path and Path(out_path).expanduser().is_file():
+        from .frame_metadata import import_csv_to_analysis
+        try:
+            mm = import_csv_to_analysis(out_path, csv_path)
+            manifest["frame_metadata"] = {"csv": mm.get("csv"), "summary": mm.get("summary")}
+            print_status(f"Imported pressure CSV: {mm.get('summary')}")
+        except Exception as e:
+            print_status(f"Pressure CSV import skipped: {e!r}", "WARN")
+
     if run_step2:
         if not out_path or not Path(out_path).expanduser().is_file():
             raise FileNotFoundError(f"Analysis HDF5 not found for peak fitting: {out_path!r}")
@@ -156,6 +168,7 @@ def run_analysis(cfg: dict) -> dict:
             if not phases:
                 raise ValueError("None of the candidate phases resolve in the reference library.")
         rel_tol = _as_float(cfg.get("rel_tol"), 0.01)
+        min_matched = _as_int(cfg.get("min_matched"), 3)
         m3 = run_identification(
             out_path, phases,
             wavelength=_opt_float(cfg.get("identify_wavelength")),
@@ -163,6 +176,11 @@ def run_analysis(cfg: dict) -> dict:
             p_max=_as_float(cfg.get("p_max"), 100.0),
             rel_tol=rel_tol,
             num_workers=num_workers,
+            use_frame_pressure=_as_bool(cfg.get("use_pressure_prior", True), True),
+            pressure_window=_as_float(cfg.get("pressure_window"), 2.0),
+            pressure_sigma_k=_as_float(cfg.get("pressure_sigma_k"), 2.0),
+            min_matched=min_matched,
+            marker_prior=_as_bool(cfg.get("marker_prior", False), False),
         )
         out_path = m3["out_h5"]
         manifest["step3"] = m3
@@ -175,6 +193,8 @@ def run_analysis(cfg: dict) -> dict:
             seen_conf=_as_float(cfg.get("seen_conf"), 0.5),
             rel_tol=rel_tol,
             min_snr=_as_float(cfg.get("min_snr"), 5.0),
+            min_matched=min_matched,
+            allow_sparse=_as_bool(cfg.get("allow_sparse", False), False),
         )
         out_path = m3r["out_h5"]
         manifest["step3_residual"] = m3r
