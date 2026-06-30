@@ -331,9 +331,10 @@ def identify_tracks(h5_path: "str | Path") -> Dict[str, Any]:
     """Per-phase Step-3a results for the pressure-vs-frame view.
 
     Returns ``{ok, error, unit, wavelength, p_min, p_max, n_frames, phases}``
-    where ``phases`` is a list of ``{name, category, has_eos, n_pred, pressure,
-    score, confidence, recall, precision, n_matched}`` (the array fields are all
-    length n_frames).
+    where ``phases`` is a list of ``{name, category, has_eos, pressure_model,
+    prior_penalized, n_pred, pressure, score, confidence, recall, precision,
+    n_matched, prior_penalty}`` (the array fields are all length n_frames).
+    ``pressure_model`` is ``eos`` | ``axial_eos`` | ``ambient_only``.
     """
     p = Path(h5_path).expanduser()
     out: Dict[str, Any] = {"ok": False, "error": "", "unit": "", "wavelength": 0.0,
@@ -364,6 +365,9 @@ def identify_tracks(h5_path: "str | Path") -> Dict[str, Any]:
                     "name": str(g.attrs.get("name", key)),
                     "category": str(g.attrs.get("category", "")),
                     "has_eos": bool(g.attrs.get("has_eos", False)),
+                    "pressure_model": str(g.attrs.get("pressure_model",
+                        "eos" if g.attrs.get("has_eos", False) else "ambient_only")),
+                    "prior_penalized": bool(g.attrs.get("prior_penalized", False)),
                     "n_pred": int(g.attrs.get("n_pred", 0)),
                     "pressure": np.asarray(g["pressure"][:], dtype=float),
                     "score": np.asarray(g["score"][:], dtype=float) if "score" in g else None,
@@ -371,6 +375,7 @@ def identify_tracks(h5_path: "str | Path") -> Dict[str, Any]:
                     "recall": np.asarray(g["recall"][:], dtype=float) if "recall" in g else None,
                     "precision": np.asarray(g["precision"][:], dtype=float) if "precision" in g else None,
                     "n_matched": np.asarray(g["n_matched"][:], dtype=int) if "n_matched" in g else None,
+                    "prior_penalty": np.asarray(g["prior_penalty"][:], dtype=float) if "prior_penalty" in g else None,
                 }
                 out["n_frames"] = max(out["n_frames"], int(rec["pressure"].size))
                 out["phases"].append(rec)

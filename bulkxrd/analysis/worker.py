@@ -20,14 +20,14 @@ if __package__ in (None, ""):
     _pkg_parent = str(Path(__file__).resolve().parents[2])
     if _pkg_parent not in sys.path:
         sys.path.insert(0, _pkg_parent)
-    from bulkxrd.core.config import read_json, write_json, print_status
+    from bulkxrd.core.config import read_json, write_json, print_status, make_stdio_robust
     from bulkxrd.analysis.background import run_background_separation
     from bulkxrd.analysis.peaks import run_peak_fitting
     from bulkxrd.analysis.identify import run_identification
     from bulkxrd.analysis.residual import run_residual
     from bulkxrd.analysis.phases import load_library
 else:
-    from ..core.config import read_json, write_json, print_status
+    from ..core.config import read_json, write_json, print_status, make_stdio_robust
     from .background import run_background_separation
     from .peaks import run_peak_fitting
     from .identify import run_identification
@@ -186,6 +186,29 @@ def run_analysis(cfg: dict) -> dict:
                 print_status(f"Candidate phases not found in library, skipped: {missing}", "WARN")
             if not phases:
                 raise ValueError("None of the candidate phases resolve in the reference library.")
+
+        # ML candidate ranking (Step 3b proposer): rank the WHOLE library against
+        # each frame, then VERIFY only the top-K with the deterministic matcher
+        # below — "ML proposes, physics verifies". Pure-numpy ranker (no torch);
+        # needs pymatgen to simulate, so it's skipped with a warning when absent.
+        if _as_bool(cfg.get("run_ml_rank", False), False):
+            from .phases import pymatgen_available
+            if not pymatgen_available():
+                print_status("ML candidate ranking skipped (needs pymatgen).", "WARN")
+            else:
+                from .ml_rank import rank_candidates
+                pool = list(lib.values())
+                mrank = rank_candidates(
+                    out_path, pool,
+                    source=str(cfg.get("ml_rank_source", "auto") or "auto").strip(),
+                    top_k=_as_int(cfg.get("ml_rank_top_k"), 5))
+                manifest["ml_rank"] = mrank
+                manifest["steps"].append("ml_rank")
+                shortlist = [lib[n] for n in mrank["candidates"] if n in lib]
+                if shortlist:
+                    phases = shortlist
+                    print_status(f"ML ranker shortlisted {len(shortlist)} phase(s) "
+                                 f"for verification: {[p.name for p in shortlist]}")
         rel_tol = _as_float(cfg.get("rel_tol"), 0.01)
         min_matched = _as_int(cfg.get("min_matched"), 3)
         m3 = run_identification(
@@ -224,6 +247,7 @@ def run_analysis(cfg: dict) -> dict:
 
 
 def main() -> int:
+    make_stdio_robust()   # never let a non-ASCII log line crash on a cp1252 console
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--output-json", required=True)

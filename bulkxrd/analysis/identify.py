@@ -306,6 +306,18 @@ def pressure_window_halfwidth(sigma: "Optional[float]", default_window: float,
     return max(w, _MIN_PRESSURE_WINDOW)
 
 
+def pressure_model(phase: Phase) -> str:
+    """How a phase's peaks move with pressure: ``axial_eos`` (per-axis EOS,
+    anisotropic), ``eos`` (isotropic volume EOS), or ``ambient_only`` (no EOS —
+    scored at 0 GPa, and penalised on high-pressure frames). Surfaced per phase so
+    the user can see *why* a no-EOS phase scores low rather than guessing."""
+    if has_axial_eos(phase):
+        return "axial_eos"
+    if phase.has_eos():
+        return "eos"
+    return "ambient_only"
+
+
 def conservative_confidence(recall: float, precision: float, n_matched: int,
                             *, min_matched: int = DEFAULT_MIN_MATCHED,
                             prior_penalty: float = 1.0) -> float:
@@ -361,7 +373,8 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
     obs = np.sort(np.asarray(obs_d, dtype=float))
     obs = obs[np.isfinite(obs) & (obs > 0)]
     out = {"pressure": float("nan"), "score": 0.0, "confidence": 0.0,
-           "recall": 0.0, "precision": 0.0, "n_matched": 0, "n_pred": int(d0.size)}
+           "recall": 0.0, "precision": 0.0, "n_matched": 0, "prior_penalty": 1.0,
+           "n_pred": int(d0.size)}
     if d0.size == 0 or obs.size == 0:
         out["pressure"] = 0.0
         return out
@@ -384,7 +397,7 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
         if pen_prior is not None and pen_tol:
             prior_pen = float(np.exp(-0.5 * ((p_val - pen_prior) / pen_tol) ** 2))
         out.update({"pressure": p_val, "score": score, "n_matched": nm,
-                    "recall": rec, "precision": prec,
+                    "recall": rec, "precision": prec, "prior_penalty": prior_pen,
                     "confidence": conservative_confidence(
                         rec, prec, nm, min_matched=min_matched,
                         prior_penalty=prior_pen)})
@@ -444,7 +457,8 @@ def _identify_chunk(payload):
     m = len(obs_chunk)
     res = {ph.name: {"pressure": np.full(m, np.nan, "f8"), "score": np.zeros(m, "f8"),
                      "confidence": np.zeros(m, "f8"), "recall": np.zeros(m, "f8"),
-                     "precision": np.zeros(m, "f8"), "n_matched": np.zeros(m, "i4")}
+                     "precision": np.zeros(m, "f8"), "n_matched": np.zeros(m, "i4"),
+                     "prior_penalty": np.ones(m, "f8")}
            for ph in phases}
     for j in range(m):
         if excluded_chunk[j]:
@@ -462,6 +476,7 @@ def _identify_chunk(payload):
             rr["pressure"][j] = r["pressure"]; rr["score"][j] = r["score"]
             rr["confidence"][j] = r["confidence"]; rr["recall"][j] = r["recall"]
             rr["precision"][j] = r["precision"]; rr["n_matched"][j] = r["n_matched"]
+            rr["prior_penalty"][j] = r["prior_penalty"]
     return res
 
 
@@ -511,7 +526,10 @@ def run_identification(
                                             conservative_confidence)
         /identify/<phase>/recall, /precision (N,)
         /identify/<phase>/n_matched   (N,) int  one-to-one matched reflections
-                          attrs: name, n_pred, has_eos, category
+        /identify/<phase>/prior_penalty (N,)    Gaussian pressure-prior factor in
+                                                (0,1] applied to confidence (1=no prior)
+                          attrs: name, n_pred, has_eos, category, pressure_model
+                                 (eos|axial_eos|ambient_only), prior_penalized
 
     Pressure prior (the DAC accuracy fix): if ``pressure_by_frame`` is given — or
     the analysis file already carries ``/frames/pressure`` (from filenames or a
@@ -665,7 +683,7 @@ def run_identification(
                 pressure_window, pressure_sigma_k)
             for j in range(n)], dtype="f8")
         print(f"[IDENTIFY] pressure prior on {n_prior}/{n} frames "
-              f"(window ±{pressure_window} GPa or {pressure_sigma_k}σ)", flush=True)
+              f"(window +/-{pressure_window} GPa or {pressure_sigma_k}*sigma)", flush=True)
         # Auto-widen the global search range to cover the metadata pressures (+window).
         # Otherwise a frame whose prior sits outside [p_min, p_max] would clamp its
         # search to the boundary while the prior penalty still measures against the
@@ -687,7 +705,8 @@ def run_identification(
     results: Dict[str, Dict[str, np.ndarray]] = {
         ph.name: {"pressure": np.full(n, np.nan, "f8"), "score": np.zeros(n, "f8"),
                   "confidence": np.zeros(n, "f8"), "recall": np.zeros(n, "f8"),
-                  "precision": np.zeros(n, "f8"), "n_matched": np.zeros(n, "i4")}
+                  "precision": np.zeros(n, "f8"), "n_matched": np.zeros(n, "i4"),
+                  "prior_penalty": np.ones(n, "f8")}
         for ph in phases}
 
     def _absorb(a, chunk_res):
@@ -735,8 +754,14 @@ def run_identification(
             })
             for ph in phases:
                 g = gid.create_group(_h5_safe(ph.name))
+                # prior_penalized: did the pressure prior actually pull this phase's
+                # confidence down on any live frame? (penalty noticeably below 1.)
+                pp_live = results[ph.name]["prior_penalty"][~excluded] if (~excluded).any() \
+                    else results[ph.name]["prior_penalty"]
                 g.attrs.update({"name": ph.name, "n_pred": int(refl_cache[ph.name][0].size),
-                                "has_eos": bool(ph.has_eos()), "category": ph.category})
+                                "has_eos": bool(ph.has_eos()), "category": ph.category,
+                                "pressure_model": pressure_model(ph),
+                                "prior_penalized": bool(np.any(pp_live < 0.999))})
                 for k, v in results[ph.name].items():
                     g.create_dataset(k, data=v)
                 # Cache the ambient reflection list so GUI overlays (reflection
@@ -769,8 +794,10 @@ def run_identification(
         res = results[ph.name]
         conf = res["confidence"]
         nm = res["n_matched"]
+        pp = res["prior_penalty"]
         conf_live = conf[live] if live.any() else conf
         seen = (conf > SEEN_CONF) & (nm >= int(min_matched)) & live
+        pp_live = pp[live] if live.any() else pp
         summary[ph.name] = {
             "mean_confidence": float(np.mean(conf_live)) if conf_live.size else 0.0,
             "max_confidence": float(np.max(conf_live)) if conf_live.size else 0.0,
@@ -783,6 +810,9 @@ def run_identification(
             "max_matched": int(np.max(nm)) if nm.size else 0,
             "pressure_median": float(np.nanmedian(res["pressure"][seen])) if np.any(seen) else float("nan"),
             "has_eos": bool(ph.has_eos()),
+            "pressure_model": pressure_model(ph),
+            "prior_penalized": bool(np.any(pp_live < 0.999)),
+            "n_frames_penalized": int(np.sum(pp_live < 0.999)),
         }
 
     manifest = {

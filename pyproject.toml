@@ -39,6 +39,10 @@ io = ["tifffile"]
 # powder-pattern simulation (peak positions + intensities). Optional — the
 # phase registry, EOS math, and bundled baseline work without it.
 phases = ["pymatgen"]
+# Step 3b learned models (PyTorch). The deterministic candidate ranker
+# (analysis/ml_rank.py) and the simulator/feature builders are pure-numpy and do
+# NOT need this; only a trained ranker/classifier does. Keeps core light.
+ml = ["torch"]
 
 [project.scripts]
 bulkxrd = "bulkxrd.app:main"

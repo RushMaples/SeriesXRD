@@ -2292,6 +2292,27 @@ class AnalysisApp:
         self.checkbox(frame, "allow_sparse",
                       "Allow sparse/marker-only matches in residual", row=13)
 
+        # -- Step 3b proposer: ML candidate ranking -----------------------
+        mlrow = ttk.Frame(frame)
+        mlrow.grid(row=14, column=0, columnspan=3, sticky="w", pady=(6, 2))
+        self.vars["run_ml_rank"] = tk.BooleanVar(value=bool(self.config.get("run_ml_rank", False)))
+        _mlcb = ttk.Checkbutton(
+            mlrow, text="ML candidate ranking (propose top-K from library, verify with Step 3a)",
+            variable=self.vars["run_ml_rank"])
+        _mlcb.pack(side="left")
+        _ToolTip(_mlcb, (
+            "Before the deterministic match, rank the WHOLE library against each frame "
+            "(cosine of the measured residual/fit pattern vs each phase simulated at the "
+            "frame's pressure) and verify only the top-K with Step 3a. 'ML proposes, "
+            "physics verifies.' Deterministic (no torch); needs pymatgen to simulate."))
+        ttk.Label(mlrow, text="top-K:", foreground=MUTED).pack(side="left", padx=(10, 2))
+        self.vars["ml_rank_top_k"] = tk.StringVar(value=str(self.config.get("ml_rank_top_k", "5")))
+        ttk.Entry(mlrow, textvariable=self.vars["ml_rank_top_k"], width=5).pack(side="left")
+        ttk.Label(mlrow, text="rank vs:", foreground=MUTED).pack(side="left", padx=(10, 2))
+        self.vars["ml_rank_source"] = tk.StringVar(value=str(self.config.get("ml_rank_source", "auto")))
+        ttk.Combobox(mlrow, textvariable=self.vars["ml_rank_source"],
+                     values=["auto", "residual", "fit"], state="readonly", width=8).pack(side="left")
+
         self._identify_help = ttk.Label(
             frame,
             text=(
@@ -2311,12 +2332,12 @@ class AnalysisApp:
             ),
             foreground=MUTED, justify="left", wraplength=640,
         )
-        self._identify_help.grid(row=15, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        self._identify_help.grid(row=16, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
         self._identify_help.grid_remove()   # collapsed by default → bigger plot
 
         # -- controls row -------------------------------------------------
         ctrl = ttk.Frame(frame)
-        ctrl.grid(row=14, column=0, columnspan=3, sticky="w", pady=(4, 2))
+        ctrl.grid(row=15, column=0, columnspan=3, sticky="w", pady=(4, 2))
 
         ttk.Button(ctrl, text="Load identification",
                    command=self.load_identify).pack(side="left", padx=4)
@@ -2340,8 +2361,8 @@ class AnalysisApp:
 
         # -- body: per-frame phase table (left) + plot (right) ------------
         body = ttk.Frame(frame)
-        body.grid(row=15, column=0, columnspan=3, sticky="nsew")
-        frame.rowconfigure(15, weight=1)
+        body.grid(row=16, column=0, columnspan=3, sticky="nsew")
+        frame.rowconfigure(16, weight=1)
         frame.columnconfigure(0, weight=1)
 
         # Left: a frame selector and a ranked table of phases for that frame.
@@ -2361,14 +2382,15 @@ class AnalysisApp:
         ttk.Button(sel, text="▶", width=2,
                    command=lambda: self._step_identify_frame(1)).pack(side="left")
 
-        cols = ("phase", "conf", "recall", "prec", "pressure", "lines")
+        cols = ("phase", "model", "conf", "recall", "prec", "pressure", "lines")
         tbl = ttk.Treeview(left, columns=cols, show="headings", height=18,
                            selectmode="browse")
-        for c, txt, w, anc in (("phase", "Phase", 150, "w"), ("conf", "Conf", 56, "center"),
-                               ("recall", "Recall", 56, "center"), ("prec", "Prec", 56, "center"),
-                               ("pressure", "P (GPa)", 64, "center"), ("lines", "#", 40, "center")):
+        for c, txt, w, anc in (("phase", "Phase", 140, "w"), ("model", "P-model", 78, "center"),
+                               ("conf", "Conf", 52, "center"),
+                               ("recall", "Recall", 52, "center"), ("prec", "Prec", 52, "center"),
+                               ("pressure", "P (GPa)", 60, "center"), ("lines", "#", 36, "center")):
             tbl.heading(c, text=txt)
-            tbl.column(c, width=w, minwidth=36, anchor=anc, stretch=(c == "phase"))
+            tbl.column(c, width=w, minwidth=34, anchor=anc, stretch=(c == "phase"))
         tbl.tag_configure("present", foreground=ACCENT2)
         tbl.tag_configure("absent", foreground=MUTED)
         tbl.pack(fill="y", expand=False)
@@ -2552,19 +2574,27 @@ class AnalysisApp:
             conf = _at(rec.get("confidence"), 0.0)
             rows.append((conf, rec))
         rows.sort(key=lambda t: (-(t[0] if t[0] == t[0] else -1), t[1]["name"].lower()))
+        # Short labels for the pressure model the phase was fit under.
+        _MODEL_LABEL = {"eos": "EOS", "axial_eos": "axial", "ambient_only": "ambient"}
         n_present = 0
         for conf, rec in rows:
             recall = _at(rec.get("recall"))
             prec = _at(rec.get("precision"))
             press = _at(rec.get("pressure"))
+            penalty = _at(rec.get("prior_penalty"), 1.0)
             nmatch = rec.get("n_matched")
             nm = int(nmatch[fi]) if nmatch is not None and fi < len(nmatch) else 0
             present = conf >= conf_min
             n_present += int(present)
-            name = rec["name"] if rec.get("has_eos") else f"{rec['name']} (no EOS)"
-            pstr = "—" if (press != press or not rec.get("has_eos")) else f"{press:.1f}"
+            model = rec.get("pressure_model") or ("eos" if rec.get("has_eos") else "ambient_only")
+            mlabel = _MODEL_LABEL.get(model, model)
+            # Flag a frame whose confidence the pressure prior pulled down.
+            if penalty == penalty and penalty < 0.95:
+                mlabel += " ↓P"
+            name = rec["name"]
+            pstr = "—" if (press != press or model == "ambient_only") else f"{press:.1f}"
             tbl.insert("", "end", values=(
-                name, f"{conf:.2f}",
+                name, mlabel, f"{conf:.2f}",
                 "—" if recall != recall else f"{recall:.2f}",
                 "—" if prec != prec else f"{prec:.2f}",
                 pstr, nm),
