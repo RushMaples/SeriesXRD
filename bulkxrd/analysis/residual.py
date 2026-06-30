@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .identify import radial_to_d, predicted_d, _parse_hkl, _h5_safe, DEFAULT_MIN_MATCHED
-from .peaks import pseudo_voigt, fit_pattern
+from .peaks import pseudo_voigt, fit_pattern, build_fit_source
 from .phases import Phase
 
 SCHEMA_VERSION = "1"
@@ -46,36 +46,50 @@ SCHEMA_VERSION = "1"
 def attribute_peaks(obs_d: np.ndarray,
                     phase_preds: "Dict[str, np.ndarray]",
                     rel_tol: float) -> "Tuple[List[str], np.ndarray]":
-    """Assign each observed peak (d-spacing) to the best-matching present phase.
+    """Assign observed peaks to present phases by greedy ONE-TO-ONE matching.
 
     ``phase_preds`` maps phase name -> predicted d-spacings (already scaled to
-    the frame's pressure). A peak is attributed to the phase with the smallest
-    *relative* gap, but only if that gap is within ``rel_tol`` (the same
-    tolerance Step 3a scores with). Returns ``(labels, explained)`` where
-    ``labels[i]`` is the phase name or ``""`` and ``explained`` is a bool mask.
+    the frame's pressure). Candidate (observed peak, predicted line) pairs within
+    ``rel_tol`` (the same tolerance Step 3a scores with) are consumed closest
+    first, and **each predicted reflection may explain at most one observed
+    peak** (and each observed peak at most one reflection). This mirrors the
+    one-to-one matching identification uses: without it, one predicted line would
+    label a whole cluster of nearby peaks as "explained", and subtraction would
+    then erase real split/overlapped/unknown signal sitting beside a known line.
+    Returns ``(labels, explained)`` where ``labels[i]`` is the phase name or
+    ``""`` and ``explained`` is a bool mask.
     """
+    obs_d = np.asarray(obs_d, float)
     n = obs_d.size
     labels = [""] * n
     explained = np.zeros(n, dtype=bool)
     if n == 0 or not phase_preds:
         return labels, explained
-    best_rel = np.full(n, np.inf)
+    tol = float(rel_tol)
+    # All (relative gap, obs index, phase, line index) pairs within tolerance.
+    cands: "List[Tuple[float, int, str, int]]" = []
     for name, pred in phase_preds.items():
         pred = np.asarray(pred, float)
-        pred = pred[np.isfinite(pred) & (pred > 0)]
-        if pred.size == 0:
+        for j, pj in enumerate(pred):
+            if not np.isfinite(pj) or pj <= 0:
+                continue
+            for i in range(n):
+                oi = obs_d[i]
+                if not np.isfinite(oi) or oi <= 0:
+                    continue
+                rel = abs(oi - pj) / oi
+                if rel < tol:
+                    cands.append((rel, i, name, j))
+    cands.sort(key=lambda c: c[0])
+    used_obs: set = set()
+    used_line: set = set()                          # (phase, line index)
+    for rel, i, name, j in cands:
+        if i in used_obs or (name, j) in used_line:
             continue
-        # nearest predicted line for each observed peak
-        gap = np.min(np.abs(obs_d[:, None] - pred[None, :]), axis=1)
-        rel = gap / np.maximum(obs_d, 1e-12)
-        take = rel < best_rel
-        best_rel[take] = rel[take]
-        for i in np.nonzero(take)[0]:
-            labels[i] = name
-    explained = best_rel < float(rel_tol)
-    for i in range(n):
-        if not explained[i]:
-            labels[i] = ""
+        used_obs.add(i)
+        used_line.add((name, j))
+        labels[i] = name
+        explained[i] = True
     return labels, explained
 
 
@@ -133,8 +147,9 @@ def run_residual(
     """Subtract identified phases per frame and write the residual + attribution.
 
         /residual  attrs: schema_version, seen_conf, rel_tol, min_snr,
-                          min_matched, allow_sparse, phases
-        /residual/clean             (N, N_bins)  clean minus explained-phase peaks
+                          min_matched, allow_sparse, source, phases
+        /residual/clean             (N, N_bins)  fit source minus explained-phase
+                                                 peaks (source = /peaks.attrs source)
         /residual/explained_counts  (N,) int     #peaks attributed to a known phase
         /residual/unexplained_counts(N,) int     #good peaks left unexplained
         /residual/peaks/counts      (N,) int     re-fitted on the residual
@@ -171,6 +186,15 @@ def run_residual(
         clean = np.asarray(bg["clean"][:], dtype=float)
         radial = np.asarray(h5["radial"][:], dtype=float) if "radial" in h5 else \
             np.arange(clean.shape[1], dtype=float)
+        # Rebuild the SAME channel Step 2 fit the peaks on (auto → sigmaclip/hybrid
+        # by default, not clean). Subtracting the fitted pseudo-Voigts from a
+        # *different* channel would over-subtract or dig negative holes; the
+        # amplitudes belong to this source.
+        pkg = h5.get("peaks")
+        want_source = str(pkg.attrs.get("source", "clean")) if pkg is not None else "clean"
+        hybrid_spike_bins = int(pkg.attrs.get("hybrid_spike_bins", 5)) if pkg is not None else 5
+        spot_res = np.asarray(bg["spot_residual"][:], dtype=float) if "spot_residual" in bg else None
+        sc_res = np.asarray(bg["sigmaclip_residual"][:], dtype=float) if "sigmaclip_residual" in bg else None
         idg = h5.get("identify")
         if idg is None:
             raise ValueError(
@@ -201,11 +225,21 @@ def run_residual(
     if excluded is None or excluded.size != n:
         excluded = np.zeros(n, dtype=bool)
 
+    # The base we subtract from and re-fit: the recorded Step-2 fit source,
+    # falling back to clean if a needed residual channel is missing.
+    try:
+        fit_src, used_source = build_fit_source(
+            want_source, clean, spot_residual=spot_res, sigmaclip_residual=sc_res,
+            hybrid_spike_bins=hybrid_spike_bins)
+        fit_src = np.asarray(fit_src, dtype=float)
+    except ValueError:
+        fit_src, used_source = clean, "clean"
+
     P = pk["frame"].size
     peak_phase = np.array([""] * P, dtype=object)
     explained_counts = np.zeros(n, dtype="i4")
     unexplained_counts = np.zeros(n, dtype="i4")
-    residual = np.array(clean, dtype="f4")        # default: unchanged where nothing removed
+    residual = np.array(fit_src, dtype="f4")      # default: unchanged where nothing removed
 
     rd_counts = np.zeros(n, dtype="i4")
     rd_frame: List[int] = []
@@ -219,7 +253,7 @@ def run_residual(
 
     n_present_total = 0
     for i in range(n):
-        cln = clean[i]
+        cln = fit_src[i]
         if excluded[i] or not np.isfinite(cln).any():
             continue
         rows = order[pk["frame"][order] == i]
@@ -275,7 +309,7 @@ def run_residual(
                 "schema_version": SCHEMA_VERSION, "seen_conf": float(seen_conf),
                 "rel_tol": float(rel_tol), "min_snr": float(min_snr),
                 "min_matched": int(min_matched), "allow_sparse": bool(allow_sparse),
-                "phases": ", ".join(by_name),
+                "source": str(used_source), "phases": ", ".join(by_name),
             })
             g.create_dataset("clean", data=residual, compression="gzip", compression_opts=1)
             g.create_dataset("explained_counts", data=explained_counts)
@@ -305,6 +339,7 @@ def run_residual(
     manifest = {
         "tool_version": SCHEMA_VERSION, "source": str(src), "out_h5": str(dst),
         "n_frames": int(n), "seen_conf": float(seen_conf), "rel_tol": float(rel_tol),
+        "fit_source": str(used_source),
         "n_explained": n_explained, "n_unexplained": n_unexplained,
         "n_residual_peaks": int(len(rd_frame)),
         "phases": list(by_name),

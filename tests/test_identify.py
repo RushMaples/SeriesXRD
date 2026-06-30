@@ -336,6 +336,56 @@ def test_pressure_prior_rejects_decoy_end_to_end():
         assert man2["summary"]["Decoy"]["n_frames_seen"] == 0
 
 
+def test_no_eos_penalized_and_range_auto_widens():
+    """(a) A no-EOS phase (scored at ambient) is penalised on a high-pressure
+    frame. (b) A prior outside [p_min, p_max] auto-widens the search so an
+    otherwise-correct phase is still recovered instead of clamped to the edge."""
+    import h5py
+    au, au_refl = _synth_au()
+    d0 = au_refl[0]
+    no_eos = ph.Phase(name="NoEOS", category="sample", space_group="Fm-3m",
+                      lattice=au.lattice, atoms=au.atoms)   # same lines, no EOS
+    refl_map = {"Au": au_refl, "NoEOS": au_refl}
+
+    def _one_frame_h5(path, p_true, prior):
+        q = 2 * np.pi / (d0 * idf.scale_at_pressure(au, p_true))
+        with h5py.File(str(path), "w") as f:
+            f.attrs["unit"] = "q_A^-1"; f.attrs["source_reduced"] = "syn"
+            gp = f.create_group("peaks")
+            gp.create_dataset("counts", data=np.array([q.size], "i4"))
+            gp.create_dataset("frame", data=np.zeros(q.size, "i4"))
+            gp.create_dataset("center", data=q.astype("f8"))
+            gp.create_dataset("flag", data=np.zeros(q.size, "i4"))
+            gf = f.create_group("frames")
+            gf.create_dataset("pressure", data=np.array([prior], "f8"))
+            gf.create_dataset("excluded", data=np.zeros(1, "?"))
+
+    with tempfile.TemporaryDirectory() as td:
+        # (b-style penalty) frame genuinely at 30 GPa, prior 30.
+        h = Path(td) / "noeos.h5"
+        _one_frame_h5(h, p_true=30.0, prior=30.0)
+        _run_identification_synthetic(h, [au, no_eos], refl_map, [30.0], pressure_window=2.0)
+        with h5py.File(str(h), "r") as f:
+            assert f["identify/Au/confidence"][0] > 0.8
+            assert f["identify/NoEOS/confidence"][0] < 0.2, "no-EOS phase not penalised at 30 GPa"
+
+        # (a) prior 150 GPa with p_max 100 -> auto-widen and recover.
+        h2 = Path(td) / "oor.h5"
+        _one_frame_h5(h2, p_true=150.0, prior=150.0)
+        real_avail, real_refl = idf.pymatgen_available, idf.phase_reflections
+        idf.pymatgen_available = lambda: True
+        idf.phase_reflections = lambda phase, **k: refl_map[phase.name]
+        try:
+            idf.run_identification(h2, [au], p_min=0.0, p_max=100.0, rel_tol=0.01,
+                                   pressure_window=2.0)
+        finally:
+            idf.pymatgen_available, idf.phase_reflections = real_avail, real_refl
+        with h5py.File(str(h2), "r") as f:
+            assert abs(f["identify/Au/pressure"][0] - 150.0) < 2.0, f["identify/Au/pressure"][0]
+            assert f["identify/Au/confidence"][0] > 0.8
+            assert f["identify"].attrs["p_max"] >= 150.0, "range not widened to cover prior"
+
+
 def main() -> None:
     test_radial_to_d()
     test_scale_monotonic()
@@ -348,6 +398,7 @@ def main() -> None:
     test_one_to_one_matching()
     test_pressure_prior_confines_search()
     test_pressure_prior_rejects_decoy_end_to_end()
+    test_no_eos_penalized_and_range_auto_widens()
     print("IDENTIFY TEST OK")
 
 

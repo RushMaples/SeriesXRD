@@ -154,10 +154,12 @@ def test_tracks_layers_and_export():
         out = Path(td) / "ml.npz"
         man = ml.export_ml_dataset(h5, out, channels=("clean", "spot_residual"))
         assert out.is_file() and man["n_channels"] == 2 and man["has_labels"]
-        z = np.load(out, allow_pickle=True)
-        assert z["X"].shape == (4, 2, 3501)
-        assert "y" in z and z["y"].shape[1] == 1 and z["y"].sum() > 0
-        assert list(z["phase_names"]) == ["Au"]
+        # Close the npz before the TemporaryDirectory is removed (Windows holds a
+        # file handle open until the NpzFile is closed).
+        with np.load(out, allow_pickle=True) as z:
+            assert z["X"].shape == (4, 2, 3501)
+            assert "y" in z and z["y"].shape[1] == 1 and z["y"].sum() > 0
+            assert list(z["phase_names"]) == ["Au"]
 
 
 def test_simulated_dataset():

@@ -104,16 +104,35 @@ def run_analysis(cfg: dict) -> dict:
         raise ValueError("Step 1 is off and no analysis_h5_file given to operate on.")
 
     # Optional pressure-CSV import onto /frames before Step 3 (the metadata seam).
-    # Filename-parsed pressures are already populated by Step 1; a CSV overrides.
+    # Filename-parsed pressures are already populated by Step 1; a CSV overrides
+    # (merging — only the frames the CSV provides). Because the user supplied an
+    # explicit prior, a failure is FATAL by default: silently continuing with
+    # filename/stale/no pressure would run Step 3 against the wrong prior. Set
+    # pressure_csv_required=False to fall back to a warning instead.
     csv_path = str(cfg.get("pressure_csv", "") or "").strip()
-    if csv_path and out_path and Path(out_path).expanduser().is_file():
-        from .frame_metadata import import_csv_to_analysis
-        try:
-            mm = import_csv_to_analysis(out_path, csv_path)
-            manifest["frame_metadata"] = {"csv": mm.get("csv"), "summary": mm.get("summary")}
-            print_status(f"Imported pressure CSV: {mm.get('summary')}")
-        except Exception as e:
-            print_status(f"Pressure CSV import skipped: {e!r}", "WARN")
+    if csv_path:
+        csv_required = _as_bool(cfg.get("pressure_csv_required", True), True)
+        if not (out_path and Path(out_path).expanduser().is_file()):
+            msg = (f"pressure_csv given but there is no analysis file to apply it to "
+                   f"({out_path!r}); run Step 1 or set analysis_h5_file.")
+            if csv_required:
+                raise FileNotFoundError(msg)
+            print_status(msg + " — skipped", "WARN")
+        else:
+            from .frame_metadata import import_csv_to_analysis
+            try:
+                mm = import_csv_to_analysis(out_path, csv_path)
+                manifest["frame_metadata"] = {"csv": mm.get("csv"),
+                                              "summary": mm.get("summary"),
+                                              "n_mapped": mm.get("n_mapped")}
+                print_status(f"Imported pressure CSV ({mm.get('n_mapped')} frames): "
+                             f"{mm.get('summary')}")
+            except Exception as e:
+                if csv_required:
+                    raise RuntimeError(
+                        f"Pressure CSV import failed for {csv_path!r}: {e}. Fix the CSV "
+                        f"or set pressure_csv_required=False to continue without it.") from e
+                print_status(f"Pressure CSV import skipped: {e!r}", "WARN")
 
     if run_step2:
         if not out_path or not Path(out_path).expanduser().is_file():
