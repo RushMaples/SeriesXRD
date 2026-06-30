@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .phases import Phase
-from .identify import radial_to_d, scale_at_pressure, phase_reflections
+from .identify import radial_to_d, phase_reflections, predicted_d, _parse_hkl
 from .peaks import pseudo_voigt
 
 # SimXRD-4M pattern format (Cao et al., ICLR 2025).
@@ -225,15 +225,19 @@ def simulate_training_pattern(phase: Phase, pressure: float, d_grid: np.ndarray,
                               normalize: bool = True) -> np.ndarray:
     """A single-phase synthetic pattern on ``d_grid`` at ``pressure`` (GPa).
 
-    Predicted reflections (d0·s(P)) are rendered as pseudo-Voigt peaks of width
-    ``fwhm_d`` (in Å) weighted by relative intensity — the same profile the
-    experimental peaks are fit with, so the two domains match.
+    Reflections are positioned with the **same** :func:`identify.predicted_d`
+    compression model the Step-3a verifier uses — anisotropic (per-axis EOS + hkl)
+    when the phase has an axial EOS, isotropic otherwise. Using the isotropic
+    scale here would leave an axial-only phase at ambient positions for every
+    pressure, so the proposer and verifier would disagree. Peaks are pseudo-Voigts
+    of width ``fwhm_d`` (Å) weighted by relative intensity — the profile the
+    experimental peaks are fit with.
     """
     if refl is None:
         refl = phase_reflections(phase)
-    d0, w, _ = refl
-    s = scale_at_pressure(phase, pressure)
-    centers = d0 * s
+    d0, w, hkl = refl
+    hkls = [_parse_hkl(h) for h in hkl] if hkl else None
+    centers = predicted_d(phase, np.asarray(d0, float), hkls, float(max(pressure, 0.0)))
     y = np.zeros_like(d_grid, dtype=float)
     for c, a in zip(centers, w):
         if d_grid[0] <= c <= d_grid[-1]:

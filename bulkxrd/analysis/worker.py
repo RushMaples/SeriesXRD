@@ -25,14 +25,18 @@ if __package__ in (None, ""):
     from bulkxrd.analysis.peaks import run_peak_fitting
     from bulkxrd.analysis.identify import run_identification
     from bulkxrd.analysis.residual import run_residual
-    from bulkxrd.analysis.phases import load_library
+    from bulkxrd.analysis.phases import load_library, pymatgen_available
+    from bulkxrd.analysis.frame_metadata import import_csv_to_analysis
+    from bulkxrd.analysis.ml_rank import rank_candidates
 else:
     from ..core.config import read_json, write_json, print_status, make_stdio_robust
     from .background import run_background_separation
     from .peaks import run_peak_fitting
     from .identify import run_identification
     from .residual import run_residual
-    from .phases import load_library
+    from .phases import load_library, pymatgen_available
+    from .frame_metadata import import_csv_to_analysis
+    from .ml_rank import rank_candidates
 
 
 def _as_bool(v, default=False) -> bool:
@@ -119,7 +123,6 @@ def run_analysis(cfg: dict) -> dict:
                 raise FileNotFoundError(msg)
             print_status(msg + " — skipped", "WARN")
         else:
-            from .frame_metadata import import_csv_to_analysis
             try:
                 mm = import_csv_to_analysis(out_path, csv_path)
                 manifest["frame_metadata"] = {"csv": mm.get("csv"),
@@ -166,49 +169,56 @@ def run_analysis(cfg: dict) -> dict:
             raise FileNotFoundError(f"Analysis HDF5 not found for phase matching: {out_path!r}")
         workspace = cfg.get("workspace_root") or str(Path(out_path).expanduser().parent)
         lib = load_library(workspace)
-        # Open-set mode: score the WHOLE library, so phases need not be marked as
-        # candidates beforehand. Otherwise restrict to the user's selection
-        # (faster, and avoids spurious low-confidence matches).
         identify_all = _as_bool(cfg.get("identify_all_phases", False), False)
-        if identify_all:
-            phases = list(lib.values())
-            if not phases:
-                raise ValueError("Reference library is empty — add or bundle phases first.")
-        else:
-            names = [str(n) for n in (cfg.get("candidate_phases") or [])]
-            if not names:
-                raise ValueError(
-                    "Step 3a needs candidate phases — enable some on the Phases tab, "
-                    "or turn on 'Search entire library' to identify without pre-selecting.")
-            phases = [lib[n] for n in names if n in lib]
-            missing = [n for n in names if n not in lib]
-            if missing:
-                print_status(f"Candidate phases not found in library, skipped: {missing}", "WARN")
-            if not phases:
-                raise ValueError("None of the candidate phases resolve in the reference library.")
+        run_ml_rank = _as_bool(cfg.get("run_ml_rank", False), False)
+        phases = None
 
         # ML candidate ranking (Step 3b proposer): rank the WHOLE library against
-        # each frame, then VERIFY only the top-K with the deterministic matcher
-        # below — "ML proposes, physics verifies". Pure-numpy ranker (no torch);
-        # needs pymatgen to simulate, so it's skipped with a warning when absent.
-        if _as_bool(cfg.get("run_ml_rank", False), False):
-            from .phases import pymatgen_available
+        # each frame and VERIFY only the top-K below — "ML proposes, physics
+        # verifies". This is candidate-FREE: no Phases-tab pre-selection needed.
+        # Pure-numpy ranker (no torch); needs pymatgen to simulate, so it falls
+        # back to the manual/open-set selection with a warning when absent.
+        if run_ml_rank:
             if not pymatgen_available():
-                print_status("ML candidate ranking skipped (needs pymatgen).", "WARN")
+                print_status("ML candidate ranking needs pymatgen — falling back to the "
+                             "candidate selection.", "WARN")
             else:
-                from .ml_rank import rank_candidates
                 pool = list(lib.values())
+                if not pool:
+                    raise ValueError("Reference library is empty — add or bundle phases first.")
                 mrank = rank_candidates(
                     out_path, pool,
-                    source=str(cfg.get("ml_rank_source", "auto") or "auto").strip(),
+                    source=str(cfg.get("ml_rank_source", "auto") or "auto").strip() or "auto",
                     top_k=_as_int(cfg.get("ml_rank_top_k"), 5))
                 manifest["ml_rank"] = mrank
                 manifest["steps"].append("ml_rank")
-                shortlist = [lib[n] for n in mrank["candidates"] if n in lib]
-                if shortlist:
-                    phases = shortlist
-                    print_status(f"ML ranker shortlisted {len(shortlist)} phase(s) "
-                                 f"for verification: {[p.name for p in shortlist]}")
+                phases = [lib[n] for n in mrank["candidates"] if n in lib]
+                if phases:
+                    print_status(f"ML ranker shortlisted {len(phases)} phase(s) for "
+                                 f"verification: {[p.name for p in phases]}")
+                else:
+                    print_status("ML ranker produced no candidates — falling back to "
+                                 "the candidate selection.", "WARN")
+                    phases = None
+
+        # No ML shortlist: open-set (whole library) or the explicit Phases-tab selection.
+        if phases is None:
+            if identify_all:
+                phases = list(lib.values())
+                if not phases:
+                    raise ValueError("Reference library is empty — add or bundle phases first.")
+            else:
+                names = [str(n) for n in (cfg.get("candidate_phases") or [])]
+                if not names:
+                    raise ValueError(
+                        "Step 3a needs candidate phases — enable some on the Phases tab, "
+                        "turn on 'Search entire library', or enable ML candidate ranking.")
+                phases = [lib[n] for n in names if n in lib]
+                missing = [n for n in names if n not in lib]
+                if missing:
+                    print_status(f"Candidate phases not found in library, skipped: {missing}", "WARN")
+                if not phases:
+                    raise ValueError("None of the candidate phases resolve in the reference library.")
         rel_tol = _as_float(cfg.get("rel_tol"), 0.01)
         min_matched = _as_int(cfg.get("min_matched"), 3)
         m3 = run_identification(

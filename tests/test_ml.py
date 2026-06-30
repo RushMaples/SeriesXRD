@@ -70,9 +70,36 @@ def test_frame_features():
         assert np.allclose(ff.contamination, [0.1, 0.2])
         assert ff.n_peaks.tolist() == [1, 1] and ff.excluded.tolist() == [False, False]
         assert abs(float(ff.X.max()) - 1.0) < 1e-6   # row-normalised
+        assert ff.clip_negative is True and ff.normalize == "max"
+        assert ff.preprocessing()["source"] == "clean"
         # residual source resolves too
         ffr = mf.frame_features(h5, source="residual")
         assert ffr.source == "residual" and ffr.X.shape == (2, 3501)
+        # every advertised source resolves (build_fit_source doesn't compose
+        # robust/baseline/spot_residual — they must be read directly). _write_analysis
+        # already wrote clean/baseline/spot_residual.
+        for s in ("robust", "baseline", "spot_residual", "clean", "hybrid", "mean"):
+            assert mf.frame_features(h5, source=s).X.shape == (2, 3501), s
+
+
+def test_clip_negative():
+    """The residual can go negative; clipping floors it so cosine ranking isn't
+    distorted by holes the non-negative candidate fingerprints can't have."""
+    import h5py
+    q = np.linspace(1.0, 7.0, 400)
+    clean = pseudo_voigt(q, 3.0, 100, 0.05, 0.5)[None, :].astype("f4")
+    with tempfile.TemporaryDirectory() as td:
+        h5 = Path(td) / "an.h5"
+        with h5py.File(str(h5), "w") as f:
+            f.attrs["unit"] = "q_A^-1"; f.create_dataset("radial", data=q)
+            gb = f.create_group("background"); gb.create_dataset("clean", data=clean)
+            gp = f.create_group("peaks"); gp.attrs["source"] = "clean"
+            gp.create_dataset("frame", data=np.array([0], "i4"))
+            gp.create_dataset("flag", data=np.zeros(1, "i4"))
+            f.create_group("frames").create_dataset("excluded", data=np.zeros(1, "?"))
+            f.create_group("residual").create_dataset("clean", data=(clean - 30.0).astype("f4"))
+        assert float(mf.frame_features(h5, source="residual", clip_negative=True).X.min()) >= 0.0
+        assert float(mf.frame_features(h5, source="residual", clip_negative=False).X.min()) < 0.0
 
 
 def test_augmented_dataset():
@@ -138,10 +165,103 @@ def test_rank_candidates_and_shortlist():
         assert man2["candidates"] == ["Au"]
 
 
+def test_axial_ranking():
+    """Regression: the ranker simulates with the anisotropic predicted_d, so an
+    axial-only phase is matched at its true compressed positions — not frozen at
+    ambient (which the old isotropic scale_at_pressure produced)."""
+    import h5py
+    Lc = {"a": 4.0, "b": 4.0, "c": 6.0, "alpha": 90, "beta": 90, "gamma": 90}
+    H = np.array([[1, 0, 0], [0, 0, 1], [1, 1, 0], [1, 0, 1], [0, 0, 2], [2, 0, 0]], float)
+    hkl = ["(1, 0, 0)", "(0, 0, 1)", "(1, 1, 0)", "(1, 0, 1)", "(0, 0, 2)", "(2, 0, 0)"]
+    d0 = idf._d_from_lattice(H, Lc)
+    w = np.ones(d0.size)
+    tet = Phase(name="Tet", lattice=Lc,
+                axial_eos={"a": {"type": "BM3", "K0": 300, "K0p": 4},
+                           "c": {"type": "BM3", "K0": 100, "K0p": 4}})
+    iso = Phase(name="Iso", lattice=Lc, eos={"type": "BM3", "K0": 180, "K0p": 4})
+    refl = {"Tet": (d0, w, hkl), "Iso": (d0, w, hkl)}
+
+    P = 20.0
+    centers_d = idf.predicted_d(tet, d0, [idf._parse_hkl(h) for h in hkl], P)  # anisotropic obs
+    q = np.linspace(1.0, 7.0, 1500)
+    row = np.zeros(q.size)
+    for c, a in zip(2 * np.pi / centers_d, w):
+        if q[0] <= c <= q[-1]:
+            row += pseudo_voigt(q, c, a * 100, 0.04, 0.5)
+    stack = np.stack([row, row]).astype("f4")
+    with tempfile.TemporaryDirectory() as td:
+        h5 = Path(td) / "an.h5"
+        with h5py.File(str(h5), "w") as f:
+            f.attrs["unit"] = "q_A^-1"; f.create_dataset("radial", data=q)
+            gb = f.create_group("background"); gb.create_dataset("clean", data=stack)
+            gp = f.create_group("peaks"); gp.attrs["source"] = "clean"
+            gp.create_dataset("frame", data=np.array([0, 1], "i4"))
+            gp.create_dataset("flag", data=np.zeros(2, "i4"))
+            gf = f.create_group("frames")
+            gf.create_dataset("pressure", data=np.array([P, P]))
+            gf.create_dataset("excluded", data=np.zeros(2, "?"))
+        man = mr.rank_candidates(h5, [tet, iso], reflections=refl, top_k=2, fwhm_d=0.04)
+        rc = mr.read_candidates(h5)
+        # The axial phase matches its anisotropically-compressed lines; the
+        # isotropic competitor (same ambient lines) lands elsewhere at 20 GPa.
+        assert rc["phases"]["Tet"]["score"][0] > 0.8, rc["phases"]["Tet"]["score"][0]
+        assert rc["phases"]["Tet"]["score"][0] > rc["phases"]["Iso"]["score"][0]
+        assert man["candidates"][0] if False else rc["topk_names"][0][0] == "Tet"
+
+
+def test_worker_ml_rank_candidate_free():
+    """--ml-rank / run_ml_rank must NOT require preselected candidates: it ranks
+    the whole library and verifies the top-K."""
+    import h5py
+    from bulkxrd.analysis import worker as W
+    with tempfile.TemporaryDirectory() as td:
+        h5 = Path(td) / "an.h5"
+        with h5py.File(str(h5), "w") as f:
+            f.attrs["unit"] = "q_A^-1"; f.attrs["source_reduced"] = "s"
+            f.create_dataset("radial", data=np.linspace(1, 8, 10))
+            f.create_group("background").create_dataset("clean", data=np.zeros((1, 10), "f4"))
+            gp = f.create_group("peaks")
+            for k in ("counts", "frame", "center", "flag"):
+                gp.create_dataset(k, data=np.zeros(0 if k != "counts" else 1, "i4"))
+            gf = f.create_group("frames")
+            gf.create_dataset("pressure", data=np.array([20.0]))
+            gf.create_dataset("excluded", data=np.zeros(1, "?"))
+        lib = {"Au": Phase(name="Au", eos={"type": "BM3", "K0": 167, "K0p": 5.0}),
+               "Re": Phase(name="Re")}
+        saved = (W.load_library, W.pymatgen_available, W.rank_candidates,
+                 W.run_identification, W.run_residual)
+        cap = {}
+        W.load_library = lambda ws: lib
+        W.pymatgen_available = lambda: True
+        W.rank_candidates = lambda path, pool, **k: {"candidates": ["Au"], "n_frames": 1}
+        W.run_identification = lambda path, phases, **k: (
+            cap.__setitem__("v", [p.name for p in phases])
+            or {"out_h5": str(path), "summary": {}, "phases": [p.name for p in phases]})
+        W.run_residual = lambda path, phases, **k: {"out_h5": str(path)}
+        try:
+            # No candidate_phases, identify_all off, run_ml_rank on -> must not raise.
+            man = W.run_analysis({"analysis_h5_file": str(h5), "run_step1": False,
+                                  "run_step2": False, "run_step3": True, "run_ml_rank": True})
+            assert "ml_rank" in man["steps"] and cap["v"] == ["Au"]
+            # And without ml-rank or candidates it still errors helpfully.
+            try:
+                W.run_analysis({"analysis_h5_file": str(h5), "run_step1": False,
+                                "run_step2": False, "run_step3": True})
+                assert False, "expected ValueError without candidates"
+            except ValueError:
+                pass
+        finally:
+            (W.load_library, W.pymatgen_available, W.rank_candidates,
+             W.run_identification, W.run_residual) = saved
+
+
 def main() -> None:
     test_frame_features()
+    test_clip_negative()
     test_augmented_dataset()
     test_rank_candidates_and_shortlist()
+    test_axial_ranking()
+    test_worker_ml_rank_candidate_free()
     print("ML TEST OK")
 
 

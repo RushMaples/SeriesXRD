@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .phases import Phase
-from .identify import scale_at_pressure, phase_reflections
+from .identify import predicted_d, _parse_hkl, phase_reflections
 from .peaks import pseudo_voigt
 from .mldata import make_d_grid
 
@@ -199,8 +199,11 @@ def simulate_augmented_pattern(
     grid = d_grid / drift                              # global d-scale drift
     y = np.zeros_like(d_grid, dtype=float)
     for ph, P in zip(phases_present, pressures):
-        d0, w, _hkl = refls[ph.name]
-        centers = np.asarray(d0, float) * scale_at_pressure(ph, float(P))
+        d0, w, hkl = refls[ph.name]
+        hkls = [_parse_hkl(h) for h in hkl] if hkl else None
+        # Same anisotropic compression model as Step 3a (predicted_d), so an
+        # axial-only phase shifts correctly instead of staying at ambient.
+        centers = predicted_d(ph, np.asarray(d0, float), hkls, float(max(P, 0.0)))
         y += render_phase(grid, centers, w, fwhm_d=fwhm, eta=eta,
                           drop_frac=_u(rng, cfg.drop_frac),
                           intensity_jitter=cfg.intensity_jitter, rng=rng)
