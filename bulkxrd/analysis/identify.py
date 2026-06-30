@@ -368,8 +368,11 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
 
     has_prior = (p_prior is not None and np.isfinite(p_prior))
     has_eos = phase.has_eos() or has_axial_eos(phase)
-    # Penalty tolerance only when both a prior and a pressure d.o.f. exist.
-    pen_prior = float(p_prior) if (has_prior and has_eos) else None
+    # The pressure-prior penalty applies whenever a frame pressure is known —
+    # including for no-EOS phases. A no-EOS phase is scored at ambient (0 GPa);
+    # on a genuinely high-pressure frame that disagrees with the prior, so its
+    # confidence is dragged down rather than letting it falsely match as ambient.
+    pen_prior = float(p_prior) if has_prior else None
     pen_tol = float(p_window) if (p_window and p_window > 0) else None
 
     def _score_P(P):
@@ -663,6 +666,20 @@ def run_identification(
             for j in range(n)], dtype="f8")
         print(f"[IDENTIFY] pressure prior on {n_prior}/{n} frames "
               f"(window ±{pressure_window} GPa or {pressure_sigma_k}σ)", flush=True)
+        # Auto-widen the global search range to cover the metadata pressures (+window).
+        # Otherwise a frame whose prior sits outside [p_min, p_max] would clamp its
+        # search to the boundary while the prior penalty still measures against the
+        # true prior — collapsing confidence to ~0 for an otherwise-correct phase.
+        finite_prior = prior_pressure[np.isfinite(prior_pressure)]
+        wmax = float(np.nanmax(windows))
+        need_lo = max(0.0, float(finite_prior.min()) - wmax)
+        need_hi = float(finite_prior.max()) + wmax
+        if need_lo < p_min or need_hi > p_max:
+            new_lo, new_hi = min(p_min, need_lo), max(p_max, need_hi)
+            print(f"[IDENTIFY] WARNING: widening pressure range "
+                  f"[{p_min:g},{p_max:g}] -> [{new_lo:g},{new_hi:g}] GPa to cover the "
+                  f"frame-metadata pressures (+window).", flush=True)
+            p_min, p_max = new_lo, new_hi
     else:
         prior_pressure = None
         windows = None

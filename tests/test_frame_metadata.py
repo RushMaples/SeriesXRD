@@ -125,6 +125,29 @@ def test_apply_roundtrip_and_partial_overwrite():
             pass
 
 
+def test_partial_csv_merges_not_erases():
+    """A correction sheet for a few frames must merge, not wipe the rest."""
+    import h5py
+    names = ["a-1GPa.tif", "b-2GPa.tif", "c-3GPa.tif", "d-4GPa.tif"]
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "an.h5"
+        _make_analysis(p, names)
+        fm.extract_to_analysis(p)                       # [1,2,3,4] from filenames
+        assert np.allclose(fm.read_frame_metadata(p)["pressure"], [1, 2, 3, 4])
+
+        # partial CSV for only frame 1 -> merge: only frame 1 changes
+        csv = Path(td) / "fix.csv"
+        csv.write_text("frame,pressure_gpa\n1,99.0\n")
+        man = fm.import_csv_to_analysis(p, csv)          # default merge
+        assert man["n_mapped"] == 1
+        assert np.allclose(fm.read_frame_metadata(p)["pressure"], [1, 99, 3, 4])
+
+        # replace=True wipes everything not in the CSV to NaN
+        fm.import_csv_to_analysis(p, csv, replace=True)
+        pr = fm.read_frame_metadata(p)["pressure"]
+        assert pr[1] == 99.0 and np.isnan(pr[0]) and np.isnan(pr[2]) and np.isnan(pr[3])
+
+
 def test_background_step1_carries_metadata():
     """Step 1 copies temperature/timestamp and backfills pressure from filenames
     when the reduced placeholder is all-NaN."""
@@ -165,6 +188,7 @@ def main() -> None:
     test_extract_and_summary()
     test_csv_by_frame_and_filename()
     test_apply_roundtrip_and_partial_overwrite()
+    test_partial_csv_merges_not_erases()
     test_background_step1_carries_metadata()
     print("FRAME METADATA TEST OK")
 

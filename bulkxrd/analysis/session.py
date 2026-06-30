@@ -71,8 +71,10 @@ _DEFAULTS = {
     "identify_wavelength": "",  # Å; blank = auto-read from reduced PONI (2θ data only)
     # Frame metadata (pressure prior). pressure is auto-parsed from filenames at
     # Step 1; a CSV here overrides it before Step 3 (frame|filename, pressure_gpa
-    # [, pressure_sigma_gpa, temperature_K]).
+    # [, pressure_sigma_gpa, temperature_K]). The CSV merges (only the frames it
+    # provides). A failed import is fatal unless pressure_csv_required is False.
     "pressure_csv": "",
+    "pressure_csv_required": True,
     # Step 3a pressure prior + evidence — the DAC accuracy controls.
     "use_pressure_prior": True,    # confine each phase's fit to the frame's pressure ± window
                                    # (turns pressure from a free per-phase parameter into a prior).

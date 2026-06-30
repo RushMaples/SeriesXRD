@@ -141,11 +141,72 @@ def _test_evidence_gate():
         assert m["n_explained"] == 1, m
 
 
+def _test_attribute_one_to_one():
+    """One predicted line must not explain a whole cluster of observed peaks —
+    only the nearest; the rest survive into the residual (split/overlap/unknown)."""
+    obs = np.array([2.090, 2.095, 1.257])       # two peaks straddle one A line
+    preds = {"A": np.array([2.091]), "B": np.array([1.258])}
+    labels, explained = attribute_peaks(obs, preds, rel_tol=0.01)
+    assert explained.tolist() == [True, False, True], (labels, explained)
+    assert labels == ["A", "", "B"], labels
+    # The nearer of the two (2.090, gap .001) wins; the farther (2.095) survives.
+
+
+def _test_residual_uses_fit_source():
+    """Peaks fit on sigmaclip must be subtracted from sigmaclip, not the median
+    clean — otherwise an amplitude fit on the (taller) trimmed mean digs a deep
+    negative hole in clean."""
+    import h5py
+    from bulkxrd.analysis.identify import _h5_safe
+    x = np.linspace(2.0, 8.0, 2000)              # q (Å^-1)
+    clean = pseudo_voigt(x, 3.0, 50.0, 0.05, 0.5)[None, :].astype("f4")
+    sigmaclip = pseudo_voigt(x, 3.0, 100.0, 0.05, 0.5)[None, :].astype("f4")
+    sc_resid = (sigmaclip - clean).astype("f4")  # sigmaclip = clean + residual
+    phase = Phase(name="KnownX")
+    with tempfile.TemporaryDirectory() as td:
+        h5p = Path(td) / "an.h5"
+        with h5py.File(h5p, "w") as o:
+            o.attrs["unit"] = "q_A^-1"
+            o.create_dataset("radial", data=x)
+            gb = o.create_group("background")
+            gb.create_dataset("clean", data=clean)
+            gb.create_dataset("sigmaclip_residual", data=sc_resid)
+            gp = o.create_group("peaks")
+            gp.attrs["source"] = "sigmaclip"         # peaks were fit on sigmaclip
+            gp.create_dataset("counts", data=np.array([1], "i4"))
+            gp.create_dataset("frame", data=np.array([0], "i4"))
+            gp.create_dataset("center", data=np.array([3.0], "f8"))
+            gp.create_dataset("amplitude", data=np.array([100.0], "f8"))  # fit on sigmaclip
+            gp.create_dataset("fwhm", data=np.array([0.05], "f8"))
+            gp.create_dataset("eta", data=np.array([0.5], "f8"))
+            gp.create_dataset("flag", data=np.array([0], "i4"))
+            idg = o.create_group("identify"); idg.attrs["wavelength"] = 0.0
+            g = idg.create_group(_h5_safe("KnownX"))
+            g.create_dataset("confidence", data=np.array([1.0], "f8"))
+            g.create_dataset("pressure", data=np.array([0.0], "f8"))
+            g.create_dataset("n_matched", data=np.array([5], "i4"))
+            g.create_dataset("refl_d", data=np.array([2.0 * np.pi / 3.0]))
+            g.create_dataset("refl_hkl", data=np.array(["(1, 1, 1)"], dtype=object),
+                             dtype=h5py.string_dtype(encoding="utf-8"))
+        m = run_residual(h5p, [phase], seen_conf=0.5, rel_tol=0.01, min_snr=5.0, min_matched=3)
+        assert m["fit_source"] == "sigmaclip", m
+        with h5py.File(h5p, "r") as h5:
+            res = np.asarray(h5["residual/clean"][0], float)
+            assert str(h5["residual"].attrs["source"]) == "sigmaclip"
+        near3 = np.abs(x - 3.0) < 0.02
+        # Subtracting amp-100 from sigmaclip(=100) leaves ~0; subtracting from
+        # clean(=50) would leave a ~-50 hole. Assert no deep negative hole.
+        assert res[near3].min() > -5.0, f"negative hole -> wrong base: min={res[near3].min()}"
+        assert np.max(np.abs(res[near3])) < 5.0, "explained peak not cleanly removed"
+
+
 def main() -> None:
     _test_attribute_peaks()
+    _test_attribute_one_to_one()
     _test_subtract_peaks()
     _test_run_residual_end_to_end()
     _test_evidence_gate()
+    _test_residual_uses_fit_source()
     print("RESIDUAL TEST OK")
 
 

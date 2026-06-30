@@ -41,6 +41,27 @@ def _open(path):
     return h5py.File(str(Path(path).expanduser()), "r")
 
 
+def _peaks_fit_source(h5) -> np.ndarray:
+    """Reconstruct the channel Step 2 fit the peaks on (``/peaks.attrs source``),
+    falling back to ``clean`` when a needed residual channel is missing. Phase
+    layers must integrate this same source — integrating ``clean`` would
+    under-report textured/spotty rings the median dropped but the fit kept."""
+    bg = h5.get("background")
+    clean = np.asarray(bg["clean"][:], dtype=float)
+    pkg = h5.get("peaks")
+    want = str(pkg.attrs.get("source", "clean")) if pkg is not None else "clean"
+    spike = int(pkg.attrs.get("hybrid_spike_bins", 5)) if pkg is not None else 5
+    spot = np.asarray(bg["spot_residual"][:], dtype=float) if "spot_residual" in bg else None
+    sc = np.asarray(bg["sigmaclip_residual"][:], dtype=float) if "sigmaclip_residual" in bg else None
+    from .peaks import build_fit_source
+    try:
+        data, _ = build_fit_source(want, clean, spot_residual=spot, sigmaclip_residual=sc,
+                                   hybrid_spike_bins=spike)
+        return np.asarray(data, dtype=float)
+    except ValueError:
+        return clean
+
+
 def _frame_pressure(h5) -> "Optional[np.ndarray]":
     """Per-frame metadata pressure (GPa) from ``/frames/pressure``, or None when
     absent / entirely NaN (i.e. nothing was parsed or imported)."""
@@ -267,10 +288,11 @@ def phase_layers(analysis_h5: "str | Path", phases: "Sequence[Phase]", *,
                  rel_tol: float = 0.01, max_reflections: int = 12) -> Dict[str, Any]:
     """Per-substance ROI-integrated intensity F(I) vs frame (Hrubiak Eq. 1).
 
-    For each phase and frame, integrate the ``clean`` pattern over a narrow window
-    (±rel_tol·center) around each predicted reflection (positioned by the phase's
-    Step-3a pressure track) and sum — giving one intensity curve per phase, the
-    filterable "layer" / false-color composite source.
+    For each phase and frame, integrate the Step-2 **fit source** (``/peaks.attrs
+    source`` — auto→sigmaclip/hybrid by default, not the median ``clean``) over a
+    narrow window (±rel_tol·center) around each predicted reflection (positioned by
+    the phase's Step-3a pressure track) and sum — giving one intensity curve per
+    phase, the filterable "layer" / false-color composite source.
 
     Returns ``{ok, error, unit, n_frames, layers}`` with ``layers`` a list of
     ``{name, category, intensity, n_pred}`` (intensity length n_frames, max-
@@ -289,11 +311,11 @@ def phase_layers(analysis_h5: "str | Path", phases: "Sequence[Phase]", *,
             if bg is None or "clean" not in bg:
                 out["error"] = "No /background/clean — run Step 1 first."
                 return out
-            clean = np.asarray(bg["clean"][:], dtype=float)
-            radial = np.asarray(h5["radial"][:], dtype=float)
             if h5.get("identify") is None:
                 out["error"] = "No /identify — run Step 3a first for phase layers."
                 return out
+            clean = _peaks_fit_source(h5)          # integrate the fit source, not median clean
+            radial = np.asarray(h5["radial"][:], dtype=float)
         n = clean.shape[0]
         order = np.argsort(radial)
         rsorted = radial[order]

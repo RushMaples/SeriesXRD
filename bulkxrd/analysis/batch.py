@@ -50,6 +50,19 @@ def _run(args) -> int:
               f"{analysis_path!r} (run step 1 or pass --out)", flush=True)
         return 1
 
+    # Optional pressure-CSV import onto /frames before Step 3 (the metadata seam).
+    # Filenames are already parsed at Step 1; a CSV merges/overrides. Fatal on
+    # failure — the user supplied an explicit prior.
+    if args.pressure_csv:
+        from .frame_metadata import import_csv_to_analysis
+        try:
+            mm = import_csv_to_analysis(analysis_path, args.pressure_csv)
+            print(f"[ANALYZE] imported pressure CSV ({mm.get('n_mapped')} frames): "
+                  f"{mm.get('summary')}", flush=True)
+        except Exception as e:
+            print(f"[ERROR] pressure CSV import failed: {e}", flush=True)
+            return 1
+
     if "2" in steps:
         run_peak_fitting(
             analysis_path, None,
@@ -80,7 +93,20 @@ def _run(args) -> int:
         run_identification(
             analysis_path, phases,
             wavelength=args.wavelength, p_min=args.p_min, p_max=args.p_max,
-            rel_tol=args.rel_tol, num_workers=args.workers)
+            rel_tol=args.rel_tol, num_workers=args.workers,
+            use_frame_pressure=not args.no_pressure_prior,
+            pressure_window=args.pressure_window,
+            pressure_sigma_k=args.pressure_sigma_k,
+            min_matched=args.min_matched,
+            marker_prior=args.marker_prior)
+
+        # Remove identified phases and re-fit the residual (Step 3a removal), so a
+        # headless run produces the same /residual the GUI/worker does.
+        from .residual import run_residual
+        run_residual(
+            analysis_path, phases,
+            seen_conf=args.seen_conf, rel_tol=args.rel_tol, min_snr=(args.min_snr or 5.0),
+            min_matched=args.min_matched, allow_sparse=args.allow_sparse)
 
     if args.ml_export:
         from .mldata import export_ml_dataset
@@ -133,6 +159,24 @@ def main(argv: "list[str] | None" = None) -> int:
     p.add_argument("--p-min", type=float, default=0.0)
     p.add_argument("--p-max", type=float, default=100.0)
     p.add_argument("--rel-tol", type=float, default=0.01)
+    p.add_argument("--seen-conf", type=float, default=0.5,
+                   help="Confidence bar for 'phase present in frame' (and residual removal).")
+    # Frame-pressure prior + evidence (the DAC accuracy controls).
+    p.add_argument("--pressure-csv", default="",
+                   help="CSV (frame|filename, pressure_gpa[, pressure_sigma_gpa, "
+                        "temperature_K]) imported onto /frames before Step 3 (merges).")
+    p.add_argument("--no-pressure-prior", action="store_true",
+                   help="Ignore /frames/pressure; use the full p_min..p_max free search.")
+    p.add_argument("--pressure-window", type=float, default=2.0,
+                   help="GPa half-window for the prior where no per-frame sigma is known.")
+    p.add_argument("--pressure-sigma-k", type=float, default=2.0,
+                   help="Window half-width = k·sigma where a pressure_sigma is present.")
+    p.add_argument("--marker-prior", action="store_true",
+                   help="With no metadata pressure, estimate it from marker phases first.")
+    p.add_argument("--min-matched", type=int, default=3,
+                   help="Min one-to-one matched reflections to call a phase present. Default 3.")
+    p.add_argument("--allow-sparse", action="store_true",
+                   help="Permit phases below --min-matched to be subtracted in the residual.")
     # ML export
     p.add_argument("--ml-export", default="", help="Also export an ML .npz to this path.")
     p.add_argument("--ml-channels", default="clean,spot_residual",

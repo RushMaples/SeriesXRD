@@ -418,26 +418,50 @@ def apply_to_analysis(analysis_h5: "str | Path", *,
             "n_temperature": _count(temp)}
 
 
-def extract_to_analysis(analysis_h5: "str | Path") -> Dict[str, Any]:
+def _merge(new: np.ndarray, existing: "Optional[np.ndarray]") -> np.ndarray:
+    """Overwrite only where ``new`` is finite; keep ``existing`` elsewhere."""
+    new = np.asarray(new, dtype="f8")
+    if existing is None:
+        return new
+    existing = np.asarray(existing, dtype="f8")
+    return np.where(np.isfinite(new), new, existing)
+
+
+def extract_to_analysis(analysis_h5: "str | Path", *, replace: bool = False
+                        ) -> Dict[str, Any]:
     """Convenience: parse pressures from the file's own ``/frames/filename`` and
-    write them back to ``/frames/pressure``. Returns the apply manifest plus a
-    ``summary`` of how many frames were parsed."""
+    write them to ``/frames/pressure``.
+
+    ``replace=False`` (default) **merges**: only frames whose filename actually
+    carries a pressure are overwritten, so a value already imported for a frame
+    whose filename has no pressure token is preserved. ``replace=True`` wipes the
+    whole channel (frames without a parsed pressure become NaN). Returns the apply
+    manifest plus a ``summary`` of the resulting pressures.
+    """
     meta = read_frame_metadata(analysis_h5)
     if not meta["ok"]:
         raise ValueError(meta["error"] or "Could not read frame metadata.")
     if not meta["filename"]:
         raise ValueError("Analysis file has no /frames/filename to parse pressures from.")
-    pressures = extract_pressures(meta["filename"])
+    parsed = extract_pressures(meta["filename"])
+    pressures = parsed if replace else _merge(parsed, meta["pressure"])
     man = apply_to_analysis(analysis_h5, pressure=pressures)
     man["summary"] = summarize_pressures(pressures)
+    man["n_parsed_from_names"] = int(np.sum(np.isfinite(parsed)))
     return man
 
 
-def import_csv_to_analysis(analysis_h5: "str | Path", csv_path: "str | Path"
-                           ) -> Dict[str, Any]:
+def import_csv_to_analysis(analysis_h5: "str | Path", csv_path: "str | Path", *,
+                           replace: bool = False) -> Dict[str, Any]:
     """Convenience: read a pressure CSV and write its channels onto the file's
-    frames (matched by frame index or filename). Returns the apply manifest plus
-    the CSV parse result under ``csv``."""
+    frames (matched by frame index or filename).
+
+    ``replace=False`` (default) **merges**: only frames the CSV actually provides
+    are overwritten — a partial correction sheet for a few frames will not erase
+    the pressures of every other frame. ``replace=True`` writes the mapped array
+    verbatim (frames absent from the CSV become NaN). Returns the apply manifest
+    plus the CSV parse result under ``csv``.
+    """
     meta = read_frame_metadata(analysis_h5)
     if not meta["ok"]:
         raise ValueError(meta["error"] or "Could not read frame metadata.")
@@ -445,11 +469,19 @@ def import_csv_to_analysis(analysis_h5: "str | Path", csv_path: "str | Path"
     if not parsed["ok"]:
         raise ValueError(parsed["error"] or "Could not read CSV.")
     mapped = map_csv_to_frames(parsed["rows"], meta["filename"], meta["n_frames"])
+    pressure = mapped["pressure"]
     # Only write sigma/temperature if the CSV actually carried them.
     psig = mapped["pressure_sigma"] if np.any(np.isfinite(mapped["pressure_sigma"])) else None
     temp = mapped["temperature"] if np.any(np.isfinite(mapped["temperature"])) else None
-    man = apply_to_analysis(analysis_h5, pressure=mapped["pressure"],
+    if not replace:
+        pressure = _merge(pressure, meta["pressure"])
+        if psig is not None:
+            psig = _merge(psig, meta["pressure_sigma"])
+        if temp is not None:
+            temp = _merge(temp, meta["temperature"])
+    man = apply_to_analysis(analysis_h5, pressure=pressure,
                             pressure_sigma=psig, temperature=temp)
     man["csv"] = {"columns": parsed["columns"], "n_rows": len(parsed["rows"])}
-    man["summary"] = summarize_pressures(mapped["pressure"])
+    man["n_mapped"] = int(np.sum(np.isfinite(mapped["pressure"])))
+    man["summary"] = summarize_pressures(pressure)
     return man
