@@ -76,6 +76,13 @@ from .mldata import (
     build_simulated_dataset,
     export_simulated_dataset,
 )
+from .ml_features import FrameFeatures, frame_features
+from .ml_simulate import (
+    AugmentConfig,
+    build_augmented_dataset,
+    export_augmented_dataset,
+)
+from .ml_rank import rank_candidates, read_candidates, score_phase
 from .session import seed_analysis_config, analysis_config_path
 from .phases import (
     Phase,
@@ -113,6 +120,9 @@ __all__ = [
     "make_d_grid", "resample_to_d", "export_ml_dataset",
     "simulate_training_pattern", "build_simulated_dataset",
     "export_simulated_dataset",
+    "FrameFeatures", "frame_features",
+    "AugmentConfig", "build_augmented_dataset", "export_augmented_dataset",
+    "rank_candidates", "read_candidates", "score_phase",
     "seed_analysis_config", "analysis_config_path",
     "Phase", "load_bundled", "load_library", "list_phases",
     "upsert_user_phase", "remove_user_phase", "import_cif", "parse_cif",

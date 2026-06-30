@@ -84,6 +84,12 @@ _DEFAULTS = {
                                    # then reuse that as the prior for all other phases.
     "min_matched": "3",            # min one-to-one matched reflections to call a phase "present"
     "allow_sparse": False,         # permit marker/sparse phases below min_matched in the residual
+    # Step 3b proposer: ML candidate ranking. Ranks the whole library against each
+    # frame (deterministic cosine vs simulated pattern at the frame pressure) and
+    # verifies only the top-K with Step 3a — "ML proposes, physics verifies".
+    "run_ml_rank": False,
+    "ml_rank_top_k": "5",
+    "ml_rank_source": "auto",      # auto|residual|fit — what to rank against
     # Parallelism: 0 = auto (CPU count − 1), 1 = serial, N = N processes.
     "num_workers": "0",
 }

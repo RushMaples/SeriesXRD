@@ -90,6 +90,17 @@ def _run(args) -> int:
         if not phases:
             print("[ERROR] none of the requested phases resolve in the library.", flush=True)
             return 1
+
+        # ML candidate ranking (Step 3b proposer): rank the whole library, verify
+        # only the top-K below ("ML proposes, physics verifies").
+        if args.ml_rank:
+            from .ml_rank import rank_candidates
+            mrank = rank_candidates(analysis_path, list(lib.values()),
+                                    source=args.ml_rank_source, top_k=args.ml_rank_top_k)
+            shortlist = [lib[n] for n in mrank["candidates"] if n in lib]
+            if shortlist:
+                phases = shortlist
+                print(f"[ANALYZE] ML ranker shortlist: {[p.name for p in shortlist]}", flush=True)
         run_identification(
             analysis_path, phases,
             wavelength=args.wavelength, p_min=args.p_min, p_max=args.p_max,
@@ -179,6 +190,14 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="Min one-to-one matched reflections to call a phase present. Default 3.")
     p.add_argument("--allow-sparse", action="store_true",
                    help="Permit phases below --min-matched to be subtracted in the residual.")
+    # Step 3b proposer
+    p.add_argument("--ml-rank", action="store_true",
+                   help="Rank the whole library per frame (deterministic cosine vs simulated "
+                        "pattern at the frame pressure) and verify only the top-K with Step 3a.")
+    p.add_argument("--ml-rank-top-k", type=int, default=5,
+                   help="How many ranked candidates per frame to verify. Default 5.")
+    p.add_argument("--ml-rank-source", default="auto",
+                   help="What to rank against: auto|residual|fit. Default auto.")
     # ML export
     p.add_argument("--ml-export", default="", help="Also export an ML .npz to this path.")
     p.add_argument("--ml-channels", default="clean,spot_residual",

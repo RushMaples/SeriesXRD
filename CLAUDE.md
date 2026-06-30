@@ -29,6 +29,10 @@ bulkxrd/
     identify.py     Step 3a — pressure-aware EOS matching (consumes the prior)
     residual.py     Step 3a removal — evidence-gated subtraction + residual re-fit
     heatmap.py      waterfall + reflection tracks + per-phase layers
+    mldata.py       d-grid resample + ML export + clean pressure-shift simulation
+    ml_features.py  Step 3b — analysis HDF5 → model-ready frame features
+    ml_simulate.py  Step 3b — pressure-conditioned simulator + DAC augmentations
+    ml_rank.py      Step 3b — deterministic candidate ranker (ML proposes, physics verifies)
     categorization.py  user's workflow spec (read-only notes)
   app.py         top-level launcher that embeds all stages
 tests/
@@ -150,6 +154,28 @@ weaker/unknown features. **Open-set ID**: `identify_all_phases=True` scores the 
 library per frame (no candidate pre-selection); "library" = bundled + user phases, not
 all of ICSD/MP.
 
+### Step 3b proposer appended by `analysis/ml_rank.py`
+
+```
+/ml/candidates  attrs: source (residual|fit), top_k, method=cosine, fwhm_d, phases
+/ml/candidates/<phase>/score    (N,)  per-frame cosine similarity to the phase
+/ml/candidates/<phase>/pressure (N,)  pressure the best score used
+/ml/candidates/topk_names  (N, top_k) str   ranked candidate names per frame
+/ml/candidates/topk_score  (N, top_k)       their scores
+```
+
+**ML proposes, physics verifies** (DARA/RADAR-PD). `ml_rank.rank_candidates` ranks the
+*whole* library against each frame — cosine of the measured pattern (the `residual` by
+default, RADAR-PD-style; else the Step-2 fit source) vs each phase simulated at that
+frame's pressure (the metadata prior = the lattice-nudge analog). The union of per-frame
+top-K is fed to `run_identification` as the candidate set (worker/`batch --ml-rank`), so
+the deterministic matcher only *verifies* a shortlist. The v1 ranker is pure-numpy (no
+torch); a learned RADAR-PD-style scorer slots in behind `bulkxrd[ml]` later.
+`ml_features.frame_features` builds the model input (d-grid resample of a chosen source +
+pressure/contamination/peaks/excluded); `ml_simulate` builds the DAC-augmented training set
+(mixtures, EOS shift, texture, broadening, drift, diamond spikes, background humps,
+truncation, noise) on the same grid.
+
 All HDF5 writes are atomic: `.tmp` file + `os.replace`.
 
 ---
@@ -162,7 +188,10 @@ Step 2 DONE  peaks.py        pseudo-Voigt peak/profile fitting
 Step 3 compound ID:
     3a  DONE  Deterministic EOS matching, pressure-aware (frame_metadata prior),
               one-to-one match, evidence gate, residual removal
-    3b  TODO  ML on simulated patterns (SimXRD-4M approach + pressure augmentation)
+    3b  IN PROGRESS  ML proposes → physics verifies (DARA/RADAR-PD seam):
+        ml_features (frame→d-grid features), ml_simulate (DAC-augmented training
+        set), ml_rank (DONE: deterministic cosine ranker → /ml/candidates top-K →
+        Step-3a verifier). Learned RADAR-PD-style model behind bulkxrd[ml]=torch: TODO.
     3c  TODO  Unknown clustering (co-occurrence of unmatched peak tracks)
 → per-substance heatmaps (pressure vs frame, filterable by phase)
 ```

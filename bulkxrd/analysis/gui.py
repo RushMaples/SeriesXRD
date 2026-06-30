@@ -2292,6 +2292,27 @@ class AnalysisApp:
         self.checkbox(frame, "allow_sparse",
                       "Allow sparse/marker-only matches in residual", row=13)
 
+        # -- Step 3b proposer: ML candidate ranking -----------------------
+        mlrow = ttk.Frame(frame)
+        mlrow.grid(row=14, column=0, columnspan=3, sticky="w", pady=(6, 2))
+        self.vars["run_ml_rank"] = tk.BooleanVar(value=bool(self.config.get("run_ml_rank", False)))
+        _mlcb = ttk.Checkbutton(
+            mlrow, text="ML candidate ranking (propose top-K from library, verify with Step 3a)",
+            variable=self.vars["run_ml_rank"])
+        _mlcb.pack(side="left")
+        _ToolTip(_mlcb, (
+            "Before the deterministic match, rank the WHOLE library against each frame "
+            "(cosine of the measured residual/fit pattern vs each phase simulated at the "
+            "frame's pressure) and verify only the top-K with Step 3a. 'ML proposes, "
+            "physics verifies.' Deterministic (no torch); needs pymatgen to simulate."))
+        ttk.Label(mlrow, text="top-K:", foreground=MUTED).pack(side="left", padx=(10, 2))
+        self.vars["ml_rank_top_k"] = tk.StringVar(value=str(self.config.get("ml_rank_top_k", "5")))
+        ttk.Entry(mlrow, textvariable=self.vars["ml_rank_top_k"], width=5).pack(side="left")
+        ttk.Label(mlrow, text="rank vs:", foreground=MUTED).pack(side="left", padx=(10, 2))
+        self.vars["ml_rank_source"] = tk.StringVar(value=str(self.config.get("ml_rank_source", "auto")))
+        ttk.Combobox(mlrow, textvariable=self.vars["ml_rank_source"],
+                     values=["auto", "residual", "fit"], state="readonly", width=8).pack(side="left")
+
         self._identify_help = ttk.Label(
             frame,
             text=(
@@ -2311,12 +2332,12 @@ class AnalysisApp:
             ),
             foreground=MUTED, justify="left", wraplength=640,
         )
-        self._identify_help.grid(row=15, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        self._identify_help.grid(row=16, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
         self._identify_help.grid_remove()   # collapsed by default → bigger plot
 
         # -- controls row -------------------------------------------------
         ctrl = ttk.Frame(frame)
-        ctrl.grid(row=14, column=0, columnspan=3, sticky="w", pady=(4, 2))
+        ctrl.grid(row=15, column=0, columnspan=3, sticky="w", pady=(4, 2))
 
         ttk.Button(ctrl, text="Load identification",
                    command=self.load_identify).pack(side="left", padx=4)
@@ -2340,8 +2361,8 @@ class AnalysisApp:
 
         # -- body: per-frame phase table (left) + plot (right) ------------
         body = ttk.Frame(frame)
-        body.grid(row=15, column=0, columnspan=3, sticky="nsew")
-        frame.rowconfigure(15, weight=1)
+        body.grid(row=16, column=0, columnspan=3, sticky="nsew")
+        frame.rowconfigure(16, weight=1)
         frame.columnconfigure(0, weight=1)
 
         # Left: a frame selector and a ranked table of phases for that frame.
