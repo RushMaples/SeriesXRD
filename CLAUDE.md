@@ -165,7 +165,9 @@ all of ICSD/MP.
 ```
 /ml/candidates  attrs: requested_source (auto|fit|residual|...), source (residual|fit),
                        resolved_source (actual channel, e.g. fit→sigmaclip), top_k,
-                       method (scorer name, default cosine), fwhm_d, phases,
+                       method (scorer name, default cosine), fwhm_d,
+                       fwhm_q (measured q-resolution used for candidate widths;
+                       NaN = constant-in-d fwhm_d fallback), phases,
                        clip_negative, normalize, n_points (ML preprocessing provenance)
 /ml/candidates/<phase>/score    (N,)  per-frame cosine similarity to the phase
 /ml/candidates/<phase>/pressure (N,)  pressure the best score used
@@ -192,6 +194,27 @@ scorer proposes, Step 3a still verifies.
 pressure/contamination/peaks/excluded); `ml_simulate` builds the DAC-augmented training set
 (mixtures, EOS shift, texture, broadening, drift, diamond spikes, background humps,
 truncation, noise) on the same grid.
+
+**Simulation physics conventions (post ML-readiness review):**
+- **Peak widths are q-constant, not d-constant** (`mldata.peak_fwhm_d`): resolution is
+  ~constant in q, so per-peak `Δd = d²·Δq/2π`. `rank_candidates(fwhm_q="auto")` measures
+  Δq from the Step-2 fitted peaks (`ml_rank.estimate_fwhm_q`); constant `fwhm_d` is the
+  fallback when too few good peaks exist. Recorded in `/ml/candidates` attrs.
+- **One pressure per simulated mixture** (`ml_simulate.draw_mixture_pressures`): all
+  phases of a training mixture share a single pressure, as in a real DAC frame
+  (independent per-phase pressures taught the scorer an unphysical manifold).
+- **EOS validity ceilings** (`eos["p_max"]`, `phases.valid_pressure_max`): identification
+  caps its pressure search there and every simulator/scorer clamps to it, so a
+  stability-limited entry (NaCl-B1 ≤30 GPa, Si ≤11 GPa in the baseline) is never fit or
+  trained beyond its transition.
+- **Training-only CIF corpus** (`bulkxrd-ml-train --cif-dir`): mixes external CIFs into
+  the training pool for pattern diversity without touching the library; entries lacking
+  an EOS get a synthetic random-K0 BM3 (the model learns similarity under compression,
+  not the K0). Validation pairs come from mixtures generated once with a disjoint seed
+  (no train/val mixture leakage); reflections are simulated once, not per epoch.
+- A trained scorer is used via `--ml-scorer torch:<model.pt>` (batch), the `ml_scorer`
+  worker-config key, or `rank_candidates(scorer=...)`. Full training/deployment guide:
+  `docs/ml-training-ris.md`.
 
 All HDF5 writes are atomic: `.tmp` file + `os.replace`.
 
@@ -300,7 +323,10 @@ Per substance (known phase label or "unknown cluster N"):
 
 ## Active branch
 
-`claude/tender-dirac-cn5dsj` — all Steps 1 and 2 committed here.
+`main` carries Steps 1–3a and the Step-3b scaffolding (all earlier `claude/*` work
+merged). Current work: `claude/ml-training-readiness-review-136udm` — ML-training
+readiness review fixes (q-constant simulation widths, shared mixture pressure, EOS
+validity ceilings, CIF training corpus, RIS guide).
 
 Notable earlier branches (not merged, potentially useful):
 - `claude/reduce-gallery` / `claude/reduce-gallery2` — cake matrix viewer (click-to-flag thumbnails). Backend verified, not merged. Adds ~350 lines to reduce stage (gui.py +209, processing.py +63, review.py +75, __init__.py +4).
@@ -309,7 +335,7 @@ Notable earlier branches (not merged, potentially useful):
 
 ## Key design decisions (don't relitigate)
 
-- **Fit in q, not 2θ**: peak width roughly constant in q → uniform window sizing across the pattern.
+- **Fit in q, not 2θ**: peak width roughly constant in q → uniform window sizing across the pattern. The reduce stage defaults to `q_A^-1` accordingly (2θ remains selectable; downstream handles both, but q needs no wavelength for d-conversion).
 - **Robust integration (quantile band, was median)**: the spot-suppressed channel is the mean of a narrow azimuthal quantile band (default 45–55%) around the median, via `medfilt1d_ng(quant_min, quant_max)` (fallbacks for older pyFAI). Same rejection story as a median — diamond spots occupy ≪45% of azimuth — but a **pure median of integer photon counts is quantized** (integer/half-integer levels), and because the median over hundreds of azimuthal pixels is nearly noise-free, low-count patterns rendered as clean staircases that `clean = robust − baseline` inherited. The band mean is continuous-valued. Robust remains the *baseline reference*, not the forced peak-fitting source — see Step 2 "Selectable fit source"; the reduce-side `sigma_clip_ng` trimmed mean keeps textured-ring intensity.
 - **SNIP window conservative**: set to ~1.5–2× the broadest Bragg peak half-width. Over-aggressive window erodes real broad peaks — true information loss, not reversible. Step 1 records the baseline so the original data is always recoverable.
 - **HDF5 atomic writes**: `.tmp` + `os.replace` throughout. Never partially-written files.

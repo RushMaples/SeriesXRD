@@ -192,7 +192,10 @@ def run_analysis(cfg: dict) -> dict:
                 mrank = rank_candidates(
                     out_path, pool,
                     source=str(cfg.get("ml_rank_source", "auto") or "auto").strip() or "auto",
-                    top_k=_as_int(cfg.get("ml_rank_top_k"), 5))
+                    top_k=_as_int(cfg.get("ml_rank_top_k"), 5),
+                    # 'cosine' (default) or 'torch:<model.pt>' — a trained
+                    # bulkxrd-ml-train export (see docs/ml-training-ris.md).
+                    scorer=(str(cfg.get("ml_scorer", "") or "").strip() or None))
                 manifest["ml_rank"] = mrank
                 manifest["steps"].append("ml_rank")
                 phases = [lib[n] for n in mrank["candidates"] if n in lib]

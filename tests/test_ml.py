@@ -365,6 +365,135 @@ def test_generate_pairs():
     assert mt.roc_auc(np.array([1, 1, 0, 0]), np.array([0.1, 0.2, 0.8, 0.9])) == 0.0
 
 
+def test_shared_mixture_pressure():
+    """All phases of one simulated mixture share ONE pressure (a real DAC frame
+    has a single pressure), clamped per phase to its validity ceiling."""
+    au = Phase(name="Au", eos={"type": "BM3", "K0": 167, "K0p": 5.0})
+    nacl = Phase(name="NaCl-B1", eos={"type": "BM3", "K0": 23.8, "K0p": 5.07,
+                                      "p_max": 30.0})
+    d0, w, hkl = _au_refl()
+    refl = {"Au": (d0, w, hkl), "NaCl-B1": (d0 * 1.1, w[::-1], hkl)}
+    _, _, _, P = ms.build_augmented_dataset(
+        [au, nacl], n_samples=60, max_phases_per_pattern=2, reflections=refl, seed=4)
+    two = np.isfinite(P).sum(axis=1) == 2
+    assert two.any(), "no 2-phase mixtures drawn"
+    for row in P[two]:
+        # Equal shared pressure, unless NaCl hit its 30 GPa validity ceiling.
+        assert row[0] == row[1] or (max(row) > 30.0 and min(row) == 30.0), row
+    assert float(np.nanmax(P)) <= 100.0
+
+    # draw_mixture_pressures clamps directly too.
+    rng = np.random.default_rng(0)
+    ps = ms.draw_mixture_pressures([au, nacl], np.array([80.0]), rng)
+    assert ps[0] == 80.0 and ps[1] == 30.0
+
+
+def test_q_constant_widths():
+    """fwhm_q renders q-constant peak widths: on the d-grid a high-d peak is
+    wider than a low-d one by (d2/d1)^2 — matching what a q-uniform detector
+    axis produces after resampling (constant fwhm_d does not)."""
+    from bulkxrd.analysis.mldata import peak_fwhm_d, simulate_training_pattern, make_d_grid
+    c = np.array([2.0, 6.0])
+    wq = peak_fwhm_d(c, fwhm_q=0.02)
+    assert np.isclose(wq[1] / wq[0], (6.0 / 2.0) ** 2)
+    wd = peak_fwhm_d(c, fwhm_d=0.03)
+    assert np.allclose(wd, 0.03)
+
+    grid = make_d_grid()
+    ph = Phase(name="X")
+    refl = (c, np.array([1.0, 1.0]), ["", ""])
+    y = simulate_training_pattern(ph, 0.0, grid, refl=refl, fwhm_q=0.02)
+
+    def _fwhm_at(center):
+        m = np.abs(grid - center) < 0.5 * center     # isolate the peak
+        yy = np.where(m, y, 0.0)
+        half = yy.max() / 2.0
+        above = grid[yy > half]
+        return above.max() - above.min()
+
+    assert _fwhm_at(6.0) / _fwhm_at(2.0) > 4.0       # ~9x in theory
+
+
+def test_estimate_fwhm_q():
+    """The ranker's width auto-estimate: median good-peak FWHM converted to q."""
+    import h5py
+    with tempfile.TemporaryDirectory() as td:
+        h5 = Path(td) / "an.h5"
+        with h5py.File(str(h5), "w") as f:
+            f.attrs["unit"] = "q_A^-1"
+            gp = f.create_group("peaks")
+            gp.create_dataset("center", data=np.full(6, 3.0))
+            gp.create_dataset("fwhm", data=np.array([0.02, 0.02, 0.03, 0.03, 0.04, 9.0]))
+            gp.create_dataset("flag", data=np.array([0, 0, 0, 0, 0, 1], "i4"))  # 9.0 flagged
+        est = mr.estimate_fwhm_q(h5)
+        assert est is not None and abs(est - 0.03) < 1e-9
+        # Too few good peaks -> None (fall back to constant fwhm_d).
+        with h5py.File(str(h5), "r+") as f:
+            f["peaks/flag"][...] = np.array([0, 0, 1, 1, 1, 1], "i4")
+        assert mr.estimate_fwhm_q(h5) is None
+        # 2theta axis converts via dq = (2pi/lambda) cos(theta) d2theta.
+        with h5py.File(str(h5), "r+") as f:
+            f.attrs["unit"] = "2th_deg"; f.attrs["wavelength"] = 0.4
+            f["peaks/center"][...] = np.full(6, 10.0)
+            f["peaks/fwhm"][...] = np.full(6, 0.05)
+            f["peaks/flag"][...] = np.zeros(6, "i4")
+        est2 = mr.estimate_fwhm_q(h5)
+        expect = (2 * np.pi / 0.4) * np.cos(np.radians(5.0)) * np.radians(0.05)
+        assert est2 is not None and abs(est2 - expect) < 1e-9
+
+
+def test_validity_ceiling():
+    """eos['p_max'] caps identification's pressure search and the scorers'
+    candidate pressures — a stability-limited phase (NaCl-B1, Si) can't be fit
+    or simulated beyond its transition."""
+    from bulkxrd.analysis.phases import valid_pressure_max, clamp_to_validity
+    from bulkxrd.analysis.ml_scorer import CosineScorer
+    au = Phase(name="Au", eos={"type": "BM3", "K0": 167, "K0p": 5.0})
+    nacl = Phase(name="NaCl-B1", eos={"type": "BM3", "K0": 23.8, "K0p": 5.07,
+                                      "p_max": 30.0})
+    assert valid_pressure_max(au) == float("inf")
+    assert valid_pressure_max(nacl) == 30.0
+    assert clamp_to_validity(nacl, 80.0) == 30.0 and clamp_to_validity(nacl, 5.0) == 5.0
+
+    # Scorer candidate pressures: prior clamped; scan grid collapses onto ceiling.
+    sc = CosineScorer()
+    assert sc._candidate_pressures(nacl, 80.0, None) == [30.0]
+    ps = sc._candidate_pressures(nacl, None, np.arange(0.0, 101.0, 10.0))
+    assert max(ps) == 30.0 and 10.0 in ps
+
+    # Identification never fits above the ceiling even with a free search.
+    d0, w, hkl = _au_refl()
+    s = idf.scale_at_pressure(nacl, 30.0)
+    obs = d0 * s * 0.97                    # peaks compressed beyond the ceiling
+    res = idf.fit_pressure_for_phase(obs, nacl, (d0, w, hkl), p_min=0, p_max=200)
+    assert res["pressure"] <= 30.0 + 1e-6
+
+    # And the bundled baseline carries the ceilings.
+    from bulkxrd.analysis.phases import load_bundled
+    lib = load_bundled()
+    assert valid_pressure_max(lib["NaCl-B1"]) == 30.0
+    assert valid_pressure_max(lib["Si"]) == 11.0
+
+
+def test_load_cif_corpus():
+    """Training-only CIF corpus: phases named cif:<stem>, synthetic EOS when
+    requested, never touching any library."""
+    from bulkxrd.analysis import ml_train as mt
+    with tempfile.TemporaryDirectory() as td:
+        for nm in ("a.cif", "b.cif"):
+            (Path(td) / nm).write_text("data_dummy\n", encoding="utf-8")
+        pool = mt.load_cif_corpus(td, seed=1, log=lambda *a, **k: None)
+        assert sorted(p.name for p in pool) == ["cif:a", "cif:b"]
+        assert all(p.has_eos() and 30.0 <= p.eos["K0"] <= 300.0 for p in pool)
+        bare = mt.load_cif_corpus(td, synthetic_eos=False, log=lambda *a, **k: None)
+        assert all(not p.has_eos() for p in bare)
+        try:
+            mt.load_cif_corpus(Path(td) / "missing")
+            assert False, "expected FileNotFoundError"
+        except FileNotFoundError:
+            pass
+
+
 def test_train_export_rank_roundtrip():
     """Full learned path (skipped without torch): a tiny training run must export
     a TorchScript artefact that TorchScorer loads and rank_candidates consumes,
@@ -412,6 +541,11 @@ def main() -> None:
     test_worker_ml_rank_candidate_free()
     test_scorer_seam()
     test_generate_pairs()
+    test_shared_mixture_pressure()
+    test_q_constant_widths()
+    test_estimate_fwhm_q()
+    test_validity_ceiling()
+    test_load_cif_corpus()
     test_train_export_rank_roundtrip()
     print("ML TEST OK")
 

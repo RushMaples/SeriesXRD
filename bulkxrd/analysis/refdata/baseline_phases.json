@@ -2,7 +2,7 @@
   "_meta": {
     "schema_version": "1",
     "description": "Bundled baseline of common reference phases for high-pressure (DAC) and general powder-XRD studies: pressure markers, gasket materials, pressure media, geometry calibrants, and common structures. Each entry carries a space group + ambient lattice + asymmetric-unit atoms (so peak positions and relative intensities can be simulated) and, where a reliable literature value exists, an equation of state. EOS forms supported: BM2/BM3/BM4 (Birch-Murnaghan), Vinet, and Murnaghan; type is set per entry. Entries without an EOS are still usable for phase identification at ambient pressure.",
-    "disclaimer": "These are reference STARTING values compiled from common literature at ~300 K. Reported EOS parameters vary between studies (and are correlated, especially K0 vs K0'); atom positions for some structures are nominal (peak POSITIONS depend only on the lattice + space group and are reliable; relative INTENSITIES are approximate). Verify the EOS and the scale/protocol you use before quantitative pressure determination. Workspace user entries shadow these by name.",
+    "disclaimer": "These are reference STARTING values compiled from common literature at ~300 K. Reported EOS parameters vary between studies (and are correlated, especially K0 vs K0'); atom positions for some structures are nominal (peak POSITIONS depend only on the lattice + space group and are reliable; relative INTENSITIES are approximate). Verify the EOS and the scale/protocol you use before quantitative pressure determination. Workspace user entries shadow these by name. An eos 'p_max' (GPa) marks the entry's validity ceiling (usually a phase transition): identification will not search above it and the ML simulators will not render the phase there.",
     "lattice_units": "Angstrom, degrees",
     "eos_units": "V0 Angstrom^3, K0 GPa"
   },
@@ -264,7 +264,8 @@
         "type": "BM3",
         "V0": 179.43,
         "K0": 23.8,
-        "K0p": 5.07
+        "K0p": 5.07,
+        "p_max": 30.0
       },
       "source": "Brown (1999), J. Appl. Phys. 86, 5801 (Decker-type scale).",
       "notes": "Rocksalt (B1) phase. Transforms to the CsCl-type B2 phase near ~30 GPa (room T) — this entry is only valid below the transition. Also widely used as a soft pressure medium."
@@ -568,7 +569,8 @@
         "type": "BM3",
         "K0": 97.9,
         "K0p": 4.2,
-        "V0": 160.2
+        "V0": 160.2,
+        "p_max": 11.0
       },
       "source": "Hu, Liu & Vohra (1986); diamond-cubic Si (valid below the ~11 GPa transition).",
       "notes": "Diamond-cubic silicon; transforms to beta-Sn near 11 GPa."

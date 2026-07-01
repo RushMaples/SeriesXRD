@@ -48,7 +48,12 @@ class Phase:
     """One candidate phase. ``lattice`` is ``{a,b,c,alpha,beta,gamma}`` (Å, deg);
     ``atoms`` is the asymmetric unit ``[{element,x,y,z,occ}]`` (for intensity
     simulation); ``eos`` is ``{type:'BM3', V0, K0, K0p}`` with V0 in Å³ and K0 in
-    GPa. ``builtin`` is set at load time (not persisted in the user file)."""
+    GPa. ``eos`` may also carry ``p_max`` (GPa): the validity ceiling of this
+    entry — usually a phase transition (e.g. NaCl B1→B2 near 30 GPa). Above it
+    the phase is neither searched (identification caps its pressure window) nor
+    simulated (training/ranking clamp to it), so an EOS is never extrapolated
+    into a regime where the phase does not exist. ``builtin`` is set at load
+    time (not persisted in the user file)."""
     name: str
     formula: str = ""
     category: str = "other"
@@ -482,6 +487,28 @@ def has_pressure_dof(phase: Phase) -> bool:
     at ambient (identification, simulation, and ranking must all agree on this).
     """
     return phase.has_eos() or has_axial_eos(phase)
+
+
+def valid_pressure_max(phase: Phase) -> float:
+    """The pressure (GPa) up to which this phase entry is physically valid.
+
+    Read from ``eos['p_max']`` (see :class:`Phase`) — typically the phase
+    transition that ends the structure's stability field (NaCl-B1 → B2 near
+    30 GPa, diamond-cubic Si → β-Sn near 11 GPa). ``inf`` when unset.
+    Identification caps its pressure search here and the simulators clamp to
+    it, so a stability-limited entry can't be fit or trained at pressures where
+    the phase cannot exist.
+    """
+    try:
+        v = float((phase.eos or {}).get("p_max") or 0.0)
+    except (TypeError, ValueError):
+        v = 0.0
+    return v if v > 0 else float("inf")
+
+
+def clamp_to_validity(phase: Phase, pressure: float) -> float:
+    """``pressure`` clamped into the phase's validity range [0, p_max]."""
+    return float(min(max(pressure, 0.0), valid_pressure_max(phase)))
 
 
 def axial_scales(phase: Phase, pressure_gpa: float) -> "tuple":

@@ -43,7 +43,7 @@ from .parallel import resolve_workers, chunk_ranges
 FLAG_OK = 0
 FLAG_LOW_AMP = 1        # amplitude fell below the noise floor during fitting
 FLAG_BAD_CHI2 = 2       # reduced chi-square above threshold (poor fit)
-FLAG_CENTER_DRIFT = 4   # center moved more than ~1 FWHM from its seed
+FLAG_CENTER_DRIFT = 4   # center pinned at its ±0.5·FWHM seed bound (ran away)
 FLAG_WIDTH_BOUND = 8    # fwhm pinned to a bound (degenerate width)
 FLAG_NO_CONVERGE = 16   # optimizer did not converge
 
@@ -293,7 +293,10 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
             flag |= FLAG_LOW_AMP
         if chi2 > max_chi2:
             flag |= FLAG_BAD_CHI2
-        if abs(c - g["center"]) > max(g["fwhm"], 1e-9):
+        # The fit bounds already confine the center to seed ± 0.5·FWHM, so "moved
+        # more than a FWHM" can never happen — a runaway center shows up as the
+        # optimizer pinning c against its bound (same detection as width).
+        if abs(c - g["center"]) >= 0.5 * max(g["fwhm"], 1e-9) * 0.999:
             flag |= FLAG_CENTER_DRIFT
         if w <= 0.2 * g["fwhm"] * 1.001 or w >= 5.0 * g["fwhm"] * 0.999:
             flag |= FLAG_WIDTH_BOUND

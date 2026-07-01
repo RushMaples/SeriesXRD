@@ -308,7 +308,10 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
         config.get("npt_1d", ""), handoff.accepted_poni, files[0])
     settings = {
         "npt_1d": npt_1d,
-        "unit": config.get("unit", "2th_deg") or "2th_deg",
+        # Default q: the analysis stage is designed around q (peak widths
+        # ~constant in q; d-conversion is wavelength-free). 2th_deg is honoured
+        # when a session explicitly selects it.
+        "unit": config.get("unit", "q_A^-1") or "q_A^-1",
         "method": config.get("method", "csr") or "csr",
         "polarization_factor": float(config["polarization_factor"]) if str(config.get("polarization_factor", "")).strip() else None,
         "robust_1d": bool(config.get("robust_1d", True)),

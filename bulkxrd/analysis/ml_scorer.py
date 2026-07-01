@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .phases import Phase, has_pressure_dof
+from .phases import Phase, has_pressure_dof, clamp_to_validity
 from .mldata import simulate_training_pattern
 
 Reflections = Tuple[np.ndarray, np.ndarray, list]
@@ -82,29 +82,44 @@ class PhaseScorer:
     def _candidate_pressures(self, phase: Phase, pressure: "Optional[float]",
                              pressure_grid: "Optional[np.ndarray]") -> "List[float]":
         """The pressures a candidate is evaluated at: the frame prior when known,
-        else a scan for pressure-capable phases, else ambient."""
+        else a scan for pressure-capable phases, else ambient. Every pressure is
+        clamped to the phase's validity ceiling (``eos['p_max']``) so a
+        stability-limited entry is never simulated where it cannot exist."""
         if pressure is not None and np.isfinite(pressure):
-            return [float(pressure)]
+            return [clamp_to_validity(phase, float(pressure))]
         if has_pressure_dof(phase) and pressure_grid is not None and len(pressure_grid):
-            return [float(p) for p in pressure_grid]
+            # Grid points above the ceiling collapse onto it (dedup via the set).
+            ps = sorted({clamp_to_validity(phase, float(p)) for p in pressure_grid})
+            return ps or [0.0]
         return [0.0]
 
 
 class CosineScorer(PhaseScorer):
-    """The deterministic baseline: cosine of the measured pattern vs the phase
-    simulated at the candidate pressure (same anisotropic ``predicted_d`` model
-    the Step-3a verifier uses). Pure numpy."""
+    """The deterministic baseline: full-pattern cosine of the measured pattern vs
+    the phase simulated at the candidate pressure (same anisotropic
+    ``predicted_d`` model the Step-3a verifier uses). Pure numpy.
+
+    Note the cosine runs over the whole d-grid, not just the candidate's own
+    lines — a minor phase in a busy mixture is diluted by everything else in the
+    frame. That is why the default ranking source is the Step-3a *residual*
+    (majors already removed), not the raw pattern.
+
+    ``fwhm_q`` (Å⁻¹, q-constant instrument resolution) is the physical width
+    model and takes precedence; ``fwhm_d`` (Å, constant in d) is the legacy
+    fallback (see :func:`mldata.peak_fwhm_d`).
+    """
 
     name = "cosine"
 
-    def __init__(self, fwhm_d: float = 0.03):
+    def __init__(self, fwhm_d: float = 0.03, *, fwhm_q: "Optional[float]" = None):
         self.fwhm_d = float(fwhm_d)
+        self.fwhm_q = float(fwhm_q) if fwhm_q else None
 
     def score(self, meas, phase, refl, d_grid, pressure, *, pressure_grid=None):
         best_s, best_p = 0.0, 0.0
         for i, P in enumerate(self._candidate_pressures(phase, pressure, pressure_grid)):
             sim = simulate_training_pattern(phase, P, d_grid, refl=refl,
-                                            fwhm_d=self.fwhm_d)
+                                            fwhm_d=self.fwhm_d, fwhm_q=self.fwhm_q)
             s = cosine_similarity(meas, sim)
             if i == 0 or s > best_s:
                 best_s, best_p = s, P
@@ -125,7 +140,8 @@ class TorchScorer(PhaseScorer):
 
     name = "torch"
 
-    def __init__(self, model_path: "str | Path", *, fwhm_d: float = 0.03):
+    def __init__(self, model_path: "str | Path", *, fwhm_d: float = 0.03,
+                 fwhm_q: "Optional[float]" = None, batch_size: int = 256):
         try:
             import torch  # noqa: F401  (lazy; optional dependency)
         except ImportError as e:
@@ -144,42 +160,76 @@ class TorchScorer(PhaseScorer):
         self.model = torch.jit.load(str(p), map_location="cpu").eval()
         self.model_path = str(p)
         self.fwhm_d = float(fwhm_d)
+        self.fwhm_q = float(fwhm_q) if fwhm_q else None
+        self.batch_size = max(1, int(batch_size))
+
+    def _simulate(self, phase, P, refl, d_grid) -> np.ndarray:
+        return simulate_training_pattern(phase, P, d_grid, refl=refl,
+                                         fwhm_d=self.fwhm_d,
+                                         fwhm_q=self.fwhm_q).astype("f4")
+
+    def _forward(self, pairs: np.ndarray) -> np.ndarray:
+        """Model scores for a stack of (n, 2, P) pairs, chunked to batch_size."""
+        t = self._torch
+        out = np.zeros(pairs.shape[0], dtype="f4")
+        with t.no_grad():
+            for a in range(0, pairs.shape[0], self.batch_size):
+                xb = t.from_numpy(pairs[a:a + self.batch_size])
+                out[a:a + self.batch_size] = self.model(xb).reshape(-1).cpu().numpy()
+        return out
 
     def score(self, meas, phase, refl, d_grid, pressure, *, pressure_grid=None):
-        t = self._torch
         m = np.asarray(meas, dtype="f4")
-        best_s, best_p = 0.0, 0.0
-        for i, P in enumerate(self._candidate_pressures(phase, pressure, pressure_grid)):
-            sim = simulate_training_pattern(phase, P, d_grid, refl=refl,
-                                            fwhm_d=self.fwhm_d).astype("f4")
-            x = t.from_numpy(np.stack([m, sim])[None, :, :])
-            with t.no_grad():
-                s = float(self.model(x).reshape(-1)[0])
-            if i == 0 or s > best_s:
-                best_s, best_p = s, P
-        return best_s, best_p
+        Ps = self._candidate_pressures(phase, pressure, pressure_grid)
+        pairs = np.stack([np.stack([m, self._simulate(phase, P, refl, d_grid)])
+                          for P in Ps])
+        scores = self._forward(pairs)
+        best = int(np.argmax(scores))
+        return float(scores[best]), float(Ps[best])
+
+    def score_frame(self, meas, phases, refls, d_grid, pressure, *,
+                    pressure_grid=None):
+        """All candidates of one frame in batched forward passes (one model call
+        per ``batch_size`` pairs instead of one per candidate×pressure)."""
+        m = np.asarray(meas, dtype="f4")
+        rows: "List[np.ndarray]" = []
+        owner: "List[Tuple[int, float]]" = []       # (candidate index, pressure)
+        for ci, (ph, rf) in enumerate(zip(phases, refls)):
+            for P in self._candidate_pressures(ph, pressure, pressure_grid):
+                rows.append(np.stack([m, self._simulate(ph, P, rf, d_grid)]))
+                owner.append((ci, float(P)))
+        scores = self._forward(np.stack(rows)) if rows else np.zeros(0, "f4")
+        best: "List[Tuple[float, float]]" = [(0.0, 0.0)] * len(phases)
+        seen = [False] * len(phases)
+        for (ci, P), s in zip(owner, scores):
+            if not seen[ci] or s > best[ci][0]:
+                best[ci] = (float(s), P)
+                seen[ci] = True
+        return best
 
 
 def make_scorer(spec: "PhaseScorer | str | Dict[str, Any] | None" = None, *,
-                fwhm_d: float = 0.03) -> PhaseScorer:
+                fwhm_d: float = 0.03,
+                fwhm_q: "Optional[float]" = None) -> PhaseScorer:
     """Resolve a scorer spec to an instance.
 
     ``None``/``"cosine"`` → :class:`CosineScorer` (the default);
     ``"torch:<model_path>"`` or ``{"kind": "torch", "model": <path>}`` →
     :class:`TorchScorer`; an existing :class:`PhaseScorer` passes through.
-    Raises an instructive error (never a bare ImportError) when a learned scorer
-    is requested without its prerequisites.
+    ``fwhm_q`` (q-constant width, Å⁻¹) takes precedence over ``fwhm_d`` for
+    candidate simulation. Raises an instructive error (never a bare ImportError)
+    when a learned scorer is requested without its prerequisites.
     """
     if spec is None:
-        return CosineScorer(fwhm_d=fwhm_d)
+        return CosineScorer(fwhm_d=fwhm_d, fwhm_q=fwhm_q)
     if isinstance(spec, PhaseScorer):
         return spec
     if isinstance(spec, str):
         s = spec.strip()
         if s in ("", "cosine"):
-            return CosineScorer(fwhm_d=fwhm_d)
+            return CosineScorer(fwhm_d=fwhm_d, fwhm_q=fwhm_q)
         if s.startswith("torch:"):
-            return TorchScorer(s.split(":", 1)[1], fwhm_d=fwhm_d)
+            return TorchScorer(s.split(":", 1)[1], fwhm_d=fwhm_d, fwhm_q=fwhm_q)
         if s == "torch":
             raise RuntimeError(
                 "A learned scorer needs a model path: use 'torch:<model_path>' "
@@ -187,14 +237,16 @@ def make_scorer(spec: "PhaseScorer | str | Dict[str, Any] | None" = None, *,
         raise ValueError(f"Unknown scorer spec {spec!r} (use 'cosine' or 'torch:<path>').")
     if isinstance(spec, dict):
         kind = str(spec.get("kind", "cosine")).strip().lower()
+        kw = {"fwhm_d": float(spec.get("fwhm_d", fwhm_d)),
+              "fwhm_q": spec.get("fwhm_q", fwhm_q)}
         if kind == "cosine":
-            return CosineScorer(fwhm_d=float(spec.get("fwhm_d", fwhm_d)))
+            return CosineScorer(**kw)
         if kind == "torch":
             model = spec.get("model", "")
             if not model:
                 raise RuntimeError(
                     "A learned scorer needs a model path: {'kind': 'torch', "
                     "'model': <path>}.")
-            return TorchScorer(model, fwhm_d=float(spec.get("fwhm_d", fwhm_d)))
+            return TorchScorer(model, **kw)
         raise ValueError(f"Unknown scorer kind {kind!r} (use 'cosine' or 'torch').")
     raise TypeError(f"Cannot resolve a scorer from {type(spec).__name__}.")

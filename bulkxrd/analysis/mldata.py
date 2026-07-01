@@ -39,6 +39,26 @@ def make_d_grid(d_min: float = D_MIN, d_max: float = D_MAX,
     return np.linspace(float(d_min), float(d_max), int(n_points))
 
 
+def peak_fwhm_d(centers, *, fwhm_d: "Optional[float]" = None,
+                fwhm_q: "Optional[float]" = None) -> np.ndarray:
+    """Per-peak FWHM in d (Å) for reflections at ``centers`` (d-spacings, Å).
+
+    Instrument resolution is roughly constant in q, not in d (the same reason
+    the pipeline fits in q). Since d = 2π/q, a constant width Δq maps to
+    ``Δd = d²·Δq/(2π)`` — a peak at d = 8 Å is ~30× wider on the d-grid than one
+    at d = 1.5 Å. Simulating every peak with one constant ``fwhm_d`` therefore
+    builds a width profile no q-uniform instrument produces (a sim-to-real gap
+    in the very representation the scorer compares).
+
+    ``fwhm_q`` (Å⁻¹) takes precedence and gives the physical q-constant widths;
+    ``fwhm_d`` (Å) is the legacy constant-in-d fallback.
+    """
+    c = np.asarray(centers, dtype=float)
+    if fwhm_q is not None and fwhm_q > 0:
+        return (c * c) * (float(fwhm_q) / (2.0 * np.pi))
+    return np.full(c.shape, float(fwhm_d if fwhm_d else 0.03))
+
+
 def resample_to_d(radial, intensity, unit: str, wavelength: "Optional[float]",
                   d_grid: np.ndarray) -> np.ndarray:
     """Resample one intensity row from the reduced radial axis onto ``d_grid``.
@@ -222,7 +242,8 @@ def export_ml_dataset(
 
 def simulate_training_pattern(phase: Phase, pressure: float, d_grid: np.ndarray,
                               *, refl=None, fwhm_d: float = 0.03, eta: float = 0.5,
-                              normalize: bool = True) -> np.ndarray:
+                              normalize: bool = True,
+                              fwhm_q: "Optional[float]" = None) -> np.ndarray:
     """A single-phase synthetic pattern on ``d_grid`` at ``pressure`` (GPa).
 
     Reflections are positioned with the **same** :func:`identify.predicted_d`
@@ -230,18 +251,25 @@ def simulate_training_pattern(phase: Phase, pressure: float, d_grid: np.ndarray,
     when the phase has an axial EOS, isotropic otherwise. Using the isotropic
     scale here would leave an axial-only phase at ambient positions for every
     pressure, so the proposer and verifier would disagree. Peaks are pseudo-Voigts
-    of width ``fwhm_d`` (Å) weighted by relative intensity — the profile the
-    experimental peaks are fit with.
+    weighted by relative intensity — the profile the experimental peaks are fit
+    with. Peak heights (not areas) carry the intensity weights: the measured
+    pattern is resampled from a q-uniform axis where widths are constant, so its
+    peak *heights* are proportional to integrated intensity too.
+
+    Widths: ``fwhm_q`` (Å⁻¹, q-constant → ``Δd = d²·Δq/2π`` per peak, see
+    :func:`peak_fwhm_d`) is the physical choice and takes precedence;
+    ``fwhm_d`` (Å, constant in d) is the legacy fallback.
     """
     if refl is None:
         refl = phase_reflections(phase)
     d0, w, hkl = refl
     hkls = [_parse_hkl(h) for h in hkl] if hkl else None
     centers = predicted_d(phase, np.asarray(d0, float), hkls, float(max(pressure, 0.0)))
+    widths = peak_fwhm_d(centers, fwhm_d=fwhm_d, fwhm_q=fwhm_q)
     y = np.zeros_like(d_grid, dtype=float)
-    for c, a in zip(centers, w):
+    for c, a, wd in zip(centers, w, widths):
         if d_grid[0] <= c <= d_grid[-1]:
-            y += pseudo_voigt(d_grid, c, a, fwhm_d, eta)
+            y += pseudo_voigt(d_grid, c, a, wd, eta)
     if normalize:
         mx = y.max()
         if mx > 0:

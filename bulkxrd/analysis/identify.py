@@ -34,7 +34,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .phases import (Phase, simulate_pattern, compression_at_pressure,
-                     pymatgen_available, has_axial_eos, has_pressure_dof, axial_scales)
+                     pymatgen_available, has_axial_eos, has_pressure_dof, axial_scales,
+                     valid_pressure_max)
 from .parallel import resolve_workers, chunk_ranges
 
 SCHEMA_VERSION = "1"
@@ -427,13 +428,17 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
         _record(0.0)
         return out
 
-    # Confine the search to the prior window when we have one.
-    lo_b, hi_b = float(p_min), float(p_max)
+    # Confine the search to the prior window when we have one, and never past
+    # the phase's validity ceiling (eos['p_max'], e.g. a phase transition) —
+    # extrapolating the EOS into a regime where the phase does not exist lets a
+    # stability-limited entry "match" data it cannot physically produce.
+    p_valid = valid_pressure_max(phase)
+    lo_b, hi_b = float(p_min), min(float(p_max), p_valid)
     if has_prior and p_window and p_window > 0:
         lo_b = max(lo_b, float(p_prior) - float(p_window))
         hi_b = min(hi_b, float(p_prior) + float(p_window))
-        if hi_b <= lo_b:                       # prior sits outside [p_min, p_max]
-            lo_b = hi_b = min(max(float(p_prior), float(p_min)), float(p_max))
+        if hi_b <= lo_b:                       # prior sits outside the valid range
+            lo_b = hi_b = min(max(float(p_prior), float(p_min)), float(p_max), p_valid)
 
     if hi_b <= lo_b:
         _record(lo_b)

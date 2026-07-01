@@ -88,8 +88,14 @@ def _run(args) -> int:
             if not list(lib.values()):
                 print("[ERROR] reference library is empty — add or bundle phases first.", flush=True)
                 return 1
-            mrank = rank_candidates(analysis_path, list(lib.values()),
-                                    source=args.ml_rank_source, top_k=args.ml_rank_top_k)
+            try:
+                mrank = rank_candidates(analysis_path, list(lib.values()),
+                                        source=args.ml_rank_source,
+                                        top_k=args.ml_rank_top_k,
+                                        scorer=(args.ml_scorer or None))
+            except (RuntimeError, ValueError) as e:
+                print(f"[ERROR] ML ranking failed: {e}", flush=True)
+                return 1
             phases = [lib[n] for n in mrank["candidates"] if n in lib]
             if phases:
                 print(f"[ANALYZE] ML ranker shortlist: {[p.name for p in phases]}", flush=True)
@@ -207,6 +213,10 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="How many ranked candidates per frame to verify. Default 5.")
     p.add_argument("--ml-rank-source", default="auto",
                    help="What to rank against: auto|residual|fit. Default auto.")
+    p.add_argument("--ml-scorer", default="",
+                   help="Similarity scorer for --ml-rank: 'cosine' (default) or "
+                        "'torch:<model.pt>' (a trained bulkxrd-ml-train export; "
+                        "needs bulkxrd[ml]). Whatever it proposes, Step 3a verifies.")
     # ML export
     p.add_argument("--ml-export", default="", help="Also export an ML .npz to this path.")
     p.add_argument("--ml-channels", default="clean,spot_residual",

@@ -2516,6 +2516,15 @@ class AnalysisApp:
         self.vars["ml_rank_source"] = tk.StringVar(value=str(self.config.get("ml_rank_source", "auto")))
         ttk.Combobox(mlrow, textvariable=self.vars["ml_rank_source"],
                      values=["auto", "residual", "fit"], state="readonly", width=8).pack(side="left")
+        ttk.Label(mlrow, text="scorer:", foreground=MUTED).pack(side="left", padx=(10, 2))
+        self.vars["ml_scorer"] = tk.StringVar(value=str(self.config.get("ml_scorer", "")))
+        _mlsc = ttk.Entry(mlrow, textvariable=self.vars["ml_scorer"], width=22)
+        _mlsc.pack(side="left")
+        _ToolTip(_mlsc, (
+            "Similarity scorer for the ranking. Blank/'cosine' = the deterministic "
+            "baseline. 'torch:<path to scorer.pt>' = a trained bulkxrd-ml-train "
+            "export (needs bulkxrd[ml]; see docs/ml-training-ris.md). Whatever the "
+            "scorer proposes, Step 3a still verifies."))
 
         self._identify_help = ttk.Label(
             frame,

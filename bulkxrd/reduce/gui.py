@@ -480,9 +480,9 @@ class ReductionApp:
         tk, ttk = self.tk, self.ttk
         self.field(frame, "npt_1d", "1D bins (blank=auto)", row=0, width=14)
         ttk.Label(frame, text="Integration unit").grid(row=2, column=0, sticky="w", padx=4, pady=3)
-        unit_var = tk.StringVar(value=str(self.config.get("unit", "2th_deg")))
+        unit_var = tk.StringVar(value=str(self.config.get("unit", "q_A^-1")))
         self.vars["unit"] = unit_var
-        ttk.Combobox(frame, textvariable=unit_var, values=["2th_deg", "2th_rad", "q_A^-1", "q_nm^-1"],
+        ttk.Combobox(frame, textvariable=unit_var, values=["q_A^-1", "q_nm^-1", "2th_deg", "2th_rad"],
                      width=14, state="readonly").grid(row=2, column=1, sticky="w", padx=4)
         self.field(frame, "method", "pyFAI 1D method", row=3, width=14)
         self.field(frame, "polarization_factor", "Polarization factor (optional)", row=5, width=14)
