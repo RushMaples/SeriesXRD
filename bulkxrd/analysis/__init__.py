@@ -84,6 +84,7 @@ from .ml_simulate import (
     export_augmented_dataset,
 )
 from .ml_rank import rank_candidates, read_candidates, score_phase
+from .ml_scorer import PhaseScorer, CosineScorer, TorchScorer, make_scorer
 from .session import seed_analysis_config, analysis_config_path
 from .phases import (
     Phase,
@@ -127,6 +128,7 @@ __all__ = [
     "FrameFeatures", "frame_features",
     "AugmentConfig", "build_augmented_dataset", "export_augmented_dataset",
     "rank_candidates", "read_candidates", "score_phase",
+    "PhaseScorer", "CosineScorer", "TorchScorer", "make_scorer",
     "seed_analysis_config", "analysis_config_path",
     "Phase", "load_bundled", "load_library", "list_phases",
     "upsert_user_phase", "remove_user_phase", "import_cif", "parse_cif",

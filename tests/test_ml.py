@@ -270,6 +270,73 @@ def test_worker_ml_rank_candidate_free():
              W.run_identification, W.run_residual) = saved
 
 
+def test_scorer_seam():
+    """The ml_scorer seam: default deterministic output is byte-identical with
+    and without an explicitly injected CosineScorer; no torch is needed for the
+    deterministic path; a learned scorer without its prerequisites raises a
+    clear instructive error (never a bare ImportError crash); and candidate
+    files written before the seam (no method/requested attrs) stay readable."""
+    import h5py
+    from bulkxrd.analysis import ml_scorer as msr
+
+    # Deterministic path must not touch torch.
+    assert "torch" not in sys.modules
+    au = Phase(name="Au", eos={"type": "BM3", "K0": 167, "K0p": 5.0})
+    decoy = Phase(name="Decoy", eos={"type": "BM3", "K0": 80, "K0p": 4.0})
+    d0, w, hkl = _au_refl()
+    refl = {"Au": (d0, w, hkl), "Decoy": (d0 * 1.12, w[::-1], hkl)}
+    with tempfile.TemporaryDirectory() as td:
+        h5 = Path(td) / "an.h5"
+        _write_analysis(h5, pressure=30.0)
+
+        # 1) Default output unchanged by explicit seam use.
+        mr.rank_candidates(h5, [au, decoy], reflections=refl, top_k=2, fwhm_d=0.05)
+        rc_default = mr.read_candidates(h5)
+        mr.rank_candidates(h5, [au, decoy], reflections=refl, top_k=2, fwhm_d=0.05,
+                           scorer=msr.CosineScorer(fwhm_d=0.05))
+        rc_injected = mr.read_candidates(h5)
+        for nm in ("Au", "Decoy"):
+            assert np.array_equal(rc_default["phases"][nm]["score"],
+                                  rc_injected["phases"][nm]["score"]), nm
+        assert rc_default["topk_names"] == rc_injected["topk_names"]
+        with h5py.File(str(h5), "r") as f:
+            assert str(f["ml/candidates"].attrs["method"]) == "cosine"
+
+        # score_phase back-compat wrapper == the scorer it delegates to.
+        m = mf.frame_features(h5, source="residual").X[0]
+        grid = mf.frame_features(h5, source="residual").d_grid
+        s_fn = mr.score_phase(m, au, refl["Au"], grid, 30.0, fwhm_d=0.05)
+        s_cls = msr.CosineScorer(fwhm_d=0.05).score(m, au, refl["Au"], grid, 30.0)
+        assert s_fn == s_cls
+
+        # 4) Old files (pre-seam attrs) remain readable.
+        with h5py.File(str(h5), "r+") as f:
+            for a in ("method", "requested_source", "resolved_source"):
+                if a in f["ml/candidates"].attrs:
+                    del f["ml/candidates"].attrs[a]
+        rc_old = mr.read_candidates(h5)
+        assert rc_old["ok"] and rc_old["topk_names"] is not None
+        assert rc_old["requested_source"] == rc_old["source"]  # fallback
+
+    # 3) Learned scorer without prerequisites: instructive RuntimeError that
+    #    points at the deterministic fallback — regardless of whether torch is
+    #    installed (missing dep here; missing model file elsewhere).
+    for bad in ("torch:/nonexistent/model.pt", "torch",
+                {"kind": "torch"}, {"kind": "torch", "model": "/nonexistent/model.pt"}):
+        try:
+            msr.make_scorer(bad)
+            assert False, f"expected RuntimeError for {bad!r}"
+        except RuntimeError as e:
+            assert "cosine" in str(e) or "model path" in str(e), str(e)
+    try:
+        msr.make_scorer("nonsense")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    assert isinstance(msr.make_scorer(None), msr.CosineScorer)
+    assert isinstance(msr.make_scorer("cosine"), msr.CosineScorer)
+
+
 def main() -> None:
     test_frame_features()
     test_clip_negative()
@@ -277,6 +344,7 @@ def main() -> None:
     test_rank_candidates_and_shortlist()
     test_axial_ranking()
     test_worker_ml_rank_candidate_free()
+    test_scorer_seam()
     print("ML TEST OK")
 
 

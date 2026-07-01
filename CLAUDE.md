@@ -32,7 +32,8 @@ bulkxrd/
     mldata.py       d-grid resample + ML export + clean pressure-shift simulation
     ml_features.py  Step 3b — analysis HDF5 → model-ready frame features
     ml_simulate.py  Step 3b — pressure-conditioned simulator + DAC augmentations
-    ml_rank.py      Step 3b — deterministic candidate ranker (ML proposes, physics verifies)
+    ml_rank.py      Step 3b — candidate ranker (ML proposes, physics verifies)
+    ml_scorer.py    Step 3b — scorer seam: CosineScorer default; TorchScorer adapter (bulkxrd[ml])
     categorization.py  user's workflow spec (read-only notes)
   app.py         top-level launcher that embeds all stages
 tests/
@@ -158,7 +159,9 @@ all of ICSD/MP.
 ### Step 3b proposer appended by `analysis/ml_rank.py`
 
 ```
-/ml/candidates  attrs: source (residual|fit), top_k, method=cosine, fwhm_d, phases,
+/ml/candidates  attrs: requested_source (auto|fit|residual|...), source (residual|fit),
+                       resolved_source (actual channel, e.g. fit→sigmaclip), top_k,
+                       method (scorer name, default cosine), fwhm_d, phases,
                        clip_negative, normalize, n_points (ML preprocessing provenance)
 /ml/candidates/<phase>/score    (N,)  per-frame cosine similarity to the phase
 /ml/candidates/<phase>/pressure (N,)  pressure the best score used
@@ -175,8 +178,12 @@ the deterministic matcher only *verifies* a shortlist. **Candidate-free**: with 
 no Phases-tab pre-selection is needed — it ranks the whole library. Simulation uses the
 **same anisotropic `predicted_d`** as Step 3a (an axial-only phase shifts correctly instead
 of staying at ambient), and the residual is clipped non-negative before cosine. The v1
-ranker is pure-numpy (no torch); a learned RADAR-PD-style scorer slots in behind
-`bulkxrd[ml]` later.
+ranker is pure-numpy (no torch). The similarity function lives behind the
+**`ml_scorer` seam**: `rank_candidates(scorer=...)` takes a `PhaseScorer` — default
+`CosineScorer`; `TorchScorer` (a TorchScript model on (measured, candidate) fingerprint
+pairs, `bulkxrd[ml]`) raises instructive errors when torch/model are missing. Scorers
+have a per-phase `score()` plus an overridable batched `score_frame()`. Whatever the
+scorer proposes, Step 3a still verifies.
 `ml_features.frame_features` builds the model input (d-grid resample of a chosen source +
 pressure/contamination/peaks/excluded); `ml_simulate` builds the DAC-augmented training set
 (mixtures, EOS shift, texture, broadening, drift, diamond spikes, background humps,

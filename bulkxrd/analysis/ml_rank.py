@@ -4,10 +4,11 @@ The seam this pipeline protects: a fast *proposer* shortlists which phases plaus
 explain a frame, and the deterministic Step-3a EOS matcher (:mod:`identify`) then
 *verifies* each candidate by fitting it. This is the DARA / RADAR-PD lesson —
 search-match (or ML) proposes a handful of hypotheses; physics-constrained
-refinement decides. DARA's proposer is itself peak-matching scoring, so the first
-ranker here is deliberately deterministic and dependency-free (no torch): a
-learned RADAR-PD-style scorer can replace the scoring function later behind
-``bulkxrd[ml]`` without moving the seam.
+refinement decides. DARA's proposer is itself peak-matching scoring, so the
+default ranker here is deliberately deterministic and dependency-free (no
+torch). The similarity function itself lives behind the :mod:`ml_scorer` seam —
+pass ``scorer=`` to :func:`rank_candidates` to swap in a learned RADAR-PD-style
+scorer (``bulkxrd[ml]``) without moving the seam.
 
 Per frame:
   1. Take the measured pattern on the shared d-grid — the **residual** by default
@@ -32,22 +33,13 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .phases import Phase, pymatgen_available, has_pressure_dof
+from .phases import Phase, pymatgen_available
 from .identify import phase_reflections, _h5_safe
-from .mldata import simulate_training_pattern
 from .ml_features import frame_features
+from .ml_scorer import PhaseScorer, CosineScorer, make_scorer
 
 SCHEMA_VERSION = "1"
 Reflections = Tuple[np.ndarray, np.ndarray, list]
-
-
-def _cosine(a: np.ndarray, b: np.ndarray) -> float:
-    """Cosine similarity of two non-negative spectra in [0, 1]."""
-    na = float(np.linalg.norm(a))
-    nb = float(np.linalg.norm(b))
-    if na <= 0 or nb <= 0:
-        return 0.0
-    return float(np.dot(a, b) / (na * nb))
 
 
 def score_phase(meas: np.ndarray, phase: Phase, refl: Reflections, d_grid: np.ndarray,
@@ -55,22 +47,11 @@ def score_phase(meas: np.ndarray, phase: Phase, refl: Reflections, d_grid: np.nd
                 pressure_grid: "Optional[np.ndarray]" = None) -> Tuple[float, float]:
     """Best similarity of ``meas`` to ``phase`` and the pressure that achieved it.
 
-    With a known ``pressure`` the phase is simulated once there; otherwise its
-    score is maximised over ``pressure_grid`` (or ambient for a no-EOS phase)."""
-    has_p_dof = has_pressure_dof(phase)
-    if pressure is not None and np.isfinite(pressure):
-        grid_P = [float(pressure)]
-    elif has_p_dof and pressure_grid is not None and len(pressure_grid):
-        grid_P = [float(p) for p in pressure_grid]
-    else:
-        grid_P = [0.0]
-    best_s, best_p = 0.0, float(grid_P[0])
-    for P in grid_P:
-        sim = simulate_training_pattern(phase, P, d_grid, refl=refl, fwhm_d=fwhm_d)
-        s = _cosine(meas, sim)
-        if s > best_s:
-            best_s, best_p = s, P
-    return best_s, best_p
+    Back-compat wrapper over :class:`ml_scorer.CosineScorer` (the scoring seam —
+    inject a different :class:`ml_scorer.PhaseScorer` into :func:`rank_candidates`
+    to change how similarity is computed)."""
+    return CosineScorer(fwhm_d=fwhm_d).score(meas, phase, refl, d_grid, pressure,
+                                             pressure_grid=pressure_grid)
 
 
 def rank_candidates(
@@ -82,6 +63,7 @@ def rank_candidates(
     fwhm_d: float = 0.03,
     pressure_grid: "Optional[Sequence[float]]" = None,
     reflections: "Optional[Dict[str, Reflections]]" = None,
+    scorer: "PhaseScorer | str | Dict[str, Any] | None" = None,
     out_h5: "Optional[str | Path]" = None,
 ) -> Dict[str, Any]:
     """Rank library phases per frame and write ``/ml/candidates``.
@@ -104,6 +86,12 @@ def rank_candidates(
     union of per-frame top-K names — feed it to
     :func:`identify.run_identification` as the candidate set (ML proposes →
     physics verifies). pymatgen is required unless ``reflections`` is supplied.
+
+    ``scorer`` is the similarity seam (:mod:`ml_scorer`): default the
+    deterministic :class:`ml_scorer.CosineScorer`; pass a
+    :class:`ml_scorer.PhaseScorer` instance or a spec (``"cosine"``,
+    ``"torch:<model_path>"``) to swap in a learned scorer. Whatever the scorer
+    proposes, Step 3a still verifies.
     """
     import h5py  # type: ignore
 
@@ -150,11 +138,14 @@ def rank_candidates(
     pg = (np.asarray(pressure_grid, float) if pressure_grid is not None
           else np.arange(0.0, 101.0, 10.0))
     names = [p.name for p in phases]
+    refls = [reflections[nm] for nm in names]
     score = {nm: np.zeros(n, "f8") for nm in names}
     pmat = {nm: np.full(n, np.nan, "f8") for nm in names}
 
+    # The scoring seam: deterministic cosine unless an alternative is injected.
+    the_scorer = make_scorer(scorer, fwhm_d=fwhm_d)
     print(f"[ML-RANK] {len(phases)} phase(s), {n} frames, source={want}, "
-          f"top_k={top_k}", flush=True)
+          f"scorer={the_scorer.name}, top_k={top_k}", flush=True)
     k = min(int(top_k), len(phases))
     topk_names = np.full((n, k), "", dtype=object)
     topk_score = np.zeros((n, k), "f8")
@@ -162,20 +153,20 @@ def rank_candidates(
         if excluded[i] or not np.isfinite(meas[i]).any() or meas[i].max() <= 0:
             continue
         P = pressure[i] if np.isfinite(pressure[i]) else None
+        pairs = the_scorer.score_frame(meas[i], phases, refls, grid, P,
+                                       pressure_grid=pg)
         row = []
-        for ph in phases:
-            s, p = score_phase(meas[i], ph, reflections[ph.name], grid, P,
-                               fwhm_d=fwhm_d, pressure_grid=pg)
-            score[ph.name][i] = s
-            pmat[ph.name][i] = p
-            row.append((s, ph.name))
+        for nm, (s, p) in zip(names, pairs):
+            score[nm][i] = s
+            pmat[nm][i] = p
+            row.append((s, nm))
         row.sort(key=lambda t: -t[0])
         for r in range(k):
             topk_score[i, r] = row[r][0]
             topk_names[i, r] = row[r][1]
 
     _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
-                      requested, want, top_k, fwhm_d, prep)
+                      requested, want, top_k, fwhm_d, prep, the_scorer.name)
 
     # Union of the per-frame top-K (live frames) — the shortlist for the verifier.
     live = ~excluded
@@ -192,7 +183,8 @@ def rank_candidates(
 
 
 def _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
-                      requested_source, source, top_k, fwhm_d, prep):
+                      requested_source, source, top_k, fwhm_d, prep,
+                      method: str = "cosine"):
     import os
     import shutil
     import h5py  # type: ignore
@@ -212,7 +204,7 @@ def _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
                             "requested_source": str(requested_source),
                             "source": str(source),
                             "resolved_source": str(prep.get("source", source)),
-                            "top_k": int(top_k), "method": "cosine",
+                            "top_k": int(top_k), "method": str(method),
                             "fwhm_d": float(fwhm_d), "phases": ", ".join(names),
                             # ML preprocessing provenance (same pipeline a model must use).
                             "clip_negative": bool(prep.get("clip_negative", True)),
