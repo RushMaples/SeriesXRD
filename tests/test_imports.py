@@ -22,7 +22,8 @@ mods = [
     'bulkxrd.analysis.heatmap', 'bulkxrd.analysis.mldata',
     'bulkxrd.analysis.residual', 'bulkxrd.analysis.frame_metadata',
     'bulkxrd.analysis.ml_features', 'bulkxrd.analysis.ml_simulate',
-    'bulkxrd.analysis.ml_rank',
+    'bulkxrd.analysis.ml_rank', 'bulkxrd.analysis.ml_scorer',
+    'bulkxrd.analysis.ml_train',
     'bulkxrd.analysis.parallel', 'bulkxrd.analysis.batch',
 ]
 for m in mods:

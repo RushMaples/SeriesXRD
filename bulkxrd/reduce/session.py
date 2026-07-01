@@ -20,7 +20,10 @@ _DEFAULTS = {
     "session_name": "reduction",
     "file_patterns": "*.tif;*.tiff;*.edf;*.cbf;*.mar3450;*.h5",
     "recursive": False,
-    "npt_1d": "1500",
+    "npt_1d": "",                # blank = auto: ~1 bin per pixel of radial extent
+                                 # (pyFAI rule of thumb, from the accepted PONI +
+                                 # first frame). A fixed low value under-samples
+                                 # sharp peaks -> stepped patterns, poor fits.
     "unit": "2th_deg",
     "method": "csr",
     "polarization_factor": "",

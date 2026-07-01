@@ -279,8 +279,9 @@ def test_scorer_seam():
     import h5py
     from bulkxrd.analysis import ml_scorer as msr
 
-    # Deterministic path must not touch torch.
-    assert "torch" not in sys.modules
+    # Deterministic path must not pull torch in (order-robust: another test may
+    # already have imported it — the invariant is that WE don't add it).
+    torch_was_loaded = "torch" in sys.modules
     au = Phase(name="Au", eos={"type": "BM3", "K0": 167, "K0p": 5.0})
     decoy = Phase(name="Decoy", eos={"type": "BM3", "K0": 80, "K0p": 4.0})
     d0, w, hkl = _au_refl()
@@ -317,6 +318,8 @@ def test_scorer_seam():
         rc_old = mr.read_candidates(h5)
         assert rc_old["ok"] and rc_old["topk_names"] is not None
         assert rc_old["requested_source"] == rc_old["source"]  # fallback
+        if not torch_was_loaded:
+            assert "torch" not in sys.modules, "deterministic ranking imported torch"
 
     # 3) Learned scorer without prerequisites: instructive RuntimeError that
     #    points at the deterministic fallback — regardless of whether torch is
@@ -337,6 +340,69 @@ def test_scorer_seam():
     assert isinstance(msr.make_scorer("cosine"), msr.CosineScorer)
 
 
+def test_generate_pairs():
+    """Training-pair generation (torch-free): shapes, both labels present, and
+    the labels are physically sane — positives (candidate at its true pressure)
+    overlap the measured mixture more than the wrong-pressure/absent negatives."""
+    from bulkxrd.analysis import ml_train as mt
+    au = Phase(name="Au", eos={"type": "BM3", "K0": 167, "K0p": 5.0})
+    si = Phase(name="Si", eos={"type": "BM3", "K0": 98, "K0p": 4.0})
+    d0, w, hkl = _au_refl()
+    refl = {"Au": (d0, w, hkl), "Si": (d0 * 1.1, w[::-1], hkl)}
+    X, y = mt.generate_pairs([au, si], n_mixtures=24, reflections=refl, seed=1)
+    assert X.ndim == 3 and X.shape[1] == 2 and X.shape[2] == 3501
+    assert X.dtype == np.float32 and set(np.unique(y)) == {0.0, 1.0}
+    assert 0.2 < float(y.mean()) < 0.6          # roughly 1 pos : 1-2 neg
+
+    def _cos(a, b):
+        na, nb = np.linalg.norm(a), np.linalg.norm(b)
+        return float(a @ b / (na * nb)) if na > 0 and nb > 0 else 0.0
+
+    cos = np.array([_cos(X[i, 0], X[i, 1]) for i in range(len(y))])
+    assert cos[y == 1].mean() > cos[y == 0].mean()
+    # AUC helper sanity: perfect separation -> 1, anti-separation -> 0.
+    assert mt.roc_auc(np.array([0, 0, 1, 1]), np.array([0.1, 0.2, 0.8, 0.9])) == 1.0
+    assert mt.roc_auc(np.array([1, 1, 0, 0]), np.array([0.1, 0.2, 0.8, 0.9])) == 0.0
+
+
+def test_train_export_rank_roundtrip():
+    """Full learned path (skipped without torch): a tiny training run must export
+    a TorchScript artefact that TorchScorer loads and rank_candidates consumes,
+    recording method='torch'."""
+    try:
+        import torch  # noqa: F401
+    except ImportError:
+        print("  (torch not installed — skipping learned-path roundtrip)")
+        return
+    import h5py
+    from bulkxrd.analysis import ml_train as mt
+    from bulkxrd.analysis.ml_scorer import TorchScorer
+    au = Phase(name="Au", eos={"type": "BM3", "K0": 167, "K0p": 5.0})
+    si = Phase(name="Si", eos={"type": "BM3", "K0": 98, "K0p": 4.0})
+    d0, w, hkl = _au_refl()
+    refl = {"Au": (d0, w, hkl), "Si": (d0 * 1.1, w[::-1], hkl)}
+    with tempfile.TemporaryDirectory() as td:
+        model_path = Path(td) / "scorer.pt"
+        man = mt.train([au, si], model_path, reflections=refl, epochs=1,
+                       mixtures_per_epoch=12, batch_size=8, device="cpu",
+                       seed=0, channels=(8, 16), log=lambda *a, **k: None)
+        assert model_path.is_file() and man["n_params"] > 0
+
+        scorer = TorchScorer(model_path)
+        grid = np.linspace(1.199, 8.853, 3501)
+        s, p = scorer.score(np.random.rand(3501).astype("f4"), au, refl["Au"], grid, 20.0)
+        assert 0.0 <= s <= 1.0 and p == 20.0
+
+        h5 = Path(td) / "an.h5"
+        _write_analysis(h5, pressure=30.0)
+        mr.rank_candidates(h5, [au, si], reflections=refl, top_k=2,
+                           scorer=f"torch:{model_path}")
+        with h5py.File(str(h5), "r") as f:
+            assert str(f["ml/candidates"].attrs["method"]) == "torch"
+        rc = mr.read_candidates(h5)
+        assert rc["ok"] and all(0.0 <= v <= 1.0 for v in rc["topk_score"][0])
+
+
 def main() -> None:
     test_frame_features()
     test_clip_negative()
@@ -345,6 +411,8 @@ def main() -> None:
     test_axial_ranking()
     test_worker_ml_rank_candidate_free()
     test_scorer_seam()
+    test_generate_pairs()
+    test_train_export_rank_roundtrip()
     print("ML TEST OK")
 
 

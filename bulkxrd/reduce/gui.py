@@ -37,7 +37,10 @@ HELP = {
     "handoff_file":   "The accepted calibration (PONI + mask) for this reduction. Auto-filled when you accept a calibration; or import a previous run.",
     "dataset_dir":    "Folder containing the sample dataset frames to integrate.",
     "file_patterns":  "Semicolon-separated glob patterns, e.g. *.tif;*.edf",
-    "npt_1d":         "Number of bins in the 1D intensity pattern.",
+    "npt_1d":         ("Number of bins in the 1D intensity pattern. Leave BLANK for auto: "
+                       "~1 bin per pixel of radial extent from the detector geometry "
+                       "(pyFAI rule of thumb). Too few bins under-samples sharp peaks — "
+                       "patterns look stepped and peak fitting degrades."),
     "method":         "pyFAI 1D integration method. csr is fast after the first frame.",
     "robust_1d":      "Also compute an azimuthal-median pattern that suppresses single-crystal spots (diamond).",
     "sigmaclip_1d":   "Also compute an azimuthal sigma-clipped (trimmed-mean) pattern: rejects diamond spots like the median but keeps azimuthally-sparse real sample peaks (textured/incomplete rings). The recommended Step-2 fit source.",
@@ -469,7 +472,7 @@ class ReductionApp:
 
     def _tab_settings(self, frame):
         tk, ttk = self.tk, self.ttk
-        self.field(frame, "npt_1d", "1D bins", row=0, width=14)
+        self.field(frame, "npt_1d", "1D bins (blank=auto)", row=0, width=14)
         ttk.Label(frame, text="Integration unit").grid(row=2, column=0, sticky="w", padx=4, pady=3)
         unit_var = tk.StringVar(value=str(self.config.get("unit", "2th_deg")))
         self.vars["unit"] = unit_var

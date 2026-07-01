@@ -199,6 +199,49 @@ def _integrate_one(task: "Tuple[int, str, bool]") -> Dict[str, Any]:
 # Top-level batch run (called by reduce/worker.py)
 # ---------------------------------------------------------------------------
 
+def _resolve_npt_1d(raw_npt, poni_file, first_image_file
+                    ) -> "Tuple[int, Optional[int], str]":
+    """Resolve the 1D bin count; returns ``(npt, suggested, mode)``.
+
+    Blank / ``auto`` / ``0`` → the geometry-derived suggestion (pyFAI's rule of
+    thumb: ~1 bin per pixel of maximum radial extent, computed exactly like the
+    calibration stage's auto-fill). An explicit value is honoured, but a value
+    well below the suggestion is warned about: under-sampling makes sharp peaks
+    span only a couple of bins — patterns render as staircases and the
+    pseudo-Voigt fits degrade (quantised centers, width-bound rejections).
+    ``suggested`` is None when the geometry could not be read; ``mode`` is
+    ``auto`` | ``explicit`` | ``fallback``.
+    """
+    raw = str(raw_npt if raw_npt is not None else "").strip().lower()
+    explicit = raw not in ("", "auto", "0")
+    suggested = None
+    try:
+        from ..calib.processing import suggest_integration_settings
+        import pyFAI  # type: ignore
+        ai = pyFAI.load(str(poni_file))
+        shape = read_detector_image(str(first_image_file)).shape
+        poni_info = {"pixel1": getattr(ai, "pixel1", None),
+                     "pixel2": getattr(ai, "pixel2", None),
+                     "poni1": getattr(ai, "poni1", None),
+                     "poni2": getattr(ai, "poni2", None)}
+        suggested = int(suggest_integration_settings(shape, poni_info)["npt_1d"])
+    except Exception as e:
+        print(f"[REDUCE] could not derive npt_1d from geometry ({e!r})", flush=True)
+
+    if explicit:
+        npt = int(float(raw))
+        if suggested and npt < 0.7 * suggested:
+            print(f"[REDUCE] WARNING: npt_1d={npt} but the detector geometry "
+                  f"suggests ~{suggested} bins (~1/pixel of radial extent). "
+                  f"Under-sampled peaks look stepped and fit poorly — leave "
+                  f"'1D bins' blank to use the suggestion.", flush=True)
+        return npt, suggested, "explicit"
+    if suggested:
+        print(f"[REDUCE] npt_1d auto -> {suggested} (from detector geometry)", flush=True)
+        return suggested, suggested, "auto"
+    return 1500, None, "fallback"
+
+
 def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
     """Run a full batch reduction. Returns the manifest (also written to disk).
 
@@ -220,8 +263,10 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
             f"matching {config.get('file_patterns', DEFAULT_PATTERNS)!r}"
         )
 
+    npt_1d, npt_suggested, npt_mode = _resolve_npt_1d(
+        config.get("npt_1d", ""), handoff.accepted_poni, files[0])
     settings = {
-        "npt_1d": int(config.get("npt_1d", 1500) or 1500),
+        "npt_1d": npt_1d,
         "unit": config.get("unit", "2th_deg") or "2th_deg",
         "method": config.get("method", "csr") or "csr",
         "polarization_factor": float(config["polarization_factor"]) if str(config.get("polarization_factor", "")).strip() else None,
@@ -290,6 +335,9 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
                 "mask_file": mask_file, "mask_sha256": sha256_file(mask_file) or "" if mask_file else "",
                 "handoff_file": str(handoff.path), "unit": settings["unit"], "method": settings["method"],
                 "dataset_dir": str(dataset_root),
+                "npt_1d": int(settings["npt_1d"]),
+                "npt_1d_suggested": int(npt_suggested or 0),
+                "npt_1d_mode": npt_mode,
             })
             h5.attrs["poni_text"] = Path(handoff.accepted_poni).read_text(encoding="utf-8", errors="replace")
             g_pat = h5.create_group("patterns")
@@ -438,6 +486,8 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
         "n_failed": len(failures),
         "failures": failures[:50],
         "settings": {k: v for k, v in settings.items()},
+        "npt_1d_suggested": npt_suggested,
+        "npt_1d_mode": npt_mode,
         "save_cakes": save_cakes,
         "cake_every": cake_every,
         "make_thumbnails": make_thumbnails,

@@ -34,6 +34,7 @@ bulkxrd/
     ml_simulate.py  Step 3b — pressure-conditioned simulator + DAC augmentations
     ml_rank.py      Step 3b — candidate ranker (ML proposes, physics verifies)
     ml_scorer.py    Step 3b — scorer seam: CosineScorer default; TorchScorer adapter (bulkxrd[ml])
+    ml_train.py     Step 3b — learned-scorer training (bulkxrd-ml-train CLI; torch lazy)
     categorization.py  user's workflow spec (read-only notes)
   app.py         top-level launcher that embeds all stages
 tests/
@@ -203,8 +204,13 @@ Step 3 compound ID:
               one-to-one match, evidence gate, residual removal
     3b  IN PROGRESS  ML proposes → physics verifies (DARA/RADAR-PD seam):
         ml_features (frame→d-grid features), ml_simulate (DAC-augmented training
-        set), ml_rank (DONE: deterministic cosine ranker → /ml/candidates top-K →
-        Step-3a verifier). Learned RADAR-PD-style model behind bulkxrd[ml]=torch: TODO.
+        set), ml_rank (deterministic cosine ranker → /ml/candidates top-K →
+        Step-3a verifier), ml_scorer (scorer seam), ml_train (DONE: RADAR-PD-style
+        pair scorer — strided conv + self-attention on (measured, candidate)
+        fingerprints; pairs = augmented mixture + candidate at true P (pos) /
+        wrong P / absent (neg); `bulkxrd-ml-train` CLI → TorchScript → TorchScorer;
+        train on WashU RIS with pip install -e .[phases,ml]). Untrained-on-real-data;
+        deterministic cosine stays the default until a trained model is validated.
     3c  TODO  Unknown clustering (co-occurrence of unmatched peak tracks)
 → per-substance heatmaps (pressure vs frame, filterable by phase)
 ```
