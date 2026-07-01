@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .phases import (Phase, simulate_pattern, compression_at_pressure,
-                     pymatgen_available, has_axial_eos, axial_scales)
+                     pymatgen_available, has_axial_eos, has_pressure_dof, axial_scales)
 from .parallel import resolve_workers, chunk_ranges
 
 SCHEMA_VERSION = "1"
@@ -400,7 +400,7 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
         return out
 
     has_prior = (p_prior is not None and np.isfinite(p_prior))
-    has_eos = phase.has_eos() or has_axial_eos(phase)
+    has_eos = has_pressure_dof(phase)
     # The pressure-prior penalty applies whenever a frame pressure is known —
     # including for no-EOS phases (scored at ambient, so they are dragged down on
     # a high-pressure frame rather than falsely matching as ambient) — unless the
@@ -671,7 +671,7 @@ def run_identification(
     # marker's per-frame pressure as the prior that primes the full pass.
     if marker_prior and (prior_pressure is None or not np.any(np.isfinite(prior_pressure))):
         markers = [ph for ph in phases
-                   if ph.category == "marker" and (ph.has_eos() or has_axial_eos(ph))]
+                   if ph.category == "marker" and has_pressure_dof(ph)]
         if markers:
             print(f"[IDENTIFY] marker-prior pass over {[m.name for m in markers]}", flush=True)
             est = np.full(n, np.nan, "f8")

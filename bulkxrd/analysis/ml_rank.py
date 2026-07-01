@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .phases import Phase, pymatgen_available, has_axial_eos
+from .phases import Phase, pymatgen_available, has_pressure_dof
 from .identify import phase_reflections, _h5_safe
 from .mldata import simulate_training_pattern
 from .ml_features import frame_features
@@ -57,7 +57,7 @@ def score_phase(meas: np.ndarray, phase: Phase, refl: Reflections, d_grid: np.nd
 
     With a known ``pressure`` the phase is simulated once there; otherwise its
     score is maximised over ``pressure_grid`` (or ambient for a no-EOS phase)."""
-    has_p_dof = phase.has_eos() or has_axial_eos(phase)
+    has_p_dof = has_pressure_dof(phase)
     if pressure is not None and np.isfinite(pressure):
         grid_P = [float(pressure)]
     elif has_p_dof and pressure_grid is not None and len(pressure_grid):
@@ -86,16 +86,23 @@ def rank_candidates(
 ) -> Dict[str, Any]:
     """Rank library phases per frame and write ``/ml/candidates``.
 
-        /ml/candidates  attrs: schema_version, source, top_k, method, fwhm_d, phases
+        /ml/candidates  attrs: schema_version, requested_source, source,
+                        resolved_source, top_k, method, fwhm_d, phases,
+                        clip_negative, normalize, n_points
         /ml/candidates/<phase>/score     (N,)  per-frame similarity (cosine)
         /ml/candidates/<phase>/pressure  (N,)  pressure the best score used
         /ml/candidates/topk_names        (N, top_k) str   ranked candidate names
         /ml/candidates/topk_score        (N, top_k)       their scores
 
     ``source="auto"`` ranks against ``/residual/clean`` when present (RADAR-PD —
-    the leftover after known phases), else the Step-2 fit source. Returns a
-    manifest whose ``candidates`` is the union of per-frame top-K names — feed it
-    to :func:`identify.run_identification` as the candidate set (ML proposes →
+    the leftover after known phases), else the Step-2 fit source. Three source
+    attrs are recorded so a learned model can reproduce the exact preprocessing:
+    ``requested_source`` (this argument, e.g. ``auto``), ``source`` (the rank
+    level it mapped to, ``residual`` | ``fit``), and ``resolved_source`` (the
+    actual channel the features came from, e.g. ``sigmaclip`` — ``fit`` resolves
+    to whatever Step 2 recorded). Returns a manifest whose ``candidates`` is the
+    union of per-frame top-K names — feed it to
+    :func:`identify.run_identification` as the candidate set (ML proposes →
     physics verifies). pymatgen is required unless ``reflections`` is supplied.
     """
     import h5py  # type: ignore
@@ -111,8 +118,9 @@ def rank_candidates(
                          "reflections=).")
 
     # Choose the ranking source: residual if present, else the recorded fit source.
-    want = source
-    if source == "auto":
+    requested = str(source or "auto")
+    want = requested
+    if requested == "auto":
         with h5py.File(str(src), "r") as h5:
             want = "residual" if (h5.get("residual") is not None
                                   and "clean" in h5["residual"]) else "fit"
@@ -167,14 +175,16 @@ def rank_candidates(
             topk_names[i, r] = row[r][1]
 
     _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
-                      want, top_k, fwhm_d, prep)
+                      requested, want, top_k, fwhm_d, prep)
 
     # Union of the per-frame top-K (live frames) — the shortlist for the verifier.
     live = ~excluded
     shortlist = sorted({nm for i in range(n) if live[i] for nm in topk_names[i] if nm})
     manifest = {
         "tool_version": SCHEMA_VERSION, "source": str(src), "out_h5": str(dst),
-        "ranking_source": want, "n_frames": int(n), "top_k": int(top_k),
+        "requested_source": requested, "ranking_source": want,
+        "resolved_source": feats.source,
+        "n_frames": int(n), "top_k": int(top_k),
         "phases": names, "candidates": shortlist,
     }
     print(f"[ML-RANK] done -> {dst}  (shortlist: {shortlist})", flush=True)
@@ -182,7 +192,7 @@ def rank_candidates(
 
 
 def _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
-                      source, top_k, fwhm_d, prep):
+                      requested_source, source, top_k, fwhm_d, prep):
     import os
     import shutil
     import h5py  # type: ignore
@@ -195,7 +205,13 @@ def _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
                 del o["ml"]["candidates"]
             gml = o.require_group("ml")
             g = gml.create_group("candidates")
-            g.attrs.update({"schema_version": SCHEMA_VERSION, "source": str(source),
+            g.attrs.update({"schema_version": SCHEMA_VERSION,
+                            # Source provenance, most abstract to most concrete:
+                            # what was asked for, the rank level it mapped to,
+                            # and the channel the features actually came from.
+                            "requested_source": str(requested_source),
+                            "source": str(source),
+                            "resolved_source": str(prep.get("source", source)),
                             "top_k": int(top_k), "method": "cosine",
                             "fwhm_d": float(fwhm_d), "phases": ", ".join(names),
                             # ML preprocessing provenance (same pipeline a model must use).
@@ -223,11 +239,14 @@ def _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
 def read_candidates(analysis_h5: "str | Path") -> Dict[str, Any]:
     """Read ``/ml/candidates`` back for the GUI / verifier.
 
-    Returns ``{ok, error, source, top_k, n_frames, phases, topk_names, topk_score,
-    shortlist}`` (``phases`` maps name -> {score, pressure} arrays)."""
+    Returns ``{ok, error, requested_source, source, resolved_source, top_k,
+    n_frames, phases, topk_names, topk_score, shortlist}`` (``phases`` maps
+    name -> {score, pressure} arrays). Files written before the provenance split
+    lack requested/resolved attrs; those fall back to ``source``."""
     import h5py  # type: ignore
     p = Path(analysis_h5).expanduser()
-    out: Dict[str, Any] = {"ok": False, "error": "", "source": "", "top_k": 0,
+    out: Dict[str, Any] = {"ok": False, "error": "", "requested_source": "",
+                           "source": "", "resolved_source": "", "top_k": 0,
                            "n_frames": 0, "phases": {}, "topk_names": None,
                            "topk_score": None, "shortlist": []}
     if not p.is_file():
@@ -240,6 +259,8 @@ def read_candidates(analysis_h5: "str | Path") -> Dict[str, Any]:
                 out["error"] = "No /ml/candidates — run ML candidate ranking first."
                 return out
             out["source"] = str(g.attrs.get("source", ""))
+            out["requested_source"] = str(g.attrs.get("requested_source", out["source"]))
+            out["resolved_source"] = str(g.attrs.get("resolved_source", out["source"]))
             out["top_k"] = int(g.attrs.get("top_k", 0))
             if "topk_names" in g:
                 tn = [[x.decode() if isinstance(x, bytes) else str(x) for x in row]

@@ -99,6 +99,8 @@ from .phases import (
     birch_murnaghan_pressure,
     volume_at_pressure,
     compress_lattice,
+    has_axial_eos,
+    has_pressure_dof,
 )
 
 __all__ = [
@@ -130,4 +132,5 @@ __all__ = [
     "upsert_user_phase", "remove_user_phase", "import_cif", "parse_cif",
     "simulate_pattern", "pymatgen_available",
     "birch_murnaghan_pressure", "volume_at_pressure", "compress_lattice",
+    "has_axial_eos", "has_pressure_dof",
 ]

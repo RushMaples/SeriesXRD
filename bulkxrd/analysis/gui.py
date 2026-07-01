@@ -831,7 +831,9 @@ class AnalysisApp:
         self.run_btn.configure(state="disabled")
         self.cancel_btn.configure(state="normal")
         self.progress.configure(value=0)
-        self.progress_label.configure(text="Starting worker ...")
+        # Fresh run: clear any leftover cancelled/failed/done styling and state.
+        self._cancel_requested = False
+        self.progress_label.configure(text="Starting worker ...", foreground=MUTED)
         self._worker_status = "running"
         self._update_status_bar()
 
@@ -895,6 +897,20 @@ class AnalysisApp:
         self.run_btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
         if returncode != 0:
+            # A user-requested cancel also exits nonzero — don't call it a
+            # failure or pop an error dialog for a deliberate act. Say what
+            # state things are in and what Run will do next.
+            if getattr(self, "_cancel_requested", False):
+                self._cancel_requested = False
+                self._worker_status = "cancelled"
+                self._update_status_bar()
+                self.progress_label.configure(
+                    text="Cancelled — completed steps were saved to the analysis "
+                         "file; interrupted steps left no partial output (atomic "
+                         "writes). Run analysis re-runs every enabled step.",
+                    foreground=MUTED)
+                self.log("Run cancelled by user.", "WARN")
+                return
             self._worker_status = "failed"
             self._update_status_bar()
             self.progress_label.configure(
@@ -982,6 +998,9 @@ class AnalysisApp:
     def cancel_analysis(self):
         proc = self._run_proc
         if proc is not None and proc.poll() is None:
+            self._cancel_requested = True
+            self.cancel_btn.configure(state="disabled")
+            self.progress_label.configure(text="Cancelling ...", foreground=MUTED)
             proc.terminate()
             self.log("Cancel requested — terminating worker", "WARN")
 
@@ -1005,9 +1024,14 @@ class AnalysisApp:
 
         ttk.Label(ctrl, text="Frame:", foreground=MUTED).pack(side="left", padx=(12, 2))
         self._review_idx_var = tk.IntVar(value=0)
+        # NOTE: the Scale is deliberately NOT linked to _review_idx_var. When the
+        # Scale and the Spinbox shared the variable, the Scale's callback echoed a
+        # var.set() back into the Spinbox mid-arrow-press, and the press applied
+        # its increment twice (one click advanced two frames). The slider now
+        # drives the var only through _on_review_slider (change-guarded), and the
+        # spinbox/render paths sync the slider explicitly.
         self._review_scale = ttk.Scale(
             ctrl, from_=0, to=0, orient="horizontal", length=200,
-            variable=self._review_idx_var,
             command=self._on_review_slider,
         )
         self._review_scale.pack(side="left", padx=2)
@@ -1078,19 +1102,32 @@ class AnalysisApp:
         self._render_review(int(self._review_idx_var.get()))
 
     def _on_review_slider(self, value):
-        """Called on every slider tick — schedule a debounced render."""
+        """Called on every slider tick — snap to an int frame and debounce.
+
+        Change-guarded: writing the var only when the frame actually changes is
+        what keeps _sync_review_scale() below loop-free (scale.set fires this
+        callback once, sees no change, stops)."""
         try:
-            idx = int(float(value))
+            idx = int(round(float(value)))
         except (ValueError, TypeError):
             return
-        # Keep spinbox in sync immediately.
         try:
+            if int(self._review_idx_var.get() or 0) == idx:
+                return
             self._review_idx_var.set(idx)
         except Exception:
-            pass
+            return
         self._schedule_review_render()
 
+    def _sync_review_scale(self):
+        """Move the slider to the spinbox's frame (guarded, see slider callback)."""
+        try:
+            self._review_scale.set(int(self._review_idx_var.get() or 0))
+        except Exception:
+            pass
+
     def _on_review_spinbox(self):
+        self._sync_review_scale()
         self._schedule_review_render()
 
     def _schedule_review_render(self):
@@ -1109,6 +1146,7 @@ class AnalysisApp:
             idx = int(self._review_idx_var.get())
         except (ValueError, TypeError):
             idx = 0
+        self._sync_review_scale()   # typed entry / programmatic changes move the slider too
         self._render_review(idx)
 
     def _render_review(self, frame_index: int):
@@ -2575,6 +2613,7 @@ class AnalysisApp:
             rows.append((conf, rec))
         rows.sort(key=lambda t: (-(t[0] if t[0] == t[0] else -1), t[1]["name"].lower()))
         # Short labels for the pressure model the phase was fit under.
+        # ("ambient_only" is the pre-rename value in old HDF5 files — read-compat.)
         _MODEL_LABEL = {"eos": "EOS", "axial_eos": "axial", "no_eos": "no-EOS",
                         "ambient_only": "no-EOS"}
         n_present = 0

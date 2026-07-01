@@ -475,6 +475,15 @@ def has_axial_eos(phase: Phase) -> bool:
     return any(isinstance(ax.get(k), dict) and ax[k].get("K0") for k in ("a", "b", "c"))
 
 
+def has_pressure_dof(phase: Phase) -> bool:
+    """True if the phase has ANY pressure degree of freedom — a volume EOS or a
+    per-axis (axial) EOS. The single predicate for "can this phase's peaks move
+    with pressure?"; checking only ``has_eos()`` silently pins axial-only phases
+    at ambient (identification, simulation, and ranking must all agree on this).
+    """
+    return phase.has_eos() or has_axial_eos(phase)
+
+
 def axial_scales(phase: Phase, pressure_gpa: float) -> "tuple":
     """Per-axis linear scale factors ``(sa, sb, sc)`` at ``pressure_gpa``.
 
@@ -513,7 +522,7 @@ def compress_lattice(phase: Phase, pressure_gpa: float) -> Dict[str, float]:
     Angles are held fixed. Returns a ``{a,b,c,alpha,beta,gamma}`` dict. Raises if
     the phase has neither a usable EOS nor an axial EOS, or no lattice.
     """
-    if not (phase.has_eos() or has_axial_eos(phase)):
+    if not has_pressure_dof(phase):
         raise ValueError(f"Phase {phase.name!r} has no usable EOS (need K0).")
     if not phase.lattice:
         raise ValueError(f"Phase {phase.name!r} has no lattice to scale.")

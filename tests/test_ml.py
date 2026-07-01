@@ -147,9 +147,24 @@ def test_rank_candidates_and_shortlist():
         _write_analysis(h5, pressure=30.0)             # residual holds Au at 30 GPa
         man = mr.rank_candidates(h5, [au, decoy], reflections=refl, top_k=2, fwhm_d=0.05)
         assert man["ranking_source"] == "residual"     # auto picks the residual
+        assert man["requested_source"] == "auto" and man["resolved_source"] == "residual"
         assert "Au" in man["candidates"]
         rc = mr.read_candidates(h5)
         assert rc["ok"] and rc["n_frames"] == 2
+        # Three-level source provenance persisted (requested -> rank level -> channel).
+        assert rc["requested_source"] == "auto"
+        assert rc["source"] == "residual" and rc["resolved_source"] == "residual"
+        # 'fit' resolves to whatever Step 2 recorded (clean here) — a learned
+        # model needs the resolved channel to reproduce the preprocessing.
+        man_fit = mr.rank_candidates(h5, [au, decoy], reflections=refl, top_k=2,
+                                     fwhm_d=0.05, source="fit")
+        assert man_fit["requested_source"] == "fit"
+        assert man_fit["resolved_source"] == "clean"
+        rc_fit = mr.read_candidates(h5)
+        assert rc_fit["source"] == "fit" and rc_fit["resolved_source"] == "clean"
+        # restore the residual-ranked candidates for the assertions below
+        man = mr.rank_candidates(h5, [au, decoy], reflections=refl, top_k=2, fwhm_d=0.05)
+        rc = mr.read_candidates(h5)
         # Au (correct phase at the metadata pressure) outranks the decoy.
         assert rc["phases"]["Au"]["score"][0] > rc["phases"]["Decoy"]["score"][0]
         assert rc["phases"]["Au"]["score"][0] > 0.8

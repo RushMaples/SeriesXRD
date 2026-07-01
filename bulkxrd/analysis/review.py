@@ -334,7 +334,8 @@ def identify_tracks(h5_path: "str | Path") -> Dict[str, Any]:
     where ``phases`` is a list of ``{name, category, has_eos, pressure_model,
     prior_penalized, n_pred, pressure, score, confidence, recall, precision,
     n_matched, prior_penalty}`` (the array fields are all length n_frames).
-    ``pressure_model`` is ``eos`` | ``axial_eos`` | ``ambient_only``.
+    ``pressure_model`` is ``eos`` | ``axial_eos`` | ``no_eos`` (older files may
+    carry the pre-rename ``ambient_only``; callers should treat it as ``no_eos``).
     """
     p = Path(h5_path).expanduser()
     out: Dict[str, Any] = {"ok": False, "error": "", "unit": "", "wavelength": 0.0,
