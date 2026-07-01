@@ -18,7 +18,7 @@ import shutil
 import sys
 
 # Keep in sync with [project] version in pyproject.toml.
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 TOOL_NAME = "Bulk-XRD"
 
 # Files that must exist inside a valid backend (bulkxrd package) folder.

@@ -123,6 +123,11 @@ def run_analysis(cfg: dict) -> dict:
                 raise FileNotFoundError(msg)
             print_status(msg + " — skipped", "WARN")
         else:
+            # The GUI launches this file directly by path, so __package__ is
+            # empty. Lazy imports inside run_analysis must therefore use the
+            # absolute package path; relative imports work only under
+            # ``python -m bulkxrd.analysis.worker``.
+            from bulkxrd.analysis.frame_metadata import import_csv_to_analysis
             try:
                 mm = import_csv_to_analysis(out_path, csv_path)
                 manifest["frame_metadata"] = {"csv": mm.get("csv"),
@@ -174,15 +179,16 @@ def run_analysis(cfg: dict) -> dict:
         phases = None
 
         # ML candidate ranking (Step 3b proposer): rank the WHOLE library against
-        # each frame and VERIFY only the top-K below — "ML proposes, physics
-        # verifies". This is candidate-FREE: no Phases-tab pre-selection needed.
-        # Pure-numpy ranker (no torch); needs pymatgen to simulate, so it falls
-        # back to the manual/open-set selection with a warning when absent.
-        if run_ml_rank:
+        # each frame, then VERIFY only the top-K with the deterministic matcher
+        # below — "ML proposes, physics verifies". Pure-numpy ranker (no torch);
+        # needs pymatgen to simulate, so it's skipped with a warning when absent.
+        if _as_bool(cfg.get("run_ml_rank", False), False):
+            from bulkxrd.analysis.phases import pymatgen_available
             if not pymatgen_available():
                 print_status("ML candidate ranking needs pymatgen — falling back to the "
                              "candidate selection.", "WARN")
             else:
+                from bulkxrd.analysis.ml_rank import rank_candidates
                 pool = list(lib.values())
                 if not pool:
                     raise ValueError("Reference library is empty — add or bundle phases first.")
