@@ -2575,7 +2575,8 @@ class AnalysisApp:
             rows.append((conf, rec))
         rows.sort(key=lambda t: (-(t[0] if t[0] == t[0] else -1), t[1]["name"].lower()))
         # Short labels for the pressure model the phase was fit under.
-        _MODEL_LABEL = {"eos": "EOS", "axial_eos": "axial", "ambient_only": "ambient"}
+        _MODEL_LABEL = {"eos": "EOS", "axial_eos": "axial", "no_eos": "no-EOS",
+                        "ambient_only": "no-EOS"}
         n_present = 0
         for conf, rec in rows:
             recall = _at(rec.get("recall"))
@@ -2586,13 +2587,15 @@ class AnalysisApp:
             nm = int(nmatch[fi]) if nmatch is not None and fi < len(nmatch) else 0
             present = conf >= conf_min
             n_present += int(present)
-            model = rec.get("pressure_model") or ("eos" if rec.get("has_eos") else "ambient_only")
+            model = rec.get("pressure_model") or ("eos" if rec.get("has_eos") else "no_eos")
             mlabel = _MODEL_LABEL.get(model, model)
-            # Flag a frame whose confidence the pressure prior pulled down.
-            if penalty == penalty and penalty < 0.95:
+            # Flag exemption from / impact of the pressure prior.
+            if rec.get("pressure_assumption") == "ignore_prior":
+                mlabel += " (no prior)"
+            elif penalty == penalty and penalty < 0.95:
                 mlabel += " ↓P"
             name = rec["name"]
-            pstr = "—" if (press != press or model == "ambient_only") else f"{press:.1f}"
+            pstr = "—" if (press != press or model in ("no_eos", "ambient_only")) else f"{press:.1f}"
             tbl.insert("", "end", values=(
                 name, mlabel, f"{conf:.2f}",
                 "—" if recall != recall else f"{recall:.2f}",

@@ -116,10 +116,11 @@ def rank_candidates(
         with h5py.File(str(src), "r") as h5:
             want = "residual" if (h5.get("residual") is not None
                                   and "clean" in h5["residual"]) else "fit"
-    feats = frame_features(src, source=want)
+    feats = frame_features(src, source=want, clip_negative=True)
     meas, grid, pressure = feats.X, feats.d_grid, feats.pressure
     n = feats.n_frames
     excluded = feats.excluded
+    prep = feats.preprocessing()           # source/clip_negative/normalize/... for provenance
 
     # Reflections cached once in the parent (workers/scoring need no pymatgen).
     if reflections is None:
@@ -166,7 +167,7 @@ def rank_candidates(
             topk_names[i, r] = row[r][1]
 
     _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
-                      want, top_k, fwhm_d)
+                      want, top_k, fwhm_d, prep)
 
     # Union of the per-frame top-K (live frames) — the shortlist for the verifier.
     live = ~excluded
@@ -181,7 +182,7 @@ def rank_candidates(
 
 
 def _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
-                      source, top_k, fwhm_d):
+                      source, top_k, fwhm_d, prep):
     import os
     import shutil
     import h5py  # type: ignore
@@ -196,7 +197,12 @@ def _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
             g = gml.create_group("candidates")
             g.attrs.update({"schema_version": SCHEMA_VERSION, "source": str(source),
                             "top_k": int(top_k), "method": "cosine",
-                            "fwhm_d": float(fwhm_d), "phases": ", ".join(names)})
+                            "fwhm_d": float(fwhm_d), "phases": ", ".join(names),
+                            # ML preprocessing provenance (same pipeline a model must use).
+                            "clip_negative": bool(prep.get("clip_negative", True)),
+                            "normalize": str(prep.get("normalize", "max")),
+                            "n_points": int(prep.get("n_points", 0)),
+                            "wavelength": float(prep.get("wavelength", 0.0))})
             for nm in names:
                 gp = g.create_group(_h5_safe(nm))
                 gp.attrs["name"] = nm

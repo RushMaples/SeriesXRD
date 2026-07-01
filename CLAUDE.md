@@ -125,7 +125,8 @@ P = sum(counts). Ragged layout — peak count varies per frame.
 /identify  attrs: ... p_min, p_max, rel_tol, pressure_window, pressure_sigma_k,
                   min_matched, n_pressure_prior
 /identify/<phase>/pressure,score,confidence,recall,precision,n_matched,prior_penalty (N,)
-/identify/<phase>  attrs: pressure_model (eos|axial_eos|ambient_only), prior_penalized
+/identify/<phase>  attrs: pressure_model (eos|axial_eos|no_eos), pressure_assumption
+                  (eos_based|ambient_reference|eos_missing|ignore_prior), prior_penalized
 /identify/<phase>/refl_d, refl_w, refl_hkl   cached ambient reflections (no pymatgen in GUI)
 /peaks/phase                 (P,) str   phase attributed to each fitted peak ("" = unexplained)
 /residual/clean              (N, N_bins) clean minus the reconstructed peaks of present phases
@@ -157,7 +158,8 @@ all of ICSD/MP.
 ### Step 3b proposer appended by `analysis/ml_rank.py`
 
 ```
-/ml/candidates  attrs: source (residual|fit), top_k, method=cosine, fwhm_d, phases
+/ml/candidates  attrs: source (residual|fit), top_k, method=cosine, fwhm_d, phases,
+                       clip_negative, normalize, n_points (ML preprocessing provenance)
 /ml/candidates/<phase>/score    (N,)  per-frame cosine similarity to the phase
 /ml/candidates/<phase>/pressure (N,)  pressure the best score used
 /ml/candidates/topk_names  (N, top_k) str   ranked candidate names per frame
@@ -169,8 +171,12 @@ all of ICSD/MP.
 default, RADAR-PD-style; else the Step-2 fit source) vs each phase simulated at that
 frame's pressure (the metadata prior = the lattice-nudge analog). The union of per-frame
 top-K is fed to `run_identification` as the candidate set (worker/`batch --ml-rank`), so
-the deterministic matcher only *verifies* a shortlist. The v1 ranker is pure-numpy (no
-torch); a learned RADAR-PD-style scorer slots in behind `bulkxrd[ml]` later.
+the deterministic matcher only *verifies* a shortlist. **Candidate-free**: with ML rank on,
+no Phases-tab pre-selection is needed — it ranks the whole library. Simulation uses the
+**same anisotropic `predicted_d`** as Step 3a (an axial-only phase shifts correctly instead
+of staying at ambient), and the residual is clipped non-negative before cosine. The v1
+ranker is pure-numpy (no torch); a learned RADAR-PD-style scorer slots in behind
+`bulkxrd[ml]` later.
 `ml_features.frame_features` builds the model input (d-grid resample of a chosen source +
 pressure/contamination/peaks/excluded); `ml_simulate` builds the DAC-augmented training set
 (mixtures, EOS shift, texture, broadening, drift, diamond spikes, background humps,

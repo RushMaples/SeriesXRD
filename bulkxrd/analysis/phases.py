@@ -57,6 +57,12 @@ class Phase:
     atoms: List[Dict[str, Any]] = field(default_factory=list)
     eos: Dict[str, float] = field(default_factory=dict)
     axial_eos: Dict[str, Any] = field(default_factory=dict)
+    # How to treat a phase that has no EOS under the pressure prior (Step 3a/3b):
+    #   "" / "auto"        -> eos_missing (penalise off-ambient, flag uncertain)
+    #   "ambient_reference"-> genuinely an ambient-only reference (penalise)
+    #   "eos_missing"      -> we lack high-P EOS data (penalise, flag)
+    #   "ignore_prior"     -> don't apply the pressure-prior penalty to this phase
+    pressure_assumption: str = ""
     amorphous: bool = False
     cif_path: str = ""
     source: str = ""

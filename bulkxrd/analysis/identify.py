@@ -306,16 +306,34 @@ def pressure_window_halfwidth(sigma: "Optional[float]", default_window: float,
     return max(w, _MIN_PRESSURE_WINDOW)
 
 
+PRESSURE_ASSUMPTIONS = ("eos_based", "ambient_reference", "eos_missing", "ignore_prior")
+
+
 def pressure_model(phase: Phase) -> str:
-    """How a phase's peaks move with pressure: ``axial_eos`` (per-axis EOS,
-    anisotropic), ``eos`` (isotropic volume EOS), or ``ambient_only`` (no EOS —
-    scored at 0 GPa, and penalised on high-pressure frames). Surfaced per phase so
-    the user can see *why* a no-EOS phase scores low rather than guessing."""
+    """The *math* available to move a phase's peaks with pressure: ``axial_eos``
+    (per-axis EOS, anisotropic), ``eos`` (isotropic volume EOS), or ``no_eos``
+    (none — scored at 0 GPa). This says nothing about whether 0 GPa is the right
+    interpretation; see :func:`pressure_assumption`."""
     if has_axial_eos(phase):
         return "axial_eos"
     if phase.has_eos():
         return "eos"
-    return "ambient_only"
+    return "no_eos"
+
+
+def pressure_assumption(phase: Phase) -> str:
+    """How the pressure prior is *interpreted* for a phase (vs. the raw model).
+
+    A ``no_eos`` phase is ambiguous — it may be a genuine ambient-only reference
+    or simply lack high-P EOS data — and a user may want to exempt some phases
+    from the prior entirely. Resolves the phase's ``pressure_assumption`` field
+    (``ambient_reference`` | ``eos_missing`` | ``ignore_prior``) or, when unset,
+    defaults to ``eos_based`` for EOS phases and ``eos_missing`` for ``no_eos``.
+    Only ``ignore_prior`` changes behaviour (no penalty); the rest are labels."""
+    raw = str(getattr(phase, "pressure_assumption", "") or "").strip().lower()
+    if raw in ("ambient_reference", "eos_missing", "ignore_prior"):
+        return raw
+    return "eos_based" if pressure_model(phase) != "no_eos" else "eos_missing"
 
 
 def conservative_confidence(recall: float, precision: float, n_matched: int,
@@ -361,8 +379,10 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
     instead of the whole ``[p_min, p_max]`` range, so a wrong phase can no longer
     slide along pressure until a few lines happen to coincide. The fitted
     pressure is additionally weighed against the prior by a Gaussian penalty in
-    :func:`conservative_confidence` (tolerance = ``p_window``). The prior is not
-    applied to phases without an EOS (their pressure is fixed at ambient).
+    :func:`conservative_confidence` (tolerance = ``p_window``). The penalty also
+    applies to no-EOS phases (scored at ambient, so they are dragged down on a
+    high-pressure frame), EXCEPT phases whose ``pressure_assumption`` is
+    ``ignore_prior``.
     """
     if refl is None:
         refl = phase_reflections(phase)
@@ -382,10 +402,11 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
     has_prior = (p_prior is not None and np.isfinite(p_prior))
     has_eos = phase.has_eos() or has_axial_eos(phase)
     # The pressure-prior penalty applies whenever a frame pressure is known —
-    # including for no-EOS phases. A no-EOS phase is scored at ambient (0 GPa);
-    # on a genuinely high-pressure frame that disagrees with the prior, so its
-    # confidence is dragged down rather than letting it falsely match as ambient.
-    pen_prior = float(p_prior) if has_prior else None
+    # including for no-EOS phases (scored at ambient, so they are dragged down on
+    # a high-pressure frame rather than falsely matching as ambient) — unless the
+    # phase is explicitly exempted via pressure_assumption == "ignore_prior".
+    apply_pen = has_prior and pressure_assumption(phase) != "ignore_prior"
+    pen_prior = float(p_prior) if apply_pen else None
     pen_tol = float(p_window) if (p_window and p_window > 0) else None
 
     def _score_P(P):
@@ -529,7 +550,8 @@ def run_identification(
         /identify/<phase>/prior_penalty (N,)    Gaussian pressure-prior factor in
                                                 (0,1] applied to confidence (1=no prior)
                           attrs: name, n_pred, has_eos, category, pressure_model
-                                 (eos|axial_eos|ambient_only), prior_penalized
+                                 (eos|axial_eos|no_eos), pressure_assumption,
+                                 prior_penalized
 
     Pressure prior (the DAC accuracy fix): if ``pressure_by_frame`` is given — or
     the analysis file already carries ``/frames/pressure`` (from filenames or a
@@ -761,6 +783,7 @@ def run_identification(
                 g.attrs.update({"name": ph.name, "n_pred": int(refl_cache[ph.name][0].size),
                                 "has_eos": bool(ph.has_eos()), "category": ph.category,
                                 "pressure_model": pressure_model(ph),
+                                "pressure_assumption": pressure_assumption(ph),
                                 "prior_penalized": bool(np.any(pp_live < 0.999))})
                 for k, v in results[ph.name].items():
                     g.create_dataset(k, data=v)
@@ -811,6 +834,7 @@ def run_identification(
             "pressure_median": float(np.nanmedian(res["pressure"][seen])) if np.any(seen) else float("nan"),
             "has_eos": bool(ph.has_eos()),
             "pressure_model": pressure_model(ph),
+            "pressure_assumption": pressure_assumption(ph),
             "prior_penalized": bool(np.any(pp_live < 0.999)),
             "n_frames_penalized": int(np.sum(pp_live < 0.999)),
         }

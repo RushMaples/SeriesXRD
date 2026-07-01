@@ -77,30 +77,39 @@ def _run(args) -> int:
         if not pymatgen_available():
             print("[ERROR] Step 3a needs pymatgen (pip install pymatgen).", flush=True)
             return 1
-        names = [s.strip() for s in (args.phases or "").split(",") if s.strip()]
-        if not names:
-            print("[ERROR] Step 3a needs --phases (comma-separated names from the "
-                  "reference library).", flush=True)
-            return 1
         lib = load_library(args.workspace or Path.cwd())
-        phases = [lib[n] for n in names if n in lib]
-        missing = [n for n in names if n not in lib]
-        if missing:
-            print(f"[WARN] phases not in library, skipped: {missing}", flush=True)
-        if not phases:
-            print("[ERROR] none of the requested phases resolve in the library.", flush=True)
-            return 1
+        phases = None
 
-        # ML candidate ranking (Step 3b proposer): rank the whole library, verify
-        # only the top-K below ("ML proposes, physics verifies").
+        # ML candidate ranking (Step 3b proposer): rank the WHOLE library, verify
+        # only the top-K below ("ML proposes, physics verifies"). Candidate-FREE —
+        # no --phases needed.
         if args.ml_rank:
             from .ml_rank import rank_candidates
+            if not list(lib.values()):
+                print("[ERROR] reference library is empty — add or bundle phases first.", flush=True)
+                return 1
             mrank = rank_candidates(analysis_path, list(lib.values()),
                                     source=args.ml_rank_source, top_k=args.ml_rank_top_k)
-            shortlist = [lib[n] for n in mrank["candidates"] if n in lib]
-            if shortlist:
-                phases = shortlist
-                print(f"[ANALYZE] ML ranker shortlist: {[p.name for p in shortlist]}", flush=True)
+            phases = [lib[n] for n in mrank["candidates"] if n in lib]
+            if phases:
+                print(f"[ANALYZE] ML ranker shortlist: {[p.name for p in phases]}", flush=True)
+            else:
+                print("[WARN] ML ranker produced no candidates — needs --phases.", flush=True)
+                phases = None
+
+        if phases is None:
+            names = [s.strip() for s in (args.phases or "").split(",") if s.strip()]
+            if not names:
+                print("[ERROR] Step 3a needs --phases (comma-separated names), or --ml-rank "
+                      "to rank the whole library.", flush=True)
+                return 1
+            phases = [lib[n] for n in names if n in lib]
+            missing = [n for n in names if n not in lib]
+            if missing:
+                print(f"[WARN] phases not in library, skipped: {missing}", flush=True)
+            if not phases:
+                print("[ERROR] none of the requested phases resolve in the library.", flush=True)
+                return 1
         run_identification(
             analysis_path, phases,
             wavelength=args.wavelength, p_min=args.p_min, p_max=args.p_max,

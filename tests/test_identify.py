@@ -399,7 +399,7 @@ def test_pressure_model_and_penalty_surfaced():
                    axial_eos={"a": {"type": "BM3", "K0": 300, "K0p": 4},
                               "c": {"type": "BM3", "K0": 100, "K0p": 4}})
     assert idf.pressure_model(au) == "eos"
-    assert idf.pressure_model(no_eos) == "ambient_only"
+    assert idf.pressure_model(no_eos) == "no_eos"
     assert idf.pressure_model(tet) == "axial_eos"
 
     with tempfile.TemporaryDirectory() as td:
@@ -421,20 +421,38 @@ def test_pressure_model_and_penalty_surfaced():
         # Summary carries the model + penalty flags.
         assert man["summary"]["Au"]["pressure_model"] == "eos"
         assert man["summary"]["Au"]["prior_penalized"] is False
-        assert man["summary"]["NoEOS"]["pressure_model"] == "ambient_only"
+        assert man["summary"]["NoEOS"]["pressure_model"] == "no_eos"
         assert man["summary"]["NoEOS"]["prior_penalized"] is True
         assert man["summary"]["NoEOS"]["n_frames_penalized"] == 1
         # HDF5 attrs + per-frame prior_penalty dataset.
         with h5py.File(str(h5), "r") as f:
-            assert str(f["identify/NoEOS"].attrs["pressure_model"]) == "ambient_only"
+            assert str(f["identify/NoEOS"].attrs["pressure_model"]) == "no_eos"
             assert bool(f["identify/NoEOS"].attrs["prior_penalized"]) is True
             assert f["identify/NoEOS/prior_penalty"][0] < 0.1        # 0 GPa vs 30 GPa prior
             assert f["identify/Au/prior_penalty"][0] > 0.99
         # review surfaces them for the GUI.
         tr = identify_tracks(h5)
         by = {r["name"]: r for r in tr["phases"]}
-        assert by["NoEOS"]["pressure_model"] == "ambient_only" and by["NoEOS"]["prior_penalized"]
+        assert by["NoEOS"]["pressure_model"] == "no_eos" and by["NoEOS"]["prior_penalized"]
         assert by["Au"]["pressure_model"] == "eos"
+
+
+def test_pressure_assumption_ignore_prior():
+    """pressure_model renamed to no_eos; pressure_assumption resolves; a phase
+    flagged ignore_prior is exempt from the pressure-prior penalty."""
+    au, refl = _synth_au()
+    no_eos = ph.Phase(name="NoEOS")
+    ignore = ph.Phase(name="Ref", pressure_assumption="ignore_prior")
+    assert idf.pressure_model(au) == "eos" and idf.pressure_model(no_eos) == "no_eos"
+    assert idf.pressure_assumption(au) == "eos_based"
+    assert idf.pressure_assumption(no_eos) == "eos_missing"          # default for no-EOS
+    assert idf.pressure_assumption(ignore) == "ignore_prior"
+
+    obs = refl[0]                                       # ambient lines, frame prior = 30
+    pen = idf.fit_pressure_for_phase(obs, no_eos, refl, p_prior=30.0, p_window=2.0)
+    ign = idf.fit_pressure_for_phase(obs, ignore, refl, p_prior=30.0, p_window=2.0)
+    assert pen["confidence"] < 0.2 and pen["prior_penalty"] < 0.1   # penalised
+    assert ign["confidence"] > 0.8 and ign["prior_penalty"] == 1.0  # exempt
 
 
 def main() -> None:
@@ -451,6 +469,7 @@ def main() -> None:
     test_pressure_prior_rejects_decoy_end_to_end()
     test_no_eos_penalized_and_range_auto_widens()
     test_pressure_model_and_penalty_surfaced()
+    test_pressure_assumption_ignore_prior()
     print("IDENTIFY TEST OK")
 
 

@@ -55,10 +55,19 @@ class FrameFeatures:
     unit: str
     wavelength: float
     candidate_phases: List[str] = field(default_factory=list)
+    # Preprocessing provenance (so a model trains/infers on the SAME pipeline).
+    clip_negative: bool = True
+    normalize: str = "max"              # "max" (row max -> 1) or "none"
 
     @property
     def n_frames(self) -> int:
         return int(self.X.shape[0])
+
+    def preprocessing(self) -> Dict[str, Any]:
+        """The preprocessing metadata to persist alongside any model output."""
+        return {"source": self.source, "clip_negative": bool(self.clip_negative),
+                "normalize": self.normalize, "n_points": int(self.d_grid.size),
+                "unit": self.unit, "wavelength": float(self.wavelength)}
 
 
 def _bg_channel(bg, name: str) -> "Optional[np.ndarray]":
@@ -88,6 +97,7 @@ def _build_source_stack(h5, source: str) -> "tuple[np.ndarray, str]":
 
     spot = _bg_channel(bg, "spot_residual")
     sc = _bg_channel(bg, "sigmaclip_residual")
+    base = _bg_channel(bg, "baseline")
     if s == "fit":
         pkg = h5.get("peaks")
         want = str(pkg.attrs.get("source", "clean")) if pkg is not None else "clean"
@@ -98,13 +108,24 @@ def _build_source_stack(h5, source: str) -> "tuple[np.ndarray, str]":
             return np.asarray(data, dtype=float), resolved
         except ValueError:
             return clean, "clean"
-    if s in _BG_SOURCES:
-        try:
-            data, resolved = build_fit_source(s, clean, spot_residual=spot,
-                                              sigmaclip_residual=sc)
-            return np.asarray(data, dtype=float), resolved
-        except ValueError as e:
-            raise ValueError(str(e))
+    # Channels build_fit_source doesn't compose, read/reconstruct directly
+    # (mirrors heatmap.pattern_image) so the public SOURCES list is honest.
+    if s == "baseline":
+        if base is None:
+            raise ValueError("/background/baseline not present.")
+        return base, "baseline"
+    if s == "spot_residual":
+        if spot is None:
+            raise ValueError("/background/spot_residual not present.")
+        return spot, "spot_residual"
+    if s == "robust":
+        if base is None:
+            raise ValueError("/background/baseline not present (robust = clean + baseline).")
+        return clean + base, "robust"
+    if s in ("clean", "mean", "hybrid", "sigmaclip"):
+        data, resolved = build_fit_source(s, clean, spot_residual=spot,
+                                          sigmaclip_residual=sc)
+        return np.asarray(data, dtype=float), resolved
     raise ValueError(f"Unknown source {source!r} (choose from {SOURCES}).")
 
 
@@ -115,6 +136,7 @@ def frame_features(
     d_grid: "Optional[np.ndarray]" = None,
     wavelength: "Optional[float]" = None,
     normalize: bool = True,
+    clip_negative: bool = True,
 ) -> FrameFeatures:
     """Build :class:`FrameFeatures` from an analysis HDF5.
 
@@ -123,6 +145,12 @@ def frame_features(
     input for unknowns), or any raw background channel. Resampling lands on the
     shared d-grid (SimXRD-4M format by default), so these line up bin-for-bin with
     :func:`ml_simulate` patterns.
+
+    ``clip_negative`` (default True) floors the pattern at 0 before normalising.
+    The residual can go negative after phase subtraction, but a measured intensity
+    and every simulated candidate fingerprint are non-negative — leaving negative
+    holes in the row would distort the cosine score and under-rank real leftover
+    phases.
     """
     import h5py  # type: ignore
 
@@ -160,6 +188,8 @@ def frame_features(
     X = np.zeros((n, grid.size), dtype="f4")
     for i in range(n):
         X[i] = resample_to_d(radial, stack[i], unit, wavelength, grid)
+    if clip_negative:
+        X = np.clip(X, 0.0, None)
     if normalize:
         X = _normalize_rows(X)
 
@@ -169,7 +199,9 @@ def frame_features(
         contamination=contamination.astype("f8"), n_peaks=n_peaks,
         excluded=excluded, source=resolved, unit=unit,
         wavelength=float(wavelength) if wavelength else 0.0,
-        candidate_phases=candidate_phases)
+        candidate_phases=candidate_phases,
+        clip_negative=bool(clip_negative),
+        normalize=("max" if normalize else "none"))
 
 
 def _good_peak_counts(h5, n: int) -> np.ndarray:
