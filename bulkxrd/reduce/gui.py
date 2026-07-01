@@ -42,7 +42,13 @@ HELP = {
                        "(pyFAI rule of thumb). Too few bins under-samples sharp peaks — "
                        "patterns look stepped and peak fitting degrades."),
     "method":         "pyFAI 1D integration method. csr is fast after the first frame.",
-    "robust_1d":      "Also compute an azimuthal-median pattern that suppresses single-crystal spots (diamond).",
+    "robust_1d":      ("Also compute a spot-suppressed pattern: the mean of a narrow azimuthal "
+                       "quantile band around the median. Rejects diamond single-crystal spots "
+                       "like a median, without the median's integer-count quantization."),
+    "robust_quant_halfwidth": ("Half-width of the azimuthal quantile band averaged for the robust "
+                               "pattern: 0.05 = the 45–55% band (default). 0 = pure median — beware: "
+                               "on integer photon counts a pure median is QUANTIZED, so low-intensity "
+                               "patterns render as staircases and clean/baseline inherit the steps."),
     "sigmaclip_1d":   "Also compute an azimuthal sigma-clipped (trimmed-mean) pattern: rejects diamond spots like the median but keeps azimuthally-sparse real sample peaks (textured/incomplete rings). The recommended Step-2 fit source.",
     "save_cakes":     "Also save 2D cakes (larger output file; needed for azimuthal analysis).",
     "cake_every":     "Save a cake for every Nth frame only, to bound file size.",
@@ -480,7 +486,8 @@ class ReductionApp:
                      width=14, state="readonly").grid(row=2, column=1, sticky="w", padx=4)
         self.field(frame, "method", "pyFAI 1D method", row=3, width=14)
         self.field(frame, "polarization_factor", "Polarization factor (optional)", row=5, width=14)
-        self.checkbox(frame, "robust_1d", "Robust 1D pattern (azimuthal median — suppresses diamond spots)", row=7)
+        self.checkbox(frame, "robust_1d", "Robust 1D pattern (azimuthal quantile band — suppresses diamond spots)", row=6)
+        self.field(frame, "robust_quant_halfwidth", "Robust quantile half-width", row=7, width=14)
         self.checkbox(frame, "sigmaclip_1d", "Sigma-clip 1D pattern (azimuthal trimmed mean — keeps textured-ring peaks)", row=8)
         self.checkbox(frame, "save_cakes", "Save 2D cakes", row=9)
         self.field(frame, "npt_radial", "Cake radial bins", row=11, width=14)

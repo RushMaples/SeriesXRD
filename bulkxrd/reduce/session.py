@@ -28,6 +28,10 @@ _DEFAULTS = {
     "method": "csr",
     "polarization_factor": "",
     "robust_1d": True,
+    "robust_quant_halfwidth": "0.05",  # robust channel = mean of the 45-55% azimuthal
+                                       # quantile band. 0 = pure median, which is
+                                       # QUANTIZED on integer counts (staircase-looking
+                                       # patterns at low intensity).
     "sigmaclip_1d": True,        # azimuthal sigma-clipped (trimmed-mean) 1D channel —
                                  # the less-lossy fit source for spotty/textured rings
     "sigmaclip_thresh": "3.0",   # sigma threshold for azimuthal outlier rejection
