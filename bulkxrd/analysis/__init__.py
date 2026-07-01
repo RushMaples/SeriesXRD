@@ -84,6 +84,8 @@ from .ml_simulate import (
     export_augmented_dataset,
 )
 from .ml_rank import rank_candidates, read_candidates, score_phase
+from .ml_scorer import PhaseScorer, CosineScorer, TorchScorer, make_scorer
+from .ml_train import generate_pairs, roc_auc
 from .session import seed_analysis_config, analysis_config_path
 from .phases import (
     Phase,
@@ -99,6 +101,8 @@ from .phases import (
     birch_murnaghan_pressure,
     volume_at_pressure,
     compress_lattice,
+    has_axial_eos,
+    has_pressure_dof,
 )
 
 __all__ = [
@@ -125,9 +129,12 @@ __all__ = [
     "FrameFeatures", "frame_features",
     "AugmentConfig", "build_augmented_dataset", "export_augmented_dataset",
     "rank_candidates", "read_candidates", "score_phase",
+    "PhaseScorer", "CosineScorer", "TorchScorer", "make_scorer",
+    "generate_pairs", "roc_auc",
     "seed_analysis_config", "analysis_config_path",
     "Phase", "load_bundled", "load_library", "list_phases",
     "upsert_user_phase", "remove_user_phase", "import_cif", "parse_cif",
     "simulate_pattern", "pymatgen_available",
     "birch_murnaghan_pressure", "volume_at_pressure", "compress_lattice",
+    "has_axial_eos", "has_pressure_dof",
 ]

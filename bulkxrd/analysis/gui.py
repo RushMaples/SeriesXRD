@@ -831,7 +831,9 @@ class AnalysisApp:
         self.run_btn.configure(state="disabled")
         self.cancel_btn.configure(state="normal")
         self.progress.configure(value=0)
-        self.progress_label.configure(text="Starting worker ...")
+        # Fresh run: clear any leftover cancelled/failed/done styling and state.
+        self._cancel_requested = False
+        self.progress_label.configure(text="Starting worker ...", foreground=MUTED)
         self._worker_status = "running"
         self._update_status_bar()
 
@@ -895,6 +897,20 @@ class AnalysisApp:
         self.run_btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
         if returncode != 0:
+            # A user-requested cancel also exits nonzero — don't call it a
+            # failure or pop an error dialog for a deliberate act. Say what
+            # state things are in and what Run will do next.
+            if getattr(self, "_cancel_requested", False):
+                self._cancel_requested = False
+                self._worker_status = "cancelled"
+                self._update_status_bar()
+                self.progress_label.configure(
+                    text="Cancelled — completed steps were saved to the analysis "
+                         "file; interrupted steps left no partial output (atomic "
+                         "writes). Run analysis re-runs every enabled step.",
+                    foreground=MUTED)
+                self.log("Run cancelled by user.", "WARN")
+                return
             self._worker_status = "failed"
             self._update_status_bar()
             self.progress_label.configure(
@@ -982,6 +998,9 @@ class AnalysisApp:
     def cancel_analysis(self):
         proc = self._run_proc
         if proc is not None and proc.poll() is None:
+            self._cancel_requested = True
+            self.cancel_btn.configure(state="disabled")
+            self.progress_label.configure(text="Cancelling ...", foreground=MUTED)
             proc.terminate()
             self.log("Cancel requested — terminating worker", "WARN")
 
@@ -1005,9 +1024,14 @@ class AnalysisApp:
 
         ttk.Label(ctrl, text="Frame:", foreground=MUTED).pack(side="left", padx=(12, 2))
         self._review_idx_var = tk.IntVar(value=0)
+        # NOTE: the Scale is deliberately NOT linked to _review_idx_var. When the
+        # Scale and the Spinbox shared the variable, the Scale's callback echoed a
+        # var.set() back into the Spinbox mid-arrow-press, and the press applied
+        # its increment twice (one click advanced two frames). The slider now
+        # drives the var only through _on_review_slider (change-guarded), and the
+        # spinbox/render paths sync the slider explicitly.
         self._review_scale = ttk.Scale(
             ctrl, from_=0, to=0, orient="horizontal", length=200,
-            variable=self._review_idx_var,
             command=self._on_review_slider,
         )
         self._review_scale.pack(side="left", padx=2)
@@ -1078,19 +1102,32 @@ class AnalysisApp:
         self._render_review(int(self._review_idx_var.get()))
 
     def _on_review_slider(self, value):
-        """Called on every slider tick — schedule a debounced render."""
+        """Called on every slider tick — snap to an int frame and debounce.
+
+        Change-guarded: writing the var only when the frame actually changes is
+        what keeps _sync_review_scale() below loop-free (scale.set fires this
+        callback once, sees no change, stops)."""
         try:
-            idx = int(float(value))
+            idx = int(round(float(value)))
         except (ValueError, TypeError):
             return
-        # Keep spinbox in sync immediately.
         try:
+            if int(self._review_idx_var.get() or 0) == idx:
+                return
             self._review_idx_var.set(idx)
         except Exception:
-            pass
+            return
         self._schedule_review_render()
 
+    def _sync_review_scale(self):
+        """Move the slider to the spinbox's frame (guarded, see slider callback)."""
+        try:
+            self._review_scale.set(int(self._review_idx_var.get() or 0))
+        except Exception:
+            pass
+
     def _on_review_spinbox(self):
+        self._sync_review_scale()
         self._schedule_review_render()
 
     def _schedule_review_render(self):
@@ -1109,6 +1146,7 @@ class AnalysisApp:
             idx = int(self._review_idx_var.get())
         except (ValueError, TypeError):
             idx = 0
+        self._sync_review_scale()   # typed entry / programmatic changes move the slider too
         self._render_review(idx)
 
     def _render_review(self, frame_index: int):
@@ -2066,6 +2104,53 @@ class AnalysisApp:
         self._fm_status = ttk.Label(frame, text="", foreground=MUTED)
         self._fm_status.pack(anchor="w", padx=6, pady=(0, 4))
 
+        # Editable per-frame metadata table
+        tree_frame = ttk.Frame(frame)
+        tree_frame.pack(fill="x", padx=6, pady=(0, 4))
+
+        fm_cols = ("frame", "file", "pressure", "sigma", "temp")
+        self._fm_table = ttk.Treeview(tree_frame, columns=fm_cols, show="headings",
+                                      height=10, selectmode="extended")
+        fm_vsb = ttk.Scrollbar(tree_frame, orient="vertical",
+                               command=self._fm_table.yview)
+        self._fm_table.configure(yscrollcommand=fm_vsb.set)
+        fm_vsb.pack(side="right", fill="y")
+        self._fm_table.pack(side="left", fill="both", expand=True)
+
+        for c, txt, w, anc, stretch in (
+            ("frame", "Frame", 60, "center", False),
+            ("file", "Filename", 220, "w", True),
+            ("pressure", "P (GPa)", 80, "center", False),
+            ("sigma", "σ (GPa)", 80, "center", False),
+            ("temp", "T (K)", 80, "center", False),
+        ):
+            self._fm_table.heading(c, text=txt)
+            self._fm_table.column(c, width=w, minwidth=40, anchor=anc, stretch=stretch)
+
+        # Editor row
+        editor = ttk.Frame(frame)
+        editor.pack(fill="x", padx=6, pady=(0, 2))
+        ttk.Label(editor, text="P (GPa):", foreground=MUTED).pack(side="left", padx=(0, 2))
+        self._fm_edit_p = tk.StringVar(value="")
+        ttk.Entry(editor, textvariable=self._fm_edit_p, width=10).pack(side="left", padx=(0, 8))
+        ttk.Label(editor, text="σ:", foreground=MUTED).pack(side="left", padx=(0, 2))
+        self._fm_edit_sig = tk.StringVar(value="")
+        ttk.Entry(editor, textvariable=self._fm_edit_sig, width=10).pack(side="left", padx=(0, 8))
+        ttk.Label(editor, text="T (K):", foreground=MUTED).pack(side="left", padx=(0, 2))
+        self._fm_edit_t = tk.StringVar(value="")
+        ttk.Entry(editor, textvariable=self._fm_edit_t, width=10).pack(side="left", padx=(0, 8))
+        ttk.Button(editor, text="Apply to selected",
+                   command=self.fm_apply_selected_clicked).pack(side="left", padx=4)
+        ttk.Button(editor, text="Refresh table",
+                   command=self.fm_refresh_table_clicked).pack(side="left", padx=4)
+
+        ttk.Label(
+            frame,
+            text=("Select frame(s), enter values (blank = leave unchanged), Apply. "
+                  "Values write to /frames and feed the Step-3 pressure prior."),
+            foreground=MUTED,
+        ).pack(anchor="w", padx=6, pady=(0, 4))
+
         self.fm_plot_frame = ttk.Frame(frame)
         self.fm_plot_frame.pack(fill="both", expand=True)
         ttk.Label(
@@ -2115,6 +2200,10 @@ class AnalysisApp:
                     )
                 )
             self._draw_pressure_preview(path)
+            try:
+                self.fm_refresh_table_clicked()
+            except Exception:
+                pass
         except Exception as e:
             self.log(f"extract_to_analysis failed: {e!r}", "WARN")
             if hasattr(self, "_fm_status"):
@@ -2157,6 +2246,10 @@ class AnalysisApp:
                     )
                 )
             self._draw_pressure_preview(path)
+            try:
+                self.fm_refresh_table_clicked()
+            except Exception:
+                pass
         except Exception as e:
             self.log(f"import_csv_to_analysis failed: {e!r}", "WARN")
             if hasattr(self, "_fm_status"):
@@ -2171,6 +2264,117 @@ class AnalysisApp:
                     text="Run Step 1 first (no analysis file yet).")
             return
         self._draw_pressure_preview(path)
+
+    def fm_refresh_table_clicked(self):
+        from .frame_metadata import read_frame_metadata
+        self.pull_vars()
+        path = self.config.get("analysis_h5_file", "")
+        tbl = getattr(self, "_fm_table", None)
+        if tbl is None:
+            return
+        if not path or not Path(path).is_file():
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(
+                    text="Run Step 1 first (no analysis file yet).")
+            return
+        tbl.delete(*tbl.get_children())
+        meta = read_frame_metadata(path)
+        if not meta.get("ok"):
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(text=meta.get("error", "Failed to read metadata."))
+            return
+        names = meta.get("filename") or []
+        pressure = meta.get("pressure")
+        sigma = meta.get("pressure_sigma")
+        temp = meta.get("temperature")
+        n = int(meta.get("n_frames", 0) or 0)
+
+        def _fmt(arr, i):
+            if arr is None or i >= len(arr):
+                return "—"
+            v = float(arr[i])
+            return f"{v:.3g}" if v == v else "—"
+
+        for i in range(n):
+            fname = names[i] if i < len(names) else ""
+            base = fname.rsplit("/", 1)[-1] if fname else ""
+            tbl.insert("", "end", iid=str(i), values=(
+                i, base, _fmt(pressure, i), _fmt(sigma, i), _fmt(temp, i)))
+
+    def fm_apply_selected_clicked(self):
+        from .frame_metadata import read_frame_metadata, apply_to_analysis
+        import numpy as np
+        self.pull_vars()
+        path = self.config.get("analysis_h5_file", "")
+        if not path or not Path(path).is_file():
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(
+                    text="Run Step 1 first (no analysis file yet).")
+            return
+        tbl = getattr(self, "_fm_table", None)
+        sel = list(tbl.selection()) if tbl is not None else []
+        if not sel:
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(text="Select one or more frames first.")
+            return
+        try:
+            indices = [int(iid) for iid in sel]
+        except ValueError:
+            indices = []
+
+        def _parse(var):
+            raw = (var.get() if var is not None else "").strip()
+            if not raw:
+                return None
+            return float(raw)
+
+        try:
+            p_val = _parse(getattr(self, "_fm_edit_p", None))
+            sig_val = _parse(getattr(self, "_fm_edit_sig", None))
+            t_val = _parse(getattr(self, "_fm_edit_t", None))
+        except ValueError:
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(text="P/σ/T must be a number (or blank).")
+            return
+
+        if p_val is None and sig_val is None and t_val is None:
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(text="Enter at least one value.")
+            return
+
+        try:
+            meta = read_frame_metadata(path)
+            if not meta.get("ok"):
+                raise RuntimeError(meta.get("error", "Failed to read metadata."))
+            pressure = np.array(meta.get("pressure"), dtype=float, copy=True)
+            sigma = np.array(meta.get("pressure_sigma"), dtype=float, copy=True)
+            temperature = np.array(meta.get("temperature"), dtype=float, copy=True)
+
+            parts = []
+            kwargs = {}
+            if p_val is not None:
+                pressure[indices] = p_val
+                kwargs["pressure"] = pressure
+                parts.append("P")
+            if sig_val is not None:
+                sigma[indices] = sig_val
+                kwargs["pressure_sigma"] = sigma
+                parts.append("σ")
+            if t_val is not None:
+                temperature[indices] = t_val
+                kwargs["temperature"] = temperature
+                parts.append("T")
+
+            apply_to_analysis(path, **kwargs)
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(
+                    text=f"Set {', '.join(parts)} on {len(sel)} frame(s).")
+            self.fm_refresh_table_clicked()
+            self._draw_pressure_preview(path)
+        except Exception as e:
+            if hasattr(self, "_fm_status"):
+                self._fm_status.configure(text=str(e))
+            self.log(f"fm_apply_selected_clicked failed: {e!r}", "WARN")
 
     def _draw_pressure_preview(self, path):
         from .frame_metadata import read_frame_metadata
@@ -2383,7 +2587,7 @@ class AnalysisApp:
                    command=lambda: self._step_identify_frame(1)).pack(side="left")
 
         cols = ("phase", "model", "conf", "recall", "prec", "pressure", "lines")
-        tbl = ttk.Treeview(left, columns=cols, show="headings", height=18,
+        tbl = ttk.Treeview(left, columns=cols, show="headings", height=12,
                            selectmode="browse")
         for c, txt, w, anc in (("phase", "Phase", 140, "w"), ("model", "P-model", 78, "center"),
                                ("conf", "Conf", 52, "center"),
@@ -2395,6 +2599,41 @@ class AnalysisApp:
         tbl.tag_configure("absent", foreground=MUTED)
         tbl.pack(fill="y", expand=False)
         self._identify_table = tbl
+
+        # Materials-found summary + frames-by-material browser.
+        ttk.Label(left, text="Materials found (click → frames containing it):",
+                 foreground=MUTED).pack(anchor="w", pady=(6, 2))
+
+        summary_cols = ("phase", "frames", "medP")
+        summary = ttk.Treeview(left, columns=summary_cols, show="headings", height=6,
+                               selectmode="browse")
+        for c, txt, w in (("phase", "Material", 140), ("frames", "Frames", 60),
+                          ("medP", "med P", 70)):
+            summary.heading(c, text=txt)
+            summary.column(c, width=w, minwidth=34, anchor="center" if c != "phase" else "w",
+                           stretch=(c == "phase"))
+        summary.pack(fill="x", expand=False)
+        summary.bind("<<TreeviewSelect>>", self._on_phase_summary_select)
+        self._identify_phase_summary = summary
+
+        ttk.Label(left, text="Frames with selected material (double-click to view):",
+                 foreground=MUTED).pack(anchor="w", pady=(6, 2))
+
+        frames_list_frame = ttk.Frame(left)
+        frames_list_frame.pack(fill="x", expand=False)
+        frames_vsb = ttk.Scrollbar(frames_list_frame, orient="vertical")
+        listbox = tk.Listbox(
+            frames_list_frame, height=6, bg=BG2, fg=FG,
+            selectbackground=ACCENT2, yscrollcommand=frames_vsb.set,
+            exportselection=False,
+        )
+        frames_vsb.configure(command=listbox.yview)
+        frames_vsb.pack(side="right", fill="y")
+        listbox.pack(side="left", fill="x", expand=True)
+        listbox.bind("<Double-Button-1>", self._on_phase_frame_activate)
+        self._identify_frames_list = listbox
+        self._phase_frames: Dict[str, Any] = {}
+        self._phase_frame_indices = []
 
         # Right: the (decluttered) confidence/pressure plot.
         self.identify_plot_frame = ttk.Frame(body)
@@ -2575,6 +2814,7 @@ class AnalysisApp:
             rows.append((conf, rec))
         rows.sort(key=lambda t: (-(t[0] if t[0] == t[0] else -1), t[1]["name"].lower()))
         # Short labels for the pressure model the phase was fit under.
+        # ("ambient_only" is the pre-rename value in old HDF5 files — read-compat.)
         _MODEL_LABEL = {"eos": "EOS", "axial_eos": "axial", "no_eos": "no-EOS",
                         "ambient_only": "no-EOS"}
         n_present = 0
@@ -2606,6 +2846,107 @@ class AnalysisApp:
             self._identify_status.configure(
                 text=f"frame {fi}: {n_present} phase(s) ≥ {conf_min:.2f} "
                      f"of {len(tr['phases'])}")
+
+        self._update_phase_summary()
+
+    def _update_phase_summary(self):
+        """Fill the materials-found summary: one row per phase with the number of
+        frames it's present in (confidence >= bar AND >=3 matched reflections) and
+        its median pressure over those frames. Also stashes per-phase present-frame
+        index lists on self._phase_frames for the frames-list browser."""
+        import numpy as np
+        summary = getattr(self, "_identify_phase_summary", None)
+        tr = getattr(self, "_identify_tr", None)
+        if summary is None:
+            return
+        summary.delete(*summary.get_children())
+        self._phase_frames = {}
+        if not tr or not tr.get("ok"):
+            return
+        try:
+            conf_min = max(0.0, min(1.0, float(self._identify_conf_var.get())))
+        except (ValueError, AttributeError):
+            conf_min = 0.5
+
+        rows = []
+        for rec in tr["phases"]:
+            name = rec["name"]
+            conf = rec.get("confidence")
+            if conf is None:
+                continue
+            conf = np.asarray(conf, dtype=float)
+            present = conf >= conf_min
+            nmatch = rec.get("n_matched")
+            if nmatch is not None:
+                nmatch = np.asarray(nmatch)
+                present = present & (nmatch >= 3)
+            present_idx = np.nonzero(present)[0]
+            self._phase_frames[name] = [int(i) for i in present_idx]
+            n_present = int(present_idx.size)
+            if n_present:
+                pressure = np.asarray(rec.get("pressure"), dtype=float)
+                med_p = float(np.nanmedian(pressure[present_idx]))
+                med_p_str = "—" if med_p != med_p else f"{med_p:.1f}"
+            else:
+                med_p_str = "—"
+            rows.append((n_present, name, med_p_str))
+
+        rows.sort(key=lambda t: (-t[0], t[1].lower()))
+        for n_present, name, med_p_str in rows:
+            summary.insert("", "end", iid=name, values=(name, n_present, med_p_str))
+
+    def _on_phase_summary_select(self, event=None):
+        import numpy as np
+        summary = getattr(self, "_identify_phase_summary", None)
+        listbox = getattr(self, "_identify_frames_list", None)
+        tr = getattr(self, "_identify_tr", None)
+        if summary is None or listbox is None:
+            return
+        sel = summary.selection()
+        listbox.delete(0, "end")
+        self._phase_frame_indices = []
+        if not sel:
+            return
+        name = sel[0]
+        indices = self._phase_frames.get(name, [])
+
+        conf_arr = None
+        pressure_arr = None
+        if tr and tr.get("ok"):
+            for rec in tr["phases"]:
+                if rec["name"] == name:
+                    if rec.get("confidence") is not None:
+                        conf_arr = np.asarray(rec["confidence"], dtype=float)
+                    if rec.get("pressure") is not None:
+                        pressure_arr = np.asarray(rec["pressure"], dtype=float)
+                    break
+
+        for i in indices:
+            conf_txt = ""
+            if conf_arr is not None and i < len(conf_arr):
+                conf_txt = f"   conf {conf_arr[i]:.2f}"
+            p_txt = ""
+            if pressure_arr is not None and i < len(pressure_arr):
+                p = pressure_arr[i]
+                if p == p:
+                    p_txt = f"   P {p:.1f}"
+            listbox.insert("end", f"frame {i}{conf_txt}{p_txt}")
+            self._phase_frame_indices.append(int(i))
+
+    def _on_phase_frame_activate(self, event=None):
+        listbox = getattr(self, "_identify_frames_list", None)
+        if listbox is None:
+            return
+        sel = listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        indices = getattr(self, "_phase_frame_indices", [])
+        if idx >= len(indices):
+            return
+        frame = indices[idx]
+        self._identify_frame_var.set(str(frame))
+        self._update_identify_table()
 
     # ------------------------------------------------------------------
     # Helpers shared by Tab 9

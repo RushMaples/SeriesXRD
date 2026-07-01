@@ -174,12 +174,39 @@ def test_simulated_dataset():
     assert X.max() <= 1.0 + 1e-6 and X.min() >= 0.0
 
 
+def test_simulated_dataset_axial_only_scans_pressure():
+    """Regression: an AXIAL-only phase (per-axis EOS, no volume EOS) has a
+    pressure degree of freedom, so the simulated training set must emit one row
+    per pressure — checking only has_eos() pinned such phases at ambient. Runs
+    without pymatgen by patching the reflection source."""
+    assert not ph.has_pressure_dof(ph.Phase(name="none"))
+    tet = ph.Phase(name="Tet",
+                   lattice={"a": 4.0, "b": 4.0, "c": 6.0,
+                            "alpha": 90, "beta": 90, "gamma": 90},
+                   axial_eos={"a": {"type": "BM3", "K0": 300, "K0p": 4},
+                              "c": {"type": "BM3", "K0": 100, "K0p": 4}})
+    assert not tet.has_eos() and ph.has_pressure_dof(tet)
+    refl = (np.array([4.0, 6.0]), np.array([1.0, 1.0]), ["(1, 0, 0)", "(0, 0, 1)"])
+    noeos = ph.Phase(name="Ref")
+    saved = ml.phase_reflections
+    ml.phase_reflections = lambda p, **k: refl
+    try:
+        X, y, names = ml.build_simulated_dataset([tet, noeos],
+                                                 pressures=[0.0, 10.0, 20.0])
+    finally:
+        ml.phase_reflections = saved
+    # 3 pressure rows for the axial phase + 1 ambient row for the no-EOS one.
+    assert list(y) == [0, 0, 0, 1], list(y)
+    assert not np.allclose(X[0], X[2]), "axial-only phase did not move with pressure"
+
+
 def main() -> None:
     test_pattern_image()
     test_metadata_pressure_axis_and_anisotropic_tracks()
     test_resample()
     test_tracks_layers_and_export()
     test_simulated_dataset()
+    test_simulated_dataset_axial_only_scans_pressure()
     print("HEATMAP/MLDATA TEST OK")
 
 

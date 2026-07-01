@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .phases import Phase
+from .phases import Phase, has_pressure_dof
 from .identify import radial_to_d, phase_reflections, predicted_d, _parse_hkl
 from .peaks import pseudo_voigt
 
@@ -261,8 +261,9 @@ def build_simulated_dataset(
     """Single-phase pressure-augmented training set: scan each phase over the
     pressure grid → ``(X (M, P), y (M,) int label index, phase_names)``.
 
-    Phases without an EOS are emitted at ambient only (one row). Requires
-    pymatgen for the reflection simulation.
+    Phases with no pressure degree of freedom (neither a volume nor an axial
+    EOS) are emitted at ambient only (one row). Requires pymatgen for the
+    reflection simulation.
     """
     grid = make_d_grid() if d_grid is None else np.asarray(d_grid, float)
     if pressures is None:
@@ -273,7 +274,9 @@ def build_simulated_dataset(
     labels: List[int] = []
     for j, ph in enumerate(phases):
         refl = phase_reflections(ph)
-        ps = pressures if ph.has_eos() else np.array([0.0])
+        # has_pressure_dof, not has_eos: an AXIAL-only phase compresses too —
+        # checking only the volume EOS trained those phases at ambient forever.
+        ps = pressures if has_pressure_dof(ph) else np.array([0.0])
         for P in ps:
             rows.append(simulate_training_pattern(ph, float(P), grid, refl=refl,
                                                   fwhm_d=fwhm_d, eta=eta, normalize=normalize))

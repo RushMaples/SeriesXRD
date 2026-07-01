@@ -387,7 +387,7 @@ def test_no_eos_penalized_and_range_auto_widens():
 
 
 def test_pressure_model_and_penalty_surfaced():
-    """pressure_model (eos|axial_eos|ambient_only), prior_penalty per frame, and
+    """pressure_model (eos|axial_eos|no_eos), prior_penalty per frame, and
     prior_penalized are surfaced on /identify, the summary, and review.identify_tracks."""
     import h5py
     from bulkxrd.analysis.review import identify_tracks

@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .phases import Phase
+from .phases import Phase, has_pressure_dof
 from .identify import predicted_d, _parse_hkl, phase_reflections
 from .peaks import pseudo_voigt
 from .mldata import make_d_grid
@@ -254,18 +254,13 @@ def build_augmented_dataset(
         k = 1 if k_max == 1 else int(rng.integers(1, k_max + 1))
         chosen = list(rng.choice(len(phases), size=k, replace=False))
         present = [phases[j] for j in chosen]
-        ps = [float(rng.choice(pressures)) if (present[t].has_eos()
-              or _has_axial(present[t])) else 0.0 for t in range(k)]
+        ps = [float(rng.choice(pressures)) if has_pressure_dof(present[t]) else 0.0
+              for t in range(k)]
         X[i] = simulate_augmented_pattern(present, ps, refls, grid, cfg, rng)
         for j in chosen:
             Y[i, j] = 1
         P_used[i, :k] = ps
     return X, Y, names, P_used
-
-
-def _has_axial(phase: Phase) -> bool:
-    from .phases import has_axial_eos
-    return has_axial_eos(phase)
 
 
 def export_augmented_dataset(out_npz: "str | Path", phases: "Sequence[Phase]",
