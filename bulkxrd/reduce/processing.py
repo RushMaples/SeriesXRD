@@ -110,6 +110,44 @@ def _render_thumbnail(out_png: str, cake, cake_radial, radial, intensity, unit: 
     FigureCanvasAgg(fig).print_png(out_png)
 
 
+def _robust_integrate(ai, image, npt: int, mask, unit: str,
+                      quant_halfwidth: float) -> "Tuple[Any, str]":
+    """The spot-suppressed 'robust' 1D pattern; returns ``(result, estimator)``.
+
+    A pure azimuthal MEDIAN of integer photon counts can only take integer /
+    half-integer values, and because the median over hundreds of azimuthal
+    pixels has almost no statistical noise, low-count patterns render as clean
+    STAIRCASES (and ``clean = robust − baseline`` inherits the steps). Averaging
+    a narrow quantile band around the median instead (default 45–55%) keeps the
+    same outlier rejection — diamond spots occupy far less than 45% of the
+    azimuth — but yields continuous intensities.
+
+    Fallback chain (pyFAI version differences): ``medfilt1d_ng`` with
+    ``quant_min/quant_max`` → legacy ``medfilt1d`` with a percentile tuple →
+    plain median. ``quant_halfwidth<=0`` requests the pure median.
+    """
+    h = float(quant_halfwidth or 0.0)
+    lo = round(max(0.0, 0.5 - h), 6)
+    hi = round(min(1.0, 0.5 + h), 6)
+    ng = getattr(ai, "medfilt1d_ng", None)
+    if h > 0:
+        if ng is not None:
+            try:
+                return (ng(image, npt, mask=mask, unit=unit,
+                           quant_min=lo, quant_max=hi),
+                        f"quantile_band({lo:.2f}-{hi:.2f})")
+            except TypeError:
+                pass
+        try:
+            pct = (round(100.0 * lo, 4), round(100.0 * hi, 4))
+            return (ai.medfilt1d(image, npt, mask=mask, unit=unit, percentile=pct),
+                    f"percentile_band({pct[0]:.0f}-{pct[1]:.0f})")
+        except TypeError:
+            pass
+    medfilt = ng or ai.medfilt1d
+    return medfilt(image, npt, mask=mask, unit=unit), "median"
+
+
 def _integrate_one(task: "Tuple[int, str, bool]") -> Dict[str, Any]:
     """Integrate a single frame. Runs inside a pool worker (or in-process)."""
     index, file_str, want_cake = task
@@ -129,12 +167,15 @@ def _integrate_one(task: "Tuple[int, str, bool]") -> Dict[str, Any]:
             "radial": np.asarray(res.radial), "intensity": np.asarray(res.intensity),
         }
         if s.get("robust_1d"):
-            # Azimuthal-median integration suppresses single-crystal outliers
-            # (diamond anvil spots). Older pyFAI versions lack medfilt1d_ng.
+            # Spot-suppressed channel: narrow quantile-band mean around the
+            # azimuthal median (see _robust_integrate — a pure median staircases
+            # on integer counts). Older pyFAI versions degrade gracefully.
             try:
-                medfilt = getattr(ai, "medfilt1d_ng", None) or ai.medfilt1d
-                rres = medfilt(image, int(s["npt_1d"]), mask=mask, unit=s["unit"])
+                rres, est = _robust_integrate(
+                    ai, image, int(s["npt_1d"]), mask, s["unit"],
+                    float(s.get("robust_quant_halfwidth", 0.05) or 0.0))
                 out["intensity_robust"] = np.asarray(rres.intensity)
+                out["robust_estimator"] = est
             except Exception as e:
                 out["robust_error"] = repr(e)
         if s.get("sigmaclip_1d"):
@@ -271,6 +312,11 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
         "method": config.get("method", "csr") or "csr",
         "polarization_factor": float(config["polarization_factor"]) if str(config.get("polarization_factor", "")).strip() else None,
         "robust_1d": bool(config.get("robust_1d", True)),
+        # Half-width of the azimuthal quantile band averaged for the robust
+        # channel (0.05 -> 45-55%). 0 = pure median (staircases on low counts).
+        "robust_quant_halfwidth": float(config.get("robust_quant_halfwidth", 0.05)
+                                        if str(config.get("robust_quant_halfwidth", "")).strip() != ""
+                                        else 0.05),
         "sigmaclip_1d": bool(config.get("sigmaclip_1d", True)),
         "sigmaclip_thresh": float(config.get("sigmaclip_thresh", 3.0) or 3.0),
         "sigmaclip_maxiter": int(config.get("sigmaclip_maxiter", 5) or 5),
@@ -317,6 +363,7 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
 
     failures: List[Dict[str, str]] = []
     robust_errors: List[str] = []
+    robust_estimators: List[str] = []
     sigmaclip_errors: List[str] = []
     t_start = time.time()
 
@@ -338,6 +385,7 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
                 "npt_1d": int(settings["npt_1d"]),
                 "npt_1d_suggested": int(npt_suggested or 0),
                 "npt_1d_mode": npt_mode,
+                "robust_quant_halfwidth": float(settings.get("robust_quant_halfwidth", 0.0)),
             })
             h5.attrs["poni_text"] = Path(handoff.accepted_poni).read_text(encoding="utf-8", errors="replace")
             g_pat = h5.create_group("patterns")
@@ -406,6 +454,8 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
                         msg = r["robust_error"]
                         if msg not in robust_errors:
                             robust_errors.append(msg)
+                    if "robust_estimator" in r and r["robust_estimator"] not in robust_estimators:
+                        robust_estimators.append(r["robust_estimator"])
                     if "sigmaclip_error" in r:
                         msg = r["sigmaclip_error"]
                         if msg not in sigmaclip_errors:
@@ -497,6 +547,10 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
         "h5_file": str(h5_path),
         "config": config,
     }
+    if robust_estimators:
+        manifest["robust_estimator"] = robust_estimators[0]
+        if len(robust_estimators) > 1:   # mixed pyFAI fallbacks across workers
+            manifest["robust_estimators_all"] = robust_estimators
     # B3: surface robust-pattern warnings in the manifest.
     if robust_errors:
         manifest["robust_warnings"] = robust_errors[:10]

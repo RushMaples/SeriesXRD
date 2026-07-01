@@ -66,7 +66,10 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
 ```
 /  attrs: schema_version, unit, poni_text, radial_written
 /patterns/intensity          (N_frames, N_bins)  azimuthal MEAN
-/patterns/intensity_robust   (N_frames, N_bins)  azimuthal MEDIAN (diamond-spot suppressed)
+/patterns/intensity_robust   (N_frames, N_bins)  spot-suppressed: mean of the 45–55%
+                                                  azimuthal quantile band (robust_quant_halfwidth;
+                                                  0 = pure median, which is quantized on integer
+                                                  counts → staircase patterns at low intensity)
 /patterns/intensity_sigmaclip (N_frames, N_bins) azimuthal SIGMA-CLIPPED trimmed mean
                                                   (optional; keeps textured-ring peaks the
                                                   median drops while rejecting diamond spots)
@@ -307,7 +310,7 @@ Notable earlier branches (not merged, potentially useful):
 ## Key design decisions (don't relitigate)
 
 - **Fit in q, not 2θ**: peak width roughly constant in q → uniform window sizing across the pattern.
-- **Robust integration (median)**: pyFAI `medfilt1d` gives the azimuthal median. It has 50% breakdown point so diamond spots (which affect <50% of azimuthal bins) are suppressed. The median is the *baseline reference* (most outlier-free), but it over-suppresses azimuthally-sparse real signal, so it is **not** forced to be the peak-fitting source — see Step 2 "Selectable fit source". The reduce-side `sigma_clip_ng` (`error_model="azimuthal"`, `sigmaclip_1d`) gives a trimmed mean that rejects spots like the median while keeping textured-ring intensity.
+- **Robust integration (quantile band, was median)**: the spot-suppressed channel is the mean of a narrow azimuthal quantile band (default 45–55%) around the median, via `medfilt1d_ng(quant_min, quant_max)` (fallbacks for older pyFAI). Same rejection story as a median — diamond spots occupy ≪45% of azimuth — but a **pure median of integer photon counts is quantized** (integer/half-integer levels), and because the median over hundreds of azimuthal pixels is nearly noise-free, low-count patterns rendered as clean staircases that `clean = robust − baseline` inherited. The band mean is continuous-valued. Robust remains the *baseline reference*, not the forced peak-fitting source — see Step 2 "Selectable fit source"; the reduce-side `sigma_clip_ng` trimmed mean keeps textured-ring intensity.
 - **SNIP window conservative**: set to ~1.5–2× the broadest Bragg peak half-width. Over-aggressive window erodes real broad peaks — true information loss, not reversible. Step 1 records the baseline so the original data is always recoverable.
 - **HDF5 atomic writes**: `.tmp` + `os.replace` throughout. Never partially-written files.
 - **No JAX yet**: scipy handles the scale; JAX needs fixed peak count per batch (incompatible with variable peak count), heavy dependency, and rarely the bottleneck. Interface is clean enough to add a JAX backend behind it later.
