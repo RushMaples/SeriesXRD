@@ -414,6 +414,19 @@ def test_q_constant_widths():
     assert _fwhm_at(6.0) / _fwhm_at(2.0) > 4.0       # ~9x in theory
 
 
+def test_truncation_both_ends():
+    """Truncation now zeroes each end independently (detector edge at low d,
+    beamstop at high d) — a real d-grid row can lose both ends at once."""
+    grid = ms.make_d_grid(n_points=200)
+    y = np.ones(200)
+    cfg = ms.AugmentConfig(truncate_frac=(0.2, 0.2))     # deterministic 20% each end
+    out = ms.apply_truncation(y, cfg, np.random.default_rng(0))
+    assert out[:40].sum() == 0 and out[-40:].sum() == 0
+    assert out[40:-40].all(), "interior must survive"
+    keep = ms.AugmentConfig(truncate_frac=(0.0, 0.0))
+    assert ms.apply_truncation(y, keep, np.random.default_rng(0)).all()
+
+
 def test_estimate_fwhm_q():
     """The ranker's width auto-estimate: median good-peak FWHM converted to q."""
     import h5py
@@ -543,6 +556,7 @@ def main() -> None:
     test_generate_pairs()
     test_shared_mixture_pressure()
     test_q_constant_widths()
+    test_truncation_both_ends()
     test_estimate_fwhm_q()
     test_validity_ceiling()
     test_load_cif_corpus()

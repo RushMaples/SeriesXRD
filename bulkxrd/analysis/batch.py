@@ -124,7 +124,9 @@ def _run(args) -> int:
             pressure_window=args.pressure_window,
             pressure_sigma_k=args.pressure_sigma_k,
             min_matched=args.min_matched,
-            marker_prior=args.marker_prior)
+            marker_prior=args.marker_prior,
+            intensity_k=args.intensity_k,
+            use_frame_temperature=not args.no_temperature)
 
         # Remove identified phases and re-fit the residual (Step 3a removal), so a
         # headless run produces the same /residual the GUI/worker does.
@@ -203,6 +205,12 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="With no metadata pressure, estimate it from marker phases first.")
     p.add_argument("--min-matched", type=int, default=3,
                    help="Min one-to-one matched reflections to call a phase present. Default 3.")
+    p.add_argument("--intensity-k", type=float, default=0.3,
+                   help="Weight of the soft intensity-agreement factor in the confidence "
+                        "(0 = position-only; DAC texture makes intensities unreliable, so "
+                        "keep it gentle). Default 0.3.")
+    p.add_argument("--no-temperature", action="store_true",
+                   help="Ignore /frames/temperature (skip the thermal-expansion seam).")
     p.add_argument("--allow-sparse", action="store_true",
                    help="Permit phases below --min-matched to be subtracted in the residual.")
     # Step 3b proposer
@@ -219,8 +227,11 @@ def main(argv: "list[str] | None" = None) -> int:
                         "needs bulkxrd[ml]). Whatever it proposes, Step 3a verifies.")
     # ML export
     p.add_argument("--ml-export", default="", help="Also export an ML .npz to this path.")
-    p.add_argument("--ml-channels", default="clean,spot_residual",
-                   help="Comma-separated channels for the ML export.")
+    p.add_argument("--ml-channels", default="fit,spot_residual",
+                   help="Comma-separated channels for the ML export: any of "
+                        "fit/residual/clean/hybrid/robust/mean/sigmaclip/baseline/"
+                        "spot_residual. 'fit' = the channel Step 2 actually fit "
+                        "(recommended). Default fit,spot_residual.")
     args = p.parse_args(argv)
     return _run(args)
 

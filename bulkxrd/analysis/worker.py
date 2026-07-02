@@ -239,6 +239,9 @@ def run_analysis(cfg: dict) -> dict:
             pressure_sigma_k=_as_float(cfg.get("pressure_sigma_k"), 2.0),
             min_matched=min_matched,
             marker_prior=_as_bool(cfg.get("marker_prior", False), False),
+            # Soft intensity-agreement factor (0 = position-only confidence).
+            intensity_k=_as_float(cfg.get("intensity_k"), 0.3),
+            use_frame_temperature=_as_bool(cfg.get("use_frame_temperature", True), True),
         )
         out_path = m3["out_h5"]
         manifest["step3"] = m3

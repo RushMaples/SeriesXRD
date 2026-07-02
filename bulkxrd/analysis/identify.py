@@ -35,7 +35,7 @@ import numpy as np
 
 from .phases import (Phase, simulate_pattern, compression_at_pressure,
                      pymatgen_available, has_axial_eos, has_pressure_dof, axial_scales,
-                     valid_pressure_max)
+                     valid_pressure_max, thermal_scale)
 from .parallel import resolve_workers, chunk_ranges
 
 SCHEMA_VERSION = "1"
@@ -69,6 +69,35 @@ def radial_to_d(centers, unit: str, wavelength: "Optional[float]" = None) -> np.
         theta = np.radians(c) / 2.0 if u == "2th_deg" else c / 2.0
         return float(wavelength) / (2.0 * np.sin(theta))
     raise ValueError(f"Unsupported unit for d-spacing conversion: {unit!r}")
+
+
+def radial_err_to_d_err(centers, errs, unit: str,
+                        wavelength: "Optional[float]" = None) -> np.ndarray:
+    """Propagate 1σ peak-center uncertainties on the radial axis to d-spacing (Å).
+
+    q axes: d = 2π/q ⇒ σ_d = d·σ_q/q. 2θ axes: d = λ/(2 sinθ) ⇒
+    σ_d = d·cot(θ)·σ_2θ/2 (σ_2θ in radians). Non-finite/zero errors map to NaN
+    (callers treat NaN as "no esd available" and fall back to rel_tol alone).
+    """
+    c = np.asarray(centers, dtype=float)
+    e = np.asarray(errs, dtype=float)
+    u = (unit or "").strip().lower()
+    with np.errstate(divide="ignore", invalid="ignore"):
+        if u in ("q_a^-1", "q_a-1", "q_a", "q", "q_nm^-1", "q_nm-1", "q_nm"):
+            d = radial_to_d(c, unit, wavelength)
+            out = d * e / c                      # unit conversion cancels in e/c
+        elif u in ("2th_deg", "2th_rad"):
+            if wavelength is None or wavelength <= 0:
+                return np.full(c.shape, np.nan)
+            theta = np.radians(c) / 2.0 if u == "2th_deg" else c / 2.0
+            e_rad = np.radians(e) if u == "2th_deg" else e
+            d = radial_to_d(c, unit, wavelength)
+            out = d / np.tan(theta) * e_rad / 2.0
+        else:
+            return np.full(c.shape, np.nan)
+    out = np.abs(out)
+    out[~(out > 0)] = np.nan
+    return out
 
 
 def wavelength_from_reduced(reduced_path: "str | Path") -> "Optional[float]":
@@ -130,14 +159,23 @@ def scale_at_pressure(phase: Phase, pressure: float) -> float:
 # Scoring
 # ---------------------------------------------------------------------------
 
-def _nearest_gap(pred: np.ndarray, obs_sorted: np.ndarray) -> np.ndarray:
-    """For each predicted d, distance to the nearest observed d (obs ascending)."""
+def _nearest_obs(pred: np.ndarray, obs_sorted: np.ndarray
+                 ) -> "Tuple[np.ndarray, np.ndarray]":
+    """For each predicted d: (distance to, index of) the nearest observed d."""
     if obs_sorted.size == 0:
-        return np.full(pred.shape, np.inf)
+        return np.full(pred.shape, np.inf), np.zeros(pred.shape, dtype=int)
     idx = np.searchsorted(obs_sorted, pred)
     left = np.clip(idx - 1, 0, obs_sorted.size - 1)
     right = np.clip(idx, 0, obs_sorted.size - 1)
-    return np.minimum(np.abs(pred - obs_sorted[left]), np.abs(pred - obs_sorted[right]))
+    gl = np.abs(pred - obs_sorted[left])
+    gr = np.abs(pred - obs_sorted[right])
+    nearest = np.where(gl <= gr, left, right)
+    return np.minimum(gl, gr), nearest
+
+
+def _nearest_gap(pred: np.ndarray, obs_sorted: np.ndarray) -> np.ndarray:
+    """For each predicted d, distance to the nearest observed d (obs ascending)."""
+    return _nearest_obs(pred, obs_sorted)[0]
 
 
 def _parse_hkl(s) -> "Optional[Tuple[int, int, int]]":
@@ -169,15 +207,20 @@ def _d_from_lattice(H: np.ndarray, lattice: "Dict[str, Any]") -> np.ndarray:
     return 1.0 / np.sqrt(s)
 
 
-def predicted_d(phase: Phase, d0: np.ndarray, hkls, P: float) -> np.ndarray:
-    """Predicted d-spacings (Å) at pressure ``P``.
+def predicted_d(phase: Phase, d0: np.ndarray, hkls, P: float,
+                temperature: "Optional[float]" = None) -> np.ndarray:
+    """Predicted d-spacings (Å) at pressure ``P`` (and optionally temperature).
 
     Anisotropic when the phase has an axial EOS, a lattice, and parseable hkl:
     each reflection's d0 is scaled by the *ratio* of its compressed-lattice
     d-spacing to its ambient one (so it reduces exactly to d0 at P=0 and is
     independent of any small offset between the simulated d0 and the metric
-    calculation). Otherwise the isotropic ``d0·s``."""
+    calculation). Otherwise the isotropic ``d0·s``. ``temperature`` (K) applies
+    the phase's isotropic thermal expansion on top (see
+    :func:`phases.thermal_scale`; 1.0 when the phase has no thermal data) —
+    the seam that makes ambient-pressure temperature series work."""
     d0 = np.asarray(d0, dtype=float)
+    s_T = thermal_scale(phase, temperature)
     if (P > 0 and has_axial_eos(phase) and phase.lattice
             and hkls is not None and all(h is not None for h in hkls)):
         sa, sb, sc = axial_scales(phase, P)
@@ -191,30 +234,43 @@ def predicted_d(phase: Phase, d0: np.ndarray, hkls, P: float) -> np.ndarray:
         bad = ~np.isfinite(dd)
         if bad.any():
             dd[bad] = d0[bad] * scale_at_pressure(phase, P)
-        return dd
-    return d0 * scale_at_pressure(phase, P)
+        return dd * s_T
+    return d0 * (scale_at_pressure(phase, P) * s_T)
 
 
 def _match_pairs(pred: np.ndarray, obs: np.ndarray, rel_tol: float,
-                 factor: float = 2.0) -> "List[Tuple[int, int, float]]":
+                 factor: float = 2.0,
+                 obs_err: "Optional[np.ndarray]" = None
+                 ) -> "List[Tuple[int, int, float]]":
     """Greedy ONE-TO-ONE assignment of predicted lines to observed peaks.
 
     A predicted line and an observed peak can be paired only once: closest pairs
-    (within ``factor·σᵢ``, σᵢ = rel_tol·predᵢ) are consumed first. This stops a
-    single observed peak from "explaining" several predicted reflections (which
-    inflated n_matched / recall and let wrong phases look present in DAC data).
-    Returns ``[(i_pred, j_obs, gap)]``.
+    are consumed first, within ``factor·σᵢⱼ`` where
+    ``σᵢⱼ = sqrt((rel_tol·predᵢ)² + obs_errⱼ²)`` — the model tolerance and the
+    observed peak's own fitted center uncertainty added in quadrature (a noisy,
+    weak peak legitimately sits further from its line than a sharp strong one).
+    ``obs_err`` NaN/absent falls back to the model tolerance alone. This
+    one-to-one rule stops a single observed peak from "explaining" several
+    predicted reflections (which inflated n_matched / recall and let wrong
+    phases look present in DAC data). Returns ``[(i_pred, j_obs, gap)]``.
     """
     pred = np.asarray(pred, dtype=float)
     obs = np.asarray(obs, dtype=float)
     if pred.size == 0 or obs.size == 0:
         return []
+    errs = None
+    if obs_err is not None:
+        errs = np.asarray(obs_err, dtype=float)
+        if errs.shape != obs.shape:
+            errs = None
     cand: "List[Tuple[float, int, int]]" = []
     for i, pi in enumerate(pred):
         if not np.isfinite(pi) or pi <= 0:
             continue
-        tol = factor * max(rel_tol * pi, 1e-9)
+        sig_model = max(rel_tol * pi, 1e-9)
         for j, oj in enumerate(obs):
+            e = errs[j] if errs is not None and np.isfinite(errs[j]) else 0.0
+            tol = factor * math.hypot(sig_model, e)
             g = abs(pi - oj)
             if g < tol:
                 cand.append((g, i, j))
@@ -232,13 +288,19 @@ def _match_pairs(pred: np.ndarray, obs: np.ndarray, rel_tol: float,
 
 
 def _score_pred(obs_sorted: np.ndarray, pred: np.ndarray, weight: np.ndarray,
-                rel_tol: float, strong_frac: float = 0.1
-                ) -> Tuple[float, int, float, float]:
-    """Match score, #matched, recall, precision for a predicted d-spacing array.
+                rel_tol: float, strong_frac: float = 0.1,
+                obs_err_sorted: "Optional[np.ndarray]" = None,
+                obs_amp_sorted: "Optional[np.ndarray]" = None,
+                ) -> Tuple[float, int, float, float, float]:
+    """Match score, #matched, recall, precision, intensity_corr for a predicted
+    d-spacing array.
 
-    ``score`` = Σ wᵢ·exp(−½(Δdᵢ/σᵢ)²), σᵢ = rel_tol·d_pred,ᵢ — a smooth
-    optimisation target for the pressure fit (nearest-neighbour, so it stays
-    differentiable as P sweeps).
+    ``score`` = Σ wᵢ·exp(−½(Δdᵢ/σᵢ)²) — a smooth optimisation target for the
+    pressure fit (nearest-neighbour, so it stays differentiable as P sweeps).
+    σᵢ combines the model tolerance ``rel_tol·d_pred,ᵢ`` with the nearest
+    observed peak's fitted center esd in quadrature (``obs_err_sorted``, from
+    the Step-2 covariance) so a sharp, well-determined peak is held to a
+    tighter position than a broad noisy one.
 
     The reported *evidence* (n_matched, recall, precision), by contrast, uses a
     hard ONE-TO-ONE assignment so a wrong phase cannot reuse one peak many times:
@@ -248,19 +310,32 @@ def _score_pred(obs_sorted: np.ndarray, pred: np.ndarray, weight: np.ndarray,
       one-to-one.
     * ``precision`` — fraction of the *observed* peaks in the predicted range that
       a predicted line claims (matched-pairs / observed-in-range, ≤ 1).
+    * ``intensity_corr`` — cosine similarity between the predicted relative
+      intensities and the observed amplitudes over the one-to-one matched pairs
+      (NaN when ``obs_amp_sorted`` is absent or fewer than 3 pairs matched).
+      DAC texture scrambles intensities, so this is a *soft* figure of merit —
+      see ``conservative_confidence(intensity_k=...)`` for how gently it is
+      folded in.
     """
     pred = np.asarray(pred, dtype=float)
-    sigma = np.maximum(rel_tol * pred, 1e-9)
-    gap = _nearest_gap(pred, obs_sorted)
+    sigma_model = np.maximum(rel_tol * pred, 1e-9)
+    gap, near = _nearest_obs(pred, obs_sorted)
+    sigma = sigma_model
+    if obs_err_sorted is not None and obs_sorted.size:
+        e = np.asarray(obs_err_sorted, dtype=float)[near]
+        e = np.where(np.isfinite(e), e, 0.0)
+        sigma = np.sqrt(sigma_model ** 2 + e ** 2)
     kernel = np.exp(-0.5 * (gap / sigma) ** 2)
     score = float(np.sum(weight * kernel))
-    pairs = _match_pairs(pred, obs_sorted, rel_tol, factor=2.0)
+    pairs = _match_pairs(pred, obs_sorted, rel_tol, factor=2.0,
+                         obs_err=obs_err_sorted)
     n_matched = len(pairs)
     matched_pred = np.zeros(pred.size, dtype=bool)
     for i, _j, _g in pairs:
         matched_pred[i] = True
     recall = 0.0
     precision = 0.0
+    intensity_corr = float("nan")
     if obs_sorted.size and pred.size:
         span = 2.0 * float(sigma.max())
         # Recall over the strong in-window predicted lines (matched one-to-one).
@@ -277,15 +352,31 @@ def _score_pred(obs_sorted: np.ndarray, pred: np.ndarray, weight: np.ndarray,
         n_obs_in = int(np.sum((obs_sorted >= lo) & (obs_sorted <= hi)))
         if n_obs_in:
             precision = min(1.0, n_matched / float(n_obs_in))
-    return score, n_matched, recall, precision
+    # Intensity agreement over the matched pairs (predicted weight vs observed
+    # amplitude, both non-negative → cosine in [0, 1]).
+    if obs_amp_sorted is not None and n_matched >= 3:
+        amp = np.asarray(obs_amp_sorted, dtype=float)
+        wp = np.array([weight[i] for i, _j, _g in pairs], dtype=float)
+        ao = np.array([amp[j] for _i, j, _g in pairs], dtype=float)
+        ok = np.isfinite(wp) & np.isfinite(ao) & (ao >= 0)
+        if int(ok.sum()) >= 3:
+            wp, ao = wp[ok], ao[ok]
+            nw, na = float(np.linalg.norm(wp)), float(np.linalg.norm(ao))
+            if nw > 0 and na > 0:
+                intensity_corr = float(np.dot(wp, ao) / (nw * na))
+    return score, n_matched, recall, precision, intensity_corr
 
 
 def score_at_scale(obs_sorted: np.ndarray, d0: np.ndarray, weight: np.ndarray,
                    s: float, rel_tol: float,
                    strong_frac: float = 0.1) -> Tuple[float, int, float, float]:
-    """Isotropic convenience wrapper: score the predictions ``d0·s``."""
+    """Isotropic convenience wrapper: score the predictions ``d0·s``.
+
+    Back-compat: returns the classic ``(score, n_matched, recall, precision)``
+    4-tuple (no esd/intensity inputs here — use :func:`_score_pred` for those).
+    """
     return _score_pred(obs_sorted, np.asarray(d0, dtype=float) * s, weight,
-                       rel_tol, strong_frac)
+                       rel_tol, strong_frac)[:4]
 
 
 DEFAULT_MIN_MATCHED = 3
@@ -339,11 +430,13 @@ def pressure_assumption(phase: Phase) -> str:
 
 def conservative_confidence(recall: float, precision: float, n_matched: int,
                             *, min_matched: int = DEFAULT_MIN_MATCHED,
-                            prior_penalty: float = 1.0) -> float:
+                            prior_penalty: float = 1.0,
+                            intensity_corr: float = float("nan"),
+                            intensity_k: float = 0.0) -> float:
     """Combine the figures of merit into ONE conservative confidence in [0, 1].
 
     Replaces the old ``max(recall, precision)`` — which let a phase explaining a
-    couple of the busiest peaks score 1.0 — with three multiplicative factors:
+    couple of the busiest peaks score 1.0 — with multiplicative factors:
 
     * ``balanced`` = F1(recall, precision): demands the phase both shows its own
       strong lines *and* accounts for what is observed (neither alone suffices).
@@ -351,13 +444,23 @@ def conservative_confidence(recall: float, precision: float, n_matched: int,
       too few reflections (the DARA/RADAR-PD "minimum evidence" lesson).
     * ``prior_penalty`` ∈ (0, 1]: Gaussian falloff when the fitted pressure
       disagrees with the frame's metadata pressure (1.0 when no prior).
+    * intensity factor = ``1 − intensity_k·(1 − intensity_corr)``: a *soft* pull
+      toward matches whose observed amplitudes track the predicted relative
+      intensities (DARA-style). Deliberately gentle (``intensity_k`` small, and
+      skipped entirely when ``intensity_corr`` is NaN) because DAC texture,
+      spotty rings and preferred orientation legitimately scramble intensities —
+      position evidence stays primary; intensities only nudge.
     """
     r = max(0.0, float(recall))
     p = max(0.0, float(precision))
     balanced = (2.0 * r * p / (r + p)) if (r + p) > 0 else 0.0
     mm = max(1, int(min_matched))
     evidence = min(1.0, max(0, int(n_matched)) / float(mm))
-    return float(balanced * evidence * max(0.0, min(1.0, prior_penalty)))
+    conf = balanced * evidence * max(0.0, min(1.0, prior_penalty))
+    k = max(0.0, min(1.0, float(intensity_k)))
+    if k > 0 and intensity_corr == intensity_corr:          # corr is not NaN
+        conf *= 1.0 - k * (1.0 - max(0.0, min(1.0, float(intensity_corr))))
+    return float(conf)
 
 
 def fit_pressure_for_phase(obs_d, phase: Phase,
@@ -366,14 +469,25 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
                            n_grid: int = 300, rel_tol: float = 0.01,
                            p_prior: "Optional[float]" = None,
                            p_window: "Optional[float]" = None,
-                           min_matched: int = DEFAULT_MIN_MATCHED) -> Dict[str, Any]:
+                           min_matched: int = DEFAULT_MIN_MATCHED,
+                           obs_err=None, obs_amp=None,
+                           temperature: "Optional[float]" = None,
+                           intensity_k: float = 0.3) -> Dict[str, Any]:
     """Best-fit pressure for one phase against one frame's observed d-spacings.
 
     Returns ``{pressure, score, confidence, recall, precision, n_matched,
-    n_pred}``. Compression is anisotropic when the phase carries an ``axial_eos``
-    (per-axis), else isotropic from the volume EOS; with neither, the phase is
-    only scored at ambient (pressure 0). ``refl`` may be precomputed (see
-    :func:`phase_reflections`) to avoid re-simulating across frames.
+    intensity_corr, n_pred}``. Compression is anisotropic when the phase carries
+    an ``axial_eos`` (per-axis), else isotropic from the volume EOS; with
+    neither, the phase is only scored at ambient (pressure 0). ``refl`` may be
+    precomputed (see :func:`phase_reflections`) to avoid re-simulating across
+    frames.
+
+    ``obs_err`` (per-peak d-spacing esd, from the Step-2 fit covariance) widens
+    the match tolerance for noisy peaks in quadrature; ``obs_amp`` (per-peak
+    amplitude) enables the soft intensity-agreement factor (``intensity_k``,
+    see :func:`conservative_confidence`); ``temperature`` (K) applies the
+    phase's thermal expansion so an ambient-pressure temperature series is
+    matched at the right lattice.
 
     Pressure prior — the key DAC fix. When ``p_prior`` (a frame's metadata
     pressure, GPa) is given, the search is *confined* to ``p_prior ± p_window``
@@ -391,11 +505,25 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
     d0 = np.asarray(d0, dtype=float)
     weight = np.asarray(weight, dtype=float)
     hkls = [_parse_hkl(h) for h in hkl_raw] if hkl_raw is not None else None
-    obs = np.sort(np.asarray(obs_d, dtype=float))
-    obs = obs[np.isfinite(obs) & (obs > 0)]
+    obs_raw = np.asarray(obs_d, dtype=float)
+    valid = np.isfinite(obs_raw) & (obs_raw > 0)
+    order = np.argsort(obs_raw[valid])
+    obs = obs_raw[valid][order]
+
+    def _aligned(aux):
+        """Sort an optional per-peak array the same way as obs (else None)."""
+        if aux is None:
+            return None
+        a = np.asarray(aux, dtype=float)
+        if a.shape != obs_raw.shape:
+            return None
+        return a[valid][order]
+
+    err_s = _aligned(obs_err)
+    amp_s = _aligned(obs_amp)
     out = {"pressure": float("nan"), "score": 0.0, "confidence": 0.0,
            "recall": 0.0, "precision": 0.0, "n_matched": 0, "prior_penalty": 1.0,
-           "n_pred": int(d0.size)}
+           "intensity_corr": float("nan"), "n_pred": int(d0.size)}
     if d0.size == 0 or obs.size == 0:
         out["pressure"] = 0.0
         return out
@@ -411,18 +539,22 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
     pen_tol = float(p_window) if (p_window and p_window > 0) else None
 
     def _score_P(P):
-        return _score_pred(obs, predicted_d(phase, d0, hkls, P), weight, rel_tol)
+        return _score_pred(obs, predicted_d(phase, d0, hkls, P, temperature),
+                           weight, rel_tol,
+                           obs_err_sorted=err_s, obs_amp_sorted=amp_s)
 
     def _record(p_val):
-        score, nm, rec, prec = _score_P(p_val)
+        score, nm, rec, prec, icorr = _score_P(p_val)
         prior_pen = 1.0
         if pen_prior is not None and pen_tol:
             prior_pen = float(np.exp(-0.5 * ((p_val - pen_prior) / pen_tol) ** 2))
         out.update({"pressure": p_val, "score": score, "n_matched": nm,
                     "recall": rec, "precision": prec, "prior_penalty": prior_pen,
+                    "intensity_corr": icorr,
                     "confidence": conservative_confidence(
                         rec, prec, nm, min_matched=min_matched,
-                        prior_penalty=prior_pen)})
+                        prior_penalty=prior_pen,
+                        intensity_corr=icorr, intensity_k=intensity_k)})
 
     if not has_eos:
         _record(0.0)
@@ -479,12 +611,14 @@ def _identify_chunk(payload):
     no pymatgen. Excluded frames are left as NaN/zero.
     """
     (phases, refls, obs_chunk, excluded_chunk, prior_chunk, window_chunk,
-     p_min, p_max, rel_tol, min_matched) = payload
+     p_min, p_max, rel_tol, min_matched,
+     amp_chunk, err_chunk, temp_chunk, intensity_k) = payload
     m = len(obs_chunk)
     res = {ph.name: {"pressure": np.full(m, np.nan, "f8"), "score": np.zeros(m, "f8"),
                      "confidence": np.zeros(m, "f8"), "recall": np.zeros(m, "f8"),
                      "precision": np.zeros(m, "f8"), "n_matched": np.zeros(m, "i4"),
-                     "prior_penalty": np.ones(m, "f8")}
+                     "prior_penalty": np.ones(m, "f8"),
+                     "intensity_corr": np.full(m, np.nan, "f8")}
            for ph in phases}
     for j in range(m):
         if excluded_chunk[j]:
@@ -494,33 +628,52 @@ def _identify_chunk(payload):
         if prior_chunk is not None and np.isfinite(prior_chunk[j]):
             pp = float(prior_chunk[j])
         pw = float(window_chunk[j]) if (window_chunk is not None and pp is not None) else None
+        temp = None
+        if temp_chunk is not None and np.isfinite(temp_chunk[j]):
+            temp = float(temp_chunk[j])
         for ph, refl in zip(phases, refls):
             r = fit_pressure_for_phase(obs, ph, refl, p_min=p_min, p_max=p_max,
                                        rel_tol=rel_tol, p_prior=pp, p_window=pw,
-                                       min_matched=min_matched)
+                                       min_matched=min_matched,
+                                       obs_err=(err_chunk[j] if err_chunk is not None else None),
+                                       obs_amp=(amp_chunk[j] if amp_chunk is not None else None),
+                                       temperature=temp, intensity_k=intensity_k)
             rr = res[ph.name]
             rr["pressure"][j] = r["pressure"]; rr["score"][j] = r["score"]
             rr["confidence"][j] = r["confidence"]; rr["recall"][j] = r["recall"]
             rr["precision"][j] = r["precision"]; rr["n_matched"][j] = r["n_matched"]
             rr["prior_penalty"][j] = r["prior_penalty"]
+            rr["intensity_corr"][j] = r["intensity_corr"]
     return res
 
 
-def _read_good_peaks_by_frame(h5) -> "Tuple[int, List[np.ndarray]]":
+def _read_good_peaks_by_frame(h5) -> "Tuple[int, List[np.ndarray], Optional[List[np.ndarray]], Optional[List[np.ndarray]]]":
+    """Good peaks per frame: ``(n, centers, amplitudes, center_errs)``.
+
+    ``amplitudes`` / ``center_errs`` are per-frame arrays aligned with
+    ``centers``, or None when the file predates those columns (older Step-2
+    output) — identification then runs position-only, as before.
+    """
     pk = h5.get("peaks")
     if pk is None or "center" not in pk or "frame" not in pk:
         raise ValueError("Analysis file lacks /peaks — run Step 2 (peak fitting) first.")
     frame = np.asarray(pk["frame"][:], dtype=int)
     center = np.asarray(pk["center"][:], dtype=float)
     flag = np.asarray(pk["flag"][:], dtype=int) if "flag" in pk else np.zeros_like(center, int)
+    amp = np.asarray(pk["amplitude"][:], dtype=float) if "amplitude" in pk else None
+    cerr = np.asarray(pk["center_err"][:], dtype=float) if "center_err" in pk else None
     if "counts" in pk:
         n = int(np.asarray(pk["counts"][:]).size)
     else:
         bg = h5.get("background")
         n = int(bg["clean"].shape[0]) if bg is not None and "clean" in bg else (int(frame.max()) + 1 if frame.size else 0)
     good = flag == 0
-    per_frame = [center[good & (frame == i)] for i in range(n)]
-    return n, per_frame
+    centers = [center[good & (frame == i)] for i in range(n)]
+    amps = ([amp[good & (frame == i)] for i in range(n)]
+            if amp is not None and amp.shape == center.shape else None)
+    cerrs = ([cerr[good & (frame == i)] for i in range(n)]
+             if cerr is not None and cerr.shape == center.shape else None)
+    return n, centers, amps, cerrs
 
 
 def run_identification(
@@ -540,12 +693,15 @@ def run_identification(
     pressure_sigma_k: float = 2.0,
     min_matched: int = DEFAULT_MIN_MATCHED,
     marker_prior: bool = False,
+    intensity_k: float = 0.3,
+    use_frame_temperature: bool = True,
 ) -> Dict[str, Any]:
     """Match every frame's good peaks against each candidate phase and store the
     per-frame best-fit pressure / score / confidence under ``/identify``.
 
         /identify  attrs: schema_version, unit, wavelength, p_min, p_max, rel_tol,
-                          phases, pressure_window, pressure_sigma_k, min_matched
+                          phases, pressure_window, pressure_sigma_k, min_matched,
+                          intensity_k, n_temperature
         /identify/<phase>/pressure    (N,)  best-fit pressure (GPa)
         /identify/<phase>/score       (N,)  match score
         /identify/<phase>/confidence  (N,)  conservative confidence (see
@@ -554,9 +710,20 @@ def run_identification(
         /identify/<phase>/n_matched   (N,) int  one-to-one matched reflections
         /identify/<phase>/prior_penalty (N,)    Gaussian pressure-prior factor in
                                                 (0,1] applied to confidence (1=no prior)
+        /identify/<phase>/intensity_corr (N,)   cosine of predicted vs observed
+                                                intensities over matched pairs
+                                                (NaN = too few pairs / no amps)
                           attrs: name, n_pred, has_eos, category, pressure_model
                                  (eos|axial_eos|no_eos), pressure_assumption,
                                  prior_penalized
+
+    Position evidence is esd-weighted when Step 2 stored ``center_err`` (the
+    match tolerance widens in quadrature with each observed peak's own fitted
+    uncertainty), and observed amplitudes feed a soft intensity-agreement
+    factor (``intensity_k``; 0 disables — see ``conservative_confidence``).
+    ``use_frame_temperature`` applies ``/frames/temperature`` through each
+    phase's thermal expansion (``Phase.thermal``), the ambient-pressure
+    temperature-series analog of the pressure prior.
 
     Pressure prior (the DAC accuracy fix): if ``pressure_by_frame`` is given — or
     the analysis file already carries ``/frames/pressure`` (from filenames or a
@@ -605,7 +772,7 @@ def run_identification(
         source_reduced = h5.attrs.get("source_reduced", "")
         if isinstance(source_reduced, bytes):
             source_reduced = source_reduced.decode("utf-8", "replace")
-        n, peaks_by_frame = _read_good_peaks_by_frame(h5)
+        n, peaks_by_frame, amps_by_frame, cerrs_by_frame = _read_good_peaks_by_frame(h5)
         frames = h5.get("frames")
         excluded = (np.asarray(frames["excluded"][:], dtype=bool)
                     if frames is not None and "excluded" in frames else None)
@@ -616,6 +783,8 @@ def run_identification(
                          if frames is not None and "pressure" in frames else None)
         file_sigma = (np.asarray(frames["pressure_sigma"][:], dtype=float)
                       if frames is not None and "pressure_sigma" in frames else None)
+        file_temperature = (np.asarray(frames["temperature"][:], dtype=float)
+                            if frames is not None and "temperature" in frames else None)
     if excluded is None or excluded.size != n:
         excluded = np.zeros(n, dtype=bool)
 
@@ -629,6 +798,9 @@ def run_identification(
                            else (file_pressure if use_frame_pressure else None))
     prior_sigma = _as_n(pressure_sigma_by_frame if pressure_sigma_by_frame is not None
                         else (file_sigma if use_frame_pressure else None))
+    frame_temperature = _as_n(file_temperature if use_frame_temperature else None)
+    if frame_temperature is not None and not np.any(np.isfinite(frame_temperature)):
+        frame_temperature = None
 
     # Wavelength is only needed for a 2theta axis: prefer the value stored at
     # Step 1, then an explicit arg, then the reduced PONI.
@@ -641,9 +813,16 @@ def run_identification(
                 f"Data is on a {unit} axis but no wavelength was found. "
                 "Re-run Step 1 (which stores it) or pass wavelength explicitly.")
 
-    # Observed d per frame (convert once).
+    # Observed d per frame (convert once). Center esd's propagate to d-space so
+    # the matcher can widen tolerances per peak (position-only when Step 2
+    # predates the *_err columns).
     obs_d_by_frame = [radial_to_d(c, unit, wavelength) if c.size else np.zeros(0)
                       for c in peaks_by_frame]
+    obs_err_by_frame = None
+    if cerrs_by_frame is not None:
+        obs_err_by_frame = [
+            radial_err_to_d_err(c, e, unit, wavelength) if c.size else np.zeros(0)
+            for c, e in zip(peaks_by_frame, cerrs_by_frame)]
 
     workers = resolve_workers(num_workers)
     print(f"[IDENTIFY] {len(phases)} phase(s), {n} frames "
@@ -688,9 +867,15 @@ def run_identification(
                 if obs.size == 0:
                     continue
                 for m in markers:
-                    r = fit_pressure_for_phase(obs, m, refl_cache[m.name], p_min=p_min,
-                                               p_max=p_max, rel_tol=rel_tol,
-                                               min_matched=min_matched)
+                    r = fit_pressure_for_phase(
+                        obs, m, refl_cache[m.name], p_min=p_min,
+                        p_max=p_max, rel_tol=rel_tol, min_matched=min_matched,
+                        obs_err=(obs_err_by_frame[j] if obs_err_by_frame is not None else None),
+                        obs_amp=(amps_by_frame[j] if amps_by_frame is not None else None),
+                        temperature=(float(frame_temperature[j])
+                                     if frame_temperature is not None
+                                     and np.isfinite(frame_temperature[j]) else None),
+                        intensity_k=intensity_k)
                     if (r["n_matched"] >= min_matched and np.isfinite(r["pressure"])
                             and r["confidence"] > best_conf[j]):
                         best_conf[j] = r["confidence"]
@@ -733,7 +918,8 @@ def run_identification(
         ph.name: {"pressure": np.full(n, np.nan, "f8"), "score": np.zeros(n, "f8"),
                   "confidence": np.zeros(n, "f8"), "recall": np.zeros(n, "f8"),
                   "precision": np.zeros(n, "f8"), "n_matched": np.zeros(n, "i4"),
-                  "prior_penalty": np.ones(n, "f8")}
+                  "prior_penalty": np.ones(n, "f8"),
+                  "intensity_corr": np.full(n, np.nan, "f8")}
         for ph in phases}
 
     def _absorb(a, chunk_res):
@@ -748,7 +934,10 @@ def run_identification(
         ranges = chunk_ranges(n, workers)
         payloads = [(phases, refls, obs_d_by_frame[a:b], excluded[a:b],
                      _slice(prior_pressure, a, b), _slice(windows, a, b),
-                     p_min, p_max, rel_tol, min_matched) for a, b in ranges]
+                     p_min, p_max, rel_tol, min_matched,
+                     _slice(amps_by_frame, a, b), _slice(obs_err_by_frame, a, b),
+                     _slice(frame_temperature, a, b), intensity_k)
+                    for a, b in ranges]
         done = 0
         with ProcessPoolExecutor(max_workers=workers) as ex:
             for (a, b), chunk_res in zip(ranges, ex.map(_identify_chunk, payloads)):
@@ -758,7 +947,9 @@ def run_identification(
     else:
         _absorb(0, _identify_chunk((phases, refls, obs_d_by_frame, excluded,
                                     prior_pressure, windows,
-                                    p_min, p_max, rel_tol, min_matched)))
+                                    p_min, p_max, rel_tol, min_matched,
+                                    amps_by_frame, obs_err_by_frame,
+                                    frame_temperature, intensity_k)))
         print(f"[IDENTIFY] {n} {n}", flush=True)
 
     tmp = dst.with_name(dst.name + ".tmp")
@@ -778,6 +969,9 @@ def run_identification(
                 "pressure_sigma_k": float(pressure_sigma_k),
                 "min_matched": int(min_matched),
                 "n_pressure_prior": int(n_prior),
+                "intensity_k": float(intensity_k),
+                "n_temperature": int(np.sum(np.isfinite(frame_temperature))
+                                     if frame_temperature is not None else 0),
             })
             for ph in phases:
                 g = gid.create_group(_h5_safe(ph.name))

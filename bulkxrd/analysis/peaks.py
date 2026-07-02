@@ -11,6 +11,10 @@ each reflection is reduced to a small, physically meaningful parameter set:
     area        integrated intensity (texture / phase fraction)
     chi2        reduced chi-square of the local fit (goodness)
     flag        0 = good, nonzero = a rejection reason (see FLAG_*)
+    center_err, amplitude_err, fwhm_err
+                1-sigma uncertainties from the fit covariance (NaN when the
+                fit failed) — esd-weighting for Step-3 matching and
+                Williamson-Hall error bars
 
 Pipeline per frame:
     1. detect candidate peaks (local maxima with SNR above a MAD noise floor),
@@ -285,9 +289,22 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
     dof = max(xw.size - p.size, 1)
     chi2 = float(np.sum(resid(p) ** 2) / dof)
 
+    # 1σ parameter uncertainties from the Gauss-Newton covariance
+    # (JᵀJ)⁻¹·χ²_red — the residuals are already scaled by the noise estimate,
+    # so the reduced chi-square recalibrates any mis-scaled σ. pinv tolerates
+    # the singular Jacobian a bound-pinned parameter produces (its esd is then
+    # meaningless anyway; the WIDTH_BOUND/CENTER_DRIFT flags mark those peaks).
+    try:
+        J = sol.jac
+        cov = np.linalg.pinv(J.T @ J) * chi2
+        esd = np.sqrt(np.clip(np.diag(cov), 0.0, None))
+    except Exception:
+        esd = np.full(p.size, np.nan)
+
     out: List[Dict[str, Any]] = []
     for j, g in enumerate(group):
         c, a, w, e = p[4 * j:4 * j + 4]
+        c_err, a_err, w_err = esd[4 * j], esd[4 * j + 1], esd[4 * j + 2]
         flag = FLAG_OK if converged else FLAG_NO_CONVERGE
         if a < 2.0 * sig:
             flag |= FLAG_LOW_AMP
@@ -305,6 +322,8 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
             "eta": float(np.clip(e, 0.0, 1.0)),
             "area": float(pseudo_voigt_area(a, abs(w), np.clip(e, 0.0, 1.0))),
             "chi2": chi2, "flag": int(flag),
+            "center_err": float(c_err), "amplitude_err": float(a_err),
+            "fwhm_err": float(w_err),
         })
     return out
 
@@ -312,7 +331,8 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
 def _failed_peak(g: Dict[str, float], flag: int) -> Dict[str, Any]:
     return {"center": float(g["center"]), "amplitude": float(g["amplitude"]),
             "fwhm": float(g["fwhm"]), "eta": 0.5, "area": 0.0,
-            "chi2": np.inf, "flag": int(flag)}
+            "chi2": np.inf, "flag": int(flag),
+            "center_err": np.nan, "amplitude_err": np.nan, "fwhm_err": np.nan}
 
 
 def _window_mask(x: np.ndarray, edge_bins: int,
@@ -612,7 +632,8 @@ def auto_fit_range(radial, signal, *, max_trim_frac: float = 0.15,
 # ---------------------------------------------------------------------------
 
 SCHEMA_VERSION = "1"
-_PEAK_COLS = ("center", "amplitude", "fwhm", "eta", "area", "chi2", "flag")
+_PEAK_COLS = ("center", "amplitude", "fwhm", "eta", "area", "chi2", "flag",
+              "center_err", "amplitude_err", "fwhm_err")
 
 
 def _peaks_chunk(payload):
@@ -699,6 +720,8 @@ def run_peak_fitting(
         /peaks/area        (P,)           |
         /peaks/chi2        (P,)          /
         /peaks/flag        (P,) int      0 = good, else FLAG_* bitmask
+        /peaks/center_err  (P,)          1σ fit uncertainties (NaN = fit failed);
+        /peaks/amplitude_err, fwhm_err   esd-weighting + Williamson-Hall errors
 
     where P = sum(counts). If ``out_h5`` is given the source is copied there
     first and peaks are written into the copy; otherwise ``/peaks`` is added to

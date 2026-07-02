@@ -111,12 +111,15 @@ def subtract_peaks(radial: np.ndarray, clean: np.ndarray,
 # ---------------------------------------------------------------------------
 
 def _phase_pred_d(phase: Phase, refl_d: np.ndarray, refl_hkl,
-                  pressure: float) -> np.ndarray:
-    """Predicted d-spacings for one phase at ``pressure`` using cached ambient
-    reflections (so no pymatgen call). NaN pressure → ambient (0 GPa)."""
+                  pressure: float, temperature: "Optional[float]" = None
+                  ) -> np.ndarray:
+    """Predicted d-spacings for one phase at ``pressure`` (and temperature, when
+    known) using cached ambient reflections (so no pymatgen call). NaN pressure
+    → ambient (0 GPa). Temperature goes through the same thermal-expansion seam
+    Step 3a matched with, so subtraction happens at the identified lattice."""
     P = 0.0 if not np.isfinite(pressure) else float(max(pressure, 0.0))
     hkls = [_parse_hkl(h) for h in refl_hkl] if refl_hkl is not None else None
-    return predicted_d(phase, np.asarray(refl_d, float), hkls, P)
+    return predicted_d(phase, np.asarray(refl_d, float), hkls, P, temperature)
 
 
 def _read_peaks(h5):
@@ -220,6 +223,8 @@ def run_residual(
         frames = h5.get("frames")
         excluded = (np.asarray(frames["excluded"][:], dtype=bool)
                     if frames is not None and "excluded" in frames else None)
+        temperature = (np.asarray(frames["temperature"][:], dtype=float)
+                       if frames is not None and "temperature" in frames else None)
 
     n, nb = clean.shape
     if excluded is None or excluded.size != n:
@@ -272,8 +277,10 @@ def run_residual(
                 nm = info["n_matched"]
                 if (not allow_sparse) and nm is not None and nm[i] < int(min_matched):
                     continue
+                T_i = (float(temperature[i]) if temperature is not None
+                       and temperature.size == n and np.isfinite(temperature[i]) else None)
                 preds[name] = _phase_pred_d(info["phase"], info["refl_d"],
-                                            info["refl_hkl"], info["press"][i])
+                                            info["refl_hkl"], info["press"][i], T_i)
             n_present_total += len(preds)
             labels, explained = attribute_peaks(np.where(valid, obs_d, np.inf),
                                                 preds, rel_tol)

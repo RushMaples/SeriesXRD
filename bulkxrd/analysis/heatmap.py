@@ -72,6 +72,15 @@ def _frame_pressure(h5) -> "Optional[np.ndarray]":
     return pr if np.any(np.isfinite(pr)) else None
 
 
+def _frame_temperature(h5) -> "Optional[np.ndarray]":
+    """Per-frame metadata temperature (K), or None when absent / all-NaN."""
+    fr = h5.get("frames")
+    if fr is None or "temperature" not in fr:
+        return None
+    tt = np.asarray(fr["temperature"][:], dtype=float)
+    return tt if np.any(np.isfinite(tt)) else None
+
+
 def _pressure_track(h5, phase_name: str) -> "Optional[np.ndarray]":
     gid = h5.get("identify")
     if gid is None:
@@ -246,6 +255,7 @@ def reflection_tracks(analysis_h5: "str | Path", phase: Phase, *,
             pr = _pressure_track(h5, phase.name) if gid is not None else None
             if pr is None:                       # no Step-3a track → metadata pressure
                 pr = _frame_pressure(h5)
+            tK = _frame_temperature(h5)          # thermal-expansion seam (if any)
             cached = _stored_reflections(h5, phase.name)
             bg = h5.get("background")
             n = int(bg["clean"].shape[0]) if bg is not None and "clean" in bg \
@@ -269,7 +279,9 @@ def reflection_tracks(analysis_h5: "str | Path", phase: Phase, *,
         for fi, P in enumerate(pr):
             if not np.isfinite(P):
                 continue
-            dmat[:, fi] = predicted_d(phase, d0, hkls, float(max(P, 0.0)))
+            T_i = (float(tK[fi]) if tK is not None and fi < tK.size
+                   and np.isfinite(tK[fi]) else None)
+            dmat[:, fi] = predicted_d(phase, d0, hkls, float(max(P, 0.0)), T_i)
         tracks = []
         for ri, (di, hi) in enumerate(zip(d0, hkl)):
             d_at_P = dmat[ri]                     # (n,)

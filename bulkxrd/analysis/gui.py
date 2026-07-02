@@ -1,14 +1,16 @@
-"""Tabbed Tkinter GUI for the analysis stage (Step 1 background + Step 2 peaks).
+"""Tabbed Tkinter GUI for the analysis stage (Steps 1-3).
 
-Workflow left-to-right across tabs:
-    1 Input      — pick the reduced HDF5, inspect its structure, see the analysis output
-    2 Background — SNIP baseline + diamond-spot residual parameters
-    3 Peaks      — pseudo-Voigt fitting parameters
-    4 Run        — launch the crash-isolated worker, watch progress + log
-    5 Review     — single-frame QC: traces + fitted peaks + contamination curve
-    6 Heatmap    — scatter of peak positions across all frames (Step-3 precursor)
-    7 Phases     — reference-phase library: bundled + user phases, import CIFs, toggle candidates
-    8 Identify   — Step 3a: deterministic EOS phase matching, per-frame pressure + confidence
+Workflow left-to-right across tabs — configure, run, then inspect:
+    1 Input       — pick the reduced HDF5, inspect its structure, see the analysis output
+    2 Background  — SNIP baseline + diamond-spot residual parameters
+    3 Peaks       — pseudo-Voigt fitting parameters
+    4 Phases      — reference-phase library: bundled + user phases, import CIFs, toggle candidates
+    5 Frame meta  — per-frame pressure/temperature: parse filenames or import a CSV (Step-3 prior)
+    6 Identify    — Step 3a/3b settings: EOS matching, pressure prior, ML candidate ranking
+    7 Run         — launch the crash-isolated worker, watch progress + log
+    8 Review      — single-frame QC: traces + fitted peaks + contamination curve
+    9 Heatmap     — scatter of peak positions across all frames (uses Step-3a results when present)
+    10 Pattern map — waterfall / reflection tracks / per-phase layers (needs Step 3a)
 
 Same supervision model as reduce/gui.py: heavy computation runs in
 analysis/worker.py as a subprocess; this process never imports numpy/h5py
@@ -303,15 +305,19 @@ class AnalysisApp:
         self.nb.pack(fill="both", expand=True)
         self.tabs: Dict[str, Any] = {}
         for name, builder in [
+            # Workflow order: configure everything (input → background → peaks
+            # → phases → frame metadata → identify), then run, then inspect the
+            # results (review → heatmap → pattern map). Result tabs that need
+            # Step-3a output now sit AFTER the tabs that configure it.
             ("1 Input",      self._tab_input),
             ("2 Background", self._tab_background),
             ("3 Peaks",      self._tab_peaks),
-            ("4 Run",        self._tab_run),
-            ("5 Review",     self._tab_review),
-            ("6 Heatmap",    self._tab_heatmap),
-            ("7 Phases",     self._tab_phases),
-            ("8 Frame meta", self._tab_frame_metadata),
-            ("9 Identify",   self._tab_identify),
+            ("4 Phases",     self._tab_phases),
+            ("5 Frame meta", self._tab_frame_metadata),
+            ("6 Identify",   self._tab_identify),
+            ("7 Run",        self._tab_run),
+            ("8 Review",     self._tab_review),
+            ("9 Heatmap",    self._tab_heatmap),
             ("10 Pattern map", self._tab_patternmap),
         ]:
             frame = ttk.Frame(self.nb, padding=10)

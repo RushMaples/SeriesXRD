@@ -162,6 +162,34 @@ def test_tracks_layers_and_export():
             assert list(z["phase_names"]) == ["Au"]
 
 
+def test_export_fit_and_residual_channels():
+    """export_ml_dataset accepts every ml_features source — notably 'fit' (the
+    channel Step 2 actually fit, resolved via /peaks.attrs) and 'residual' —
+    and records the resolved channel names. Runs without pymatgen."""
+    import h5py
+    au = ph.Phase(name="Au", eos={"type": "BM3", "K0": 167, "K0p": 5.0})
+    with tempfile.TemporaryDirectory() as td:
+        h5 = Path(td) / "a.h5"
+        _build_analysis(h5, au)
+        with h5py.File(str(h5), "r+") as f:
+            f["peaks"].attrs["source"] = "clean"
+            clean = np.asarray(f["background/clean"][:])
+            f.create_group("residual").create_dataset("clean", data=clean * 0.5)
+        out = Path(td) / "ml.npz"
+        man = ml.export_ml_dataset(h5, out, channels=("fit", "residual"))
+        assert man["channels"] == ["fit", "residual"]
+        assert man["resolved_channels"] == ["clean", "residual"]
+        with np.load(out, allow_pickle=True) as z:
+            assert z["X"].shape == (4, 2, 3501)
+            assert list(z["resolved_channels"]) == ["clean", "residual"]
+        # Unknown channels are rejected with the full menu in the error.
+        try:
+            ml.export_ml_dataset(h5, out, channels=("nope",))
+            assert False, "expected ValueError"
+        except ValueError as e:
+            assert "fit" in str(e)
+
+
 def test_simulated_dataset():
     if not ph.pymatgen_available():
         print("  (pymatgen not installed — skipping simulated dataset)")
@@ -205,6 +233,7 @@ def main() -> None:
     test_metadata_pressure_axis_and_anisotropic_tracks()
     test_resample()
     test_tracks_layers_and_export()
+    test_export_fit_and_residual_channels()
     test_simulated_dataset()
     test_simulated_dataset_axial_only_scans_pressure()
     print("HEATMAP/MLDATA TEST OK")

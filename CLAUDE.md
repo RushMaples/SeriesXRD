@@ -120,6 +120,8 @@ else hybrid).
 /peaks/area        (P,)          integrated intensity
 /peaks/chi2        (P,)          reduced chi-square of fit
 /peaks/flag        (P,) int      0=good; bitmask of FLAG_* constants
+/peaks/center_err  (P,)          1σ fit esd's from the least-squares covariance
+/peaks/amplitude_err, fwhm_err   (NaN = fit failed) — esd-weighted matching + W-H errors
 ```
 
 P = sum(counts). Ragged layout — peak count varies per frame.
@@ -128,8 +130,10 @@ P = sum(counts). Ragged layout — peak count varies per frame.
 
 ```
 /identify  attrs: ... p_min, p_max, rel_tol, pressure_window, pressure_sigma_k,
-                  min_matched, n_pressure_prior
-/identify/<phase>/pressure,score,confidence,recall,precision,n_matched,prior_penalty (N,)
+                  min_matched, n_pressure_prior, intensity_k, n_temperature
+/identify/<phase>/pressure,score,confidence,recall,precision,n_matched,prior_penalty,
+                  intensity_corr (N,)   (intensity_corr = cosine of predicted vs
+                  observed intensities over matched pairs; NaN = no amps/<3 pairs)
 /identify/<phase>  attrs: pressure_model (eos|axial_eos|no_eos), pressure_assumption
                   (eos_based|ambient_reference|eos_missing|ignore_prior), prior_penalized
 /identify/<phase>/refl_d, refl_w, refl_hkl   cached ambient reflections (no pymatgen in GUI)
@@ -148,7 +152,14 @@ a few lines coincide. `marker_prior=True` (no metadata) first fits the marker-ca
 phases, then reuses the best marker's per-frame pressure as the prior. `confidence` is
 now conservative: F1(recall, precision) × evidence(min_matched) × Gaussian pressure-prior
 penalty — **not** the old `max(recall, precision)`. Matching is **one-to-one** (an
-observed peak can't satisfy several predicted lines).
+observed peak can't satisfy several predicted lines), **esd-weighted** (each observed
+peak's `/peaks/center_err` widens its match tolerance in quadrature with `rel_tol·d`),
+and **intensity-aware** (a soft factor `1 − intensity_k·(1 − intensity_corr)`, default
+`intensity_k=0.3`; gentle because DAC texture legitimately scrambles intensities — set
+0 for position-only). **Temperature seam**: `Phase.thermal = {alpha_v, T0}` (constant
+volumetric CTE) + `/frames/temperature` scale predicted d's isotropically
+(`phases.thermal_scale`, consumed by identify/residual/heatmap; ML simulators stay
+pressure-only) — the ambient-pressure temperature-series analog of the EOS.
 
 `run_residual` runs automatically after `run_identification` in the worker. It reuses
 the cached `/identify/<phase>/refl_d`+`refl_hkl` and `predicted_d` (same compression

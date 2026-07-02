@@ -128,26 +128,38 @@ def export_ml_dataset(
 ) -> Dict[str, Any]:
     """Export experimental frames as an ML-ready ``.npz``.
 
+    ``channels`` accepts every :data:`ml_features.SOURCES` entry — including
+    ``"fit"`` (the channel Step 2 actually fit, the pipeline default) and
+    ``"residual"`` (the Step-3a leftover) — not just the raw background
+    channels. This keeps the export consistent with what the pipeline analyses:
+    exporting only the median-based ``clean`` while Step 2 fits ``sigmaclip``/
+    ``hybrid`` would train a model on a channel the pipeline no longer trusts.
+
     Frames flagged ``excluded`` in the reduce stage are dropped by default
     (``drop_excluded``) so the ML never trains/infers on known-bad frames;
     ``frame_index`` preserves the original indices of the kept frames.
 
     Saved arrays: ``X`` (N, C, P) resampled patterns; ``d_grid`` (P,);
-    ``channels`` (C,); ``frame_index`` (N,); ``y`` (N, n_phases) weak multi-labels
-    and ``phase_names`` (n_phases,) from Step-3a (omitted if no /identify);
-    ``pressure`` (N, n_phases); ``n_good_peaks`` (N,); ``contamination`` (N,) if
-    present; plus scalar meta (``unit``, ``wavelength``, ``conf_threshold``).
-    Returns a manifest dict.
+    ``channels`` (C,) as requested and ``resolved_channels`` (C,) as actually
+    read (e.g. fit→sigmaclip); ``frame_index`` (N,); ``y`` (N, n_phases) weak
+    multi-labels and ``phase_names`` (n_phases,) from Step-3a (omitted if no
+    /identify); ``pressure`` (N, n_phases); ``n_good_peaks`` (N,);
+    ``contamination`` (N,) if present; plus scalar meta (``unit``,
+    ``wavelength``, ``conf_threshold``). Returns a manifest dict.
     """
     import h5py  # type: ignore
+    # Lazy: ml_features imports this module at load time, so the reverse import
+    # must stay inside the function.
+    from .ml_features import SOURCES as _SOURCES, _build_source_stack
 
     src = Path(analysis_h5).expanduser().resolve()
     if not src.is_file():
         raise FileNotFoundError(f"Analysis HDF5 not found: {src}")
     grid = make_d_grid() if d_grid is None else np.asarray(d_grid, float)
-    chans = [c for c in channels if c in ("clean", "baseline", "spot_residual")]
-    if not chans:
-        raise ValueError("No valid channels (choose from clean/baseline/spot_residual).")
+    chans = [str(c) for c in channels]
+    bad = [c for c in chans if c not in _SOURCES]
+    if bad or not chans:
+        raise ValueError(f"Invalid channels {bad or chans} (choose from {_SOURCES}).")
 
     with h5py.File(str(src), "r") as h5:
         unit = str(h5.attrs.get("unit", ""))
@@ -160,7 +172,10 @@ def export_ml_dataset(
             wavelength = stored_wl
         if wavelength is None and unit.strip().lower() in ("2th_deg", "2th_rad"):
             raise ValueError("2θ axis needs a wavelength (none stored); pass wavelength=.")
-        stacks = {c: np.asarray(bg[c][:], dtype=float) for c in chans}
+        stacks = {}
+        resolved = {}
+        for c in chans:
+            stacks[c], resolved[c] = _build_source_stack(h5, c)
         n = stacks[chans[0]].shape[0]
         ident = _read_identify(h5)
         n_good = _good_peaks_per_frame(h5, n)
@@ -206,6 +221,7 @@ def export_ml_dataset(
 
     save: Dict[str, Any] = {
         "X": X, "d_grid": grid, "channels": np.array(chans, dtype=object),
+        "resolved_channels": np.array([resolved[c] for c in chans], dtype=object),
         "frame_index": frame_index, "unit": unit,
         "wavelength": float(wavelength) if wavelength else 0.0,
         "n_good_peaks": n_good, "conf_threshold": float(conf_threshold),
@@ -227,7 +243,8 @@ def export_ml_dataset(
     manifest = {
         "out_npz": str(out), "n_frames": int(X.shape[0]), "n_channels": len(chans),
         "n_excluded": n_excluded if drop_excluded else 0,
-        "channels": chans, "n_points": int(grid.size), "unit": unit,
+        "channels": chans, "resolved_channels": [resolved[c] for c in chans],
+        "n_points": int(grid.size), "unit": unit,
         "n_phases": len(phase_names), "phases": phase_names,
         "has_labels": bool(phase_names),
     }

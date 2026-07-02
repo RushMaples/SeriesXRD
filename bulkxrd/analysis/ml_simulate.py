@@ -75,7 +75,11 @@ class AugmentConfig:
     hump_amp: Tuple[float, float] = (0.05, 0.35)
     hump_width_frac: Tuple[float, float] = (0.06, 0.25)   # of the d-range
     noise_sigma: Tuple[float, float] = (0.0, 0.05)
-    truncate_frac: Tuple[float, float] = (0.0, 0.12)      # fraction cut from one end
+    truncate_frac: Tuple[float, float] = (0.0, 0.3)       # fraction cut per end
+    # Real coverage rarely spans the whole SimXRD d-grid: the beamstop's 2θ_min
+    # caps the high-d end and the detector edge the low-d end, so measured rows
+    # resample with large zero swaths at EITHER end (often >30% at high d).
+    # Truncation is therefore drawn independently per end.
 
 
 def _u(rng, lo_hi):
@@ -154,17 +158,17 @@ def add_diamond_spikes(y: np.ndarray, d_grid: np.ndarray, cfg: AugmentConfig,
 
 def apply_truncation(y: np.ndarray, cfg: AugmentConfig,
                      rng: np.random.Generator) -> np.ndarray:
-    """Zero a random fraction of one end (detector truncation / beamstop)."""
-    frac = _u(rng, cfg.truncate_frac)
-    if frac <= 0:
+    """Zero an independently drawn fraction of EACH end (detector edge at low d,
+    beamstop 2θ_min at high d — both routinely leave zero swaths on the d-grid)."""
+    k_lo = int(_u(rng, cfg.truncate_frac) * y.size)
+    k_hi = int(_u(rng, cfg.truncate_frac) * y.size)
+    if not (k_lo or k_hi):
         return y
     out = y.copy()
-    k = int(frac * y.size)
-    if k:
-        if rng.random() < 0.5:
-            out[:k] = 0.0
-        else:
-            out[-k:] = 0.0
+    if k_lo:
+        out[:k_lo] = 0.0
+    if k_hi:
+        out[-k_hi:] = 0.0
     return out
 
 
