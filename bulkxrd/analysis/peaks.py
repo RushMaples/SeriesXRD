@@ -210,9 +210,36 @@ def detect_peaks(x, y, *, min_snr: float = 5.0,
 # Fitting
 # ---------------------------------------------------------------------------
 
-def _group_peaks(cands: List[Dict[str, float]], window_factor: float
+# Joint fits scale ~O(K^2) in peaks per group; on a noisy detection a chain of
+# marginal candidates can link the WHOLE pattern into one group and the fit
+# effectively hangs. Groups larger than this are split at their widest
+# internal center gaps (the physically most separable seams).
+MAX_GROUP_SIZE = 12
+
+
+def _split_group(group: "List[Dict[str, float]]", max_size: int
+                 ) -> "List[List[Dict[str, float]]]":
+    """Recursively split an oversized group at its largest center gap."""
+    if len(group) <= max_size:
+        return [group]
+    gaps = [group[i + 1]["center"] - group[i]["center"]
+            for i in range(len(group) - 1)]
+    cut = int(np.argmax(gaps)) + 1
+    if cut == 0 or cut == len(group):          # degenerate; hard split
+        cut = len(group) // 2
+    return (_split_group(group[:cut], max_size)
+            + _split_group(group[cut:], max_size))
+
+
+def _group_peaks(cands: List[Dict[str, float]], window_factor: float,
+                 max_group_size: int = MAX_GROUP_SIZE
                  ) -> List[List[Dict[str, float]]]:
-    """Cluster peaks whose +-window_factor*fwhm windows overlap, for joint fit."""
+    """Cluster peaks whose +-window_factor*fwhm windows overlap, for joint fit.
+
+    Groups exceeding ``max_group_size`` are split at their widest internal
+    gaps — a bounded joint fit of the most-overlapped neighbours beats an
+    unbounded one that never converges.
+    """
     groups: List[List[Dict[str, float]]] = []
     cur: List[Dict[str, float]] = []
     cur_hi = -np.inf
@@ -229,7 +256,10 @@ def _group_peaks(cands: List[Dict[str, float]], window_factor: float
             cur_hi = hi
     if cur:
         groups.append(cur)
-    return groups
+    out: List[List[Dict[str, float]]] = []
+    for g in groups:
+        out.extend(_split_group(g, max(2, int(max_group_size))))
+    return out
 
 
 def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
@@ -750,14 +780,25 @@ def run_peak_fitting(
         radial = np.asarray(h5["radial"][:], dtype=float) if "radial" in h5 else \
             np.arange(clean_raw.shape[1], dtype=float)
         unit = str(h5.attrs.get("unit", ""))
+        spotty = bool(h5.attrs.get("spotty_sample", False))
+        signal_frac = float(h5.attrs.get("signal_frac_clean", float("nan")))
         frames = h5.get("frames")
         excluded = (np.asarray(frames["excluded"][:], dtype=bool)
                     if frames is not None and "excluded" in frames else None)
 
-    # Pick the channel to fit on (median-based clean, or a less-lossy hybrid /
-    # reduce-side sigma-clip that keeps spotty/textured sample peaks).
+    # Pick the channel to fit on. "auto" is DATA-driven: when Step 1 diagnosed a
+    # spotty/coarse-grained sample (the median-based channels rejected the sample
+    # itself — signal_frac_clean << 1), the only channel that still carries the
+    # Bragg signal is the azimuthal mean. Everything else keeps the normal
+    # preference order (sigmaclip if present, else hybrid).
+    src_req = (source or "auto").strip().lower()
+    if src_req == "auto" and spotty and spot is not None:
+        print(f"[PEAKS] Step-1 diagnosis: spotty sample (only "
+              f"{100 * signal_frac:.0f}% of signal survives the median) — "
+              f"auto source -> 'mean'.", flush=True)
+        src_req = "mean"
     clean, used_source = build_fit_source(
-        source, clean_raw, spot_residual=spot, sigmaclip_residual=sigres,
+        src_req, clean_raw, spot_residual=spot, sigmaclip_residual=sigres,
         hybrid_spike_bins=hybrid_spike_bins)
 
     n = clean.shape[0]
@@ -875,6 +916,24 @@ def run_peak_fitting(
 
     flags = np.asarray(cols["flag"], dtype=int) if P else np.zeros(0, int)
     n_good = int(np.sum(flags == FLAG_OK)) if P else 0
+
+    # Sampling adequacy — the geometric npt suggestion (~1 bin/pixel) is
+    # necessary but not sufficient: very sharp peaks can still span too few
+    # bins for a stable profile fit. The MEASURED median FWHM is the ground
+    # truth, so feed it back as a concrete re-reduction recommendation.
+    dx = float(np.median(np.abs(np.diff(radial)))) if radial.size > 1 else 1.0
+    good_fwhm = (np.asarray(cols["fwhm"], float)[flags == FLAG_OK]
+                 if n_good else np.zeros(0))
+    median_fwhm_bins = (float(np.median(good_fwhm)) / dx) if good_fwhm.size else float("nan")
+    npt_recommended = None
+    if good_fwhm.size >= 10 and median_fwhm_bins < 4.0:
+        import math as _math
+        npt_recommended = min(int(_math.ceil(
+            radial.size * 5.0 / max(median_fwhm_bins, 0.5) / 50.0) * 50), 4000)
+        print(f"[PEAKS] WARNING: peaks are UNDERSAMPLED — median FWHM is only "
+              f"{median_fwhm_bins:.1f} bins (want >=5 for stable profile fits). "
+              f"Re-reduce with npt_1d ~ {npt_recommended} "
+              f"(currently {radial.size} bins).", flush=True)
     # Per-flag rejection tally (a peak may carry several flags; counts overlap).
     flag_defs = (("low_amp", FLAG_LOW_AMP), ("bad_chi2", FLAG_BAD_CHI2),
                  ("center_drift", FLAG_CENTER_DRIFT), ("width_bound", FLAG_WIDTH_BOUND),
@@ -890,6 +949,8 @@ def run_peak_fitting(
         "min_snr": float(r_min_snr), "window_factor": float(window_factor),
         "max_chi2": float(max_chi2),
         "peaks_per_frame_mean": float(counts.mean()) if n else 0.0,
+        "median_fwhm_bins": median_fwhm_bins,
+        "npt_recommended": npt_recommended,
     }
     brk = ", ".join(f"{k}={v}" for k, v in flag_counts.items() if v)
     print(f"[PEAKS] done -> {dst}  ({P} peaks, {n_good} good"

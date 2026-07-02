@@ -182,6 +182,84 @@ def straighten_cake(cake: np.ndarray, radial: np.ndarray,
             "fits": fits, "shifts": shifts, "rings": list(ring_r0)}
 
 
+def straighten_reduced(reduced_h5: "str | Path", *, n_rings: int = 3
+                       ) -> Dict[str, Any]:
+    """Straighten every cake in a reduced HDF5 and write the corrected 1D
+    channels back (atomically): ``/patterns/intensity_straightened`` and
+    ``/frames/waviness_A1``.
+
+    The straightened pattern lives on the CAKE's radial grid internally and is
+    interpolated onto ``/patterns/radial``; frames without a saved cake (a
+    ``cake_every`` > 1 reduction) stay NaN. This is the *rescue* path for data
+    already collected with a sample-position offset — the proper fix remains
+    re-refining the geometry on a sample-position ring and re-reducing, which
+    also restores full radial resolution (cakes are usually coarser than the
+    1D axis). Returns a manifest with per-frame amplitudes.
+    """
+    import os
+    import shutil
+    import h5py  # type: ignore
+
+    src = Path(reduced_h5).expanduser().resolve()
+    if not src.is_file():
+        raise FileNotFoundError(f"Reduced HDF5 not found: {src}")
+    with h5py.File(str(src), "r") as h5:
+        g = h5.get("cakes")
+        if g is None or "intensity" not in g:
+            raise ValueError("No /cakes — re-run reduction with save_cakes=True.")
+        radial_1d = np.asarray(h5["patterns/radial"][:], float)
+        n_frames = h5["patterns/intensity"].shape[0]
+        cake_radial = np.asarray(g["radial"][:], float)
+        az = np.asarray(g["azimuthal"][:], float)
+        fidx = (np.asarray(g["frame_index"][:], int) if "frame_index" in g
+                else np.arange(g["intensity"].shape[0]))
+        straight = np.full((n_frames, radial_1d.size), np.nan, "f4")
+        A1 = np.full(n_frames, np.nan, "f8")
+        for k in range(g["intensity"].shape[0]):
+            fr = int(fidx[k])
+            if not (0 <= fr < n_frames):
+                continue
+            res = straighten_cake(np.asarray(g["intensity"][k], float),
+                                  cake_radial, az, n_rings=n_rings)
+            if not res["ok"]:
+                continue
+            y = res["intensity"]
+            fin = np.isfinite(y)
+            if fin.sum() > 4:
+                straight[fr] = np.interp(radial_1d, cake_radial[fin], y[fin],
+                                         left=np.nan, right=np.nan)
+            best = max((f for f in res["fits"] if f["ok"]),
+                       key=lambda f: f["A1"], default=None)
+            if best:
+                A1[fr] = best["A1"]
+
+    tmp = src.with_name(src.name + ".tmp")
+    shutil.copy2(src, tmp)
+    try:
+        with h5py.File(str(tmp), "r+") as o:
+            gp = o["patterns"]
+            if "intensity_straightened" in gp:
+                del gp["intensity_straightened"]
+            gp.create_dataset("intensity_straightened", data=straight,
+                              compression="gzip", compression_opts=1)
+            gf = o.require_group("frames")
+            if "waviness_A1" in gf:
+                del gf["waviness_A1"]
+            gf.create_dataset("waviness_A1", data=A1)
+        os.replace(tmp, src)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink()
+        raise
+    done = int(np.isfinite(A1).sum())
+    print(f"[STRAIGHTEN] {done}/{n_frames} frames straightened -> "
+          f"/patterns/intensity_straightened (median A1="
+          f"{np.nanmedian(A1) if done else float('nan'):.4g})", flush=True)
+    return {"out_h5": str(src), "n_frames": int(n_frames),
+            "n_straightened": done,
+            "A1_median": float(np.nanmedian(A1)) if done else None}
+
+
 def diagnose_reduced(reduced_h5: "str | Path", *, n_rings: int = 3,
                      max_cakes: "Optional[int]" = None) -> Dict[str, Any]:
     """Waviness report for every cake in a reduced HDF5 (needs ``save_cakes``).

@@ -30,6 +30,9 @@ _DEFAULTS = {
                                  # 2th_deg remains selectable for Dioptas parity.
     "method": "csr",
     "polarization_factor": "",
+    "azimuth_range": "",         # optional 'min,max' (deg) sector for ALL 1D
+                                 # channels (stopgap for wavy rings; cakes stay
+                                 # full-azimuth). Blank = full azimuth.
     "robust_1d": True,
     "robust_quant_halfwidth": "0.05",  # robust channel = mean of the 45-55% azimuthal
                                        # quantile band. 0 = pure median, which is

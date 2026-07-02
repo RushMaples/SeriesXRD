@@ -129,12 +129,43 @@ def test_pymatgen_paths():
         assert "Au-test" in ph.load_library(td)
 
 
+def test_signed_axial_expansivity():
+    """axial_eos axes may carry beta = d(ln x)/dP (1/GPa): beta > 0 EXPANDS
+    under pressure (negative linear compressibility — e.g. the UOTe c-axis,
+    unrepresentable by a BM form whose K0 must be positive)."""
+    import numpy as np
+    from bulkxrd.analysis import identify as idf
+    nlc = ph.Phase(name="NLC",
+                   lattice={"a": 3.4, "b": 3.4, "c": 7.5,
+                            "alpha": 90, "beta": 90, "gamma": 90},
+                   eos={"type": "BM3", "K0": 50.0, "K0p": 4.0},
+                   axial_eos={"c": {"beta": +1.5e-3}})
+    assert ph.has_axial_eos(nlc) and ph.has_pressure_dof(nlc)
+    sa, sb, sc = ph.axial_scales(nlc, 10.0)
+    assert sc > 1.0, sc                       # c expands
+    assert abs(sc - float(np.exp(1.5e-3 * 10))) < 1e-12
+    assert sa < 1.0 and sb == sa              # a,b follow the volume EOS
+    L = ph.compress_lattice(nlc, 10.0)
+    assert L["c"] > 7.5 and L["a"] < 3.4
+    # predicted_d moves an (00l) line UP in d with pressure, (h00) down.
+    dp = idf.predicted_d(nlc, np.array([7.5, 3.4]), [(0, 0, 1), (1, 0, 0)], 10.0)
+    assert dp[0] > 7.5 and dp[1] < 3.4
+    # beta-only phase still counts as pressure-capable (no volume EOS at all).
+    only = ph.Phase(name="OnlyBeta",
+                    lattice={"a": 3, "b": 3, "c": 7,
+                             "alpha": 90, "beta": 90, "gamma": 90},
+                    axial_eos={"c": {"beta": -2e-3}})
+    assert ph.has_pressure_dof(only) and not only.has_eos()
+    assert ph.axial_scales(only, 5.0)[2] < 1.0    # negative beta contracts
+
+
 def main() -> None:
     test_bundled()
     test_user_override_and_merge()
     test_birch_murnaghan_roundtrip()
     test_eos_forms()
     test_compress_lattice()
+    test_signed_axial_expansivity()
     test_pymatgen_paths()
     print("PHASES TEST OK")
 

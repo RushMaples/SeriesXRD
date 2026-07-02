@@ -14,7 +14,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bulkxrd.reduce.straighten import (ring_centroids, fit_waviness,
-                                       straighten_cake, diagnose_reduced)
+                                       straighten_cake, diagnose_reduced,
+                                       straighten_reduced)
 
 Q = np.linspace(0.5, 6.0, 600)
 AZ = np.linspace(-180.0, 180.0, 72, endpoint=False)
@@ -109,10 +110,43 @@ def test_diagnose_reduced_offset_mm():
         assert not rep["ok"] and "save_cakes" in rep["error"]
 
 
+def test_straighten_reduced_writer():
+    """straighten_reduced writes /patterns/intensity_straightened (+ per-frame
+    waviness) atomically; frames without a saved cake stay NaN."""
+    import h5py
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "red.h5"
+        with h5py.File(str(p), "w") as f:
+            f.attrs["unit"] = "q_A^-1"
+            gp = f.create_group("patterns")
+            gp.create_dataset("radial", data=Q)
+            gp.create_dataset("intensity", data=np.zeros((3, Q.size), "f4"))
+            g = f.create_group("cakes")
+            g.create_dataset("intensity", data=np.stack([_wavy_cake()] * 2))
+            g.create_dataset("radial", data=Q)
+            g.create_dataset("azimuthal", data=AZ)
+            g.create_dataset("frame_index", data=np.array([0, 2]))  # cake_every=2
+        man = straighten_reduced(p)
+        assert man["n_straightened"] == 2
+        assert abs(man["A1_median"] - A1) < 0.003
+        with h5py.File(str(p), "r") as f:
+            st = f["patterns/intensity_straightened"][:]
+            wa = f["frames/waviness_A1"][:]
+            assert st.shape == (3, Q.size)
+            assert np.isnan(st[1]).all()            # no cake for frame 1
+            k = int(np.argmin(np.abs(Q - 2.5)))
+            for fr in (0, 2):
+                win = st[fr][k - 8:k + 9]
+                assert np.nanmax(win) > 50          # sharp straightened ring
+                assert abs(Q[k - 8 + int(np.nanargmax(win))] - 2.5) < 0.01
+            assert np.isnan(wa[1]) and abs(wa[0] - A1) < 0.003
+
+
 def main() -> None:
     test_fit_recovers_wobble()
     test_straighten_removes_double_horns()
     test_diagnose_reduced_offset_mm()
+    test_straighten_reduced_writer()
     print("STRAIGHTEN TEST OK")
 
 
