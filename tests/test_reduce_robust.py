@@ -29,6 +29,28 @@ class _ModernAI:
         raise AssertionError("modern path must use medfilt1d_ng")
 
 
+class _QuantileTupleAI:
+    """pyFAI whose medfilt1d_ng takes a quantile=(lo, hi) tuple instead."""
+    def medfilt1d_ng(self, image, npt, mask=None, unit=None, quantile=0.5):
+        r = _Res("ng_tuple"); r.quant = quantile; return r
+
+
+class _SwallowKwargsAI:
+    """The observed real-world failure: medfilt1d_ng LOGS AND IGNORES unknown
+    kwargs ('Got unknown argument quant_min ...') instead of raising TypeError —
+    a naive try/except chain silently returns a pure median. The signature-based
+    dispatch must skip _ng and use the legacy percentile-tuple path."""
+    def medfilt1d_ng(self, image, npt, mask=None, unit=None, **kwargs):
+        assert not any(k.startswith("quant") for k in kwargs), \
+            "quant kwargs must not be passed to a **kwargs-only _ng"
+        return _Res("ng_median")                 # silently a pure median
+
+    def medfilt1d(self, image, npt, mask=None, unit=None, percentile=50):
+        if isinstance(percentile, tuple):
+            r = _Res("legacy_band"); r.percentile = percentile; return r
+        return _Res("legacy_median")
+
+
 class _LegacyBandAI:
     """Older pyFAI: no _ng, but medfilt1d accepts a percentile tuple."""
     def medfilt1d(self, image, npt, mask=None, unit=None, percentile=50):
@@ -50,12 +72,23 @@ def test_quantile_band_preferred():
     assert res.tag == "ng" and res.quant == (0.45, 0.55)
     assert est.startswith("quantile_band")
 
+    res, est = _robust_integrate(_QuantileTupleAI(), None, 100, None, "q_A^-1", 0.05)
+    assert res.tag == "ng_tuple" and res.quant == (0.45, 0.55)
+    assert est.startswith("quantile_band")
+
+    # kwargs-swallowing pyFAI: never a silent median — route to percentile band.
+    res, est = _robust_integrate(_SwallowKwargsAI(), None, 100, None, "q_A^-1", 0.05)
+    assert res.tag == "legacy_band" and res.percentile == (45.0, 55.0)
+    assert est.startswith("percentile_band")
+
     res, est = _robust_integrate(_LegacyBandAI(), None, 100, None, "q_A^-1", 0.05)
     assert res.tag == "legacy_band" and res.percentile == (45.0, 55.0)
     assert est.startswith("percentile_band")
 
+    # Truly unsupported: fall back to the median but SAY SO in the estimator
+    # (reduce_dataset warns on this string).
     res, est = _robust_integrate(_MedianOnlyAI(), None, 100, None, "q_A^-1", 0.05)
-    assert res.tag == "median_only" and est == "median"
+    assert res.tag == "median_only" and est == "median(band_unsupported)"
 
 
 def test_pure_median_when_requested():

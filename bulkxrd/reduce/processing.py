@@ -110,6 +110,20 @@ def _render_thumbnail(out_png: str, cake, cake_radial, radial, intensity, unit: 
     FigureCanvasAgg(fig).print_png(out_png)
 
 
+def _named_params(fn) -> "set":
+    """Explicitly named parameters of a callable. A bare ``**kwargs`` does NOT
+    count: several pyFAI releases *log and ignore* unknown keyword arguments
+    ("Got unknown argument quant_min ...") instead of raising TypeError, so the
+    only way to know a quantile kwarg is honoured is to see it in the signature.
+    """
+    import inspect
+    try:
+        return {p.name for p in inspect.signature(fn).parameters.values()
+                if p.kind != inspect.Parameter.VAR_KEYWORD}
+    except (TypeError, ValueError):
+        return set()
+
+
 def _robust_integrate(ai, image, npt: int, mask, unit: str,
                       quant_halfwidth: float) -> "Tuple[Any, str]":
     """The spot-suppressed 'robust' 1D pattern; returns ``(result, estimator)``.
@@ -123,8 +137,11 @@ def _robust_integrate(ai, image, npt: int, mask, unit: str,
     azimuth — but yields continuous intensities.
 
     Fallback chain (pyFAI version differences): ``medfilt1d_ng`` with
-    ``quant_min/quant_max`` → legacy ``medfilt1d`` with a percentile tuple →
-    plain median. ``quant_halfwidth<=0`` requests the pure median.
+    ``quant_min/quant_max`` or a ``quantile=(lo, hi)`` tuple — dispatched by
+    *signature inspection*, because pyFAI ignores unknown kwargs instead of
+    raising → legacy ``medfilt1d`` with a percentile tuple → plain median
+    (estimator ``median(band_unsupported)`` so the caller can warn).
+    ``quant_halfwidth<=0`` requests the pure median explicitly.
     """
     h = float(quant_halfwidth or 0.0)
     lo = round(max(0.0, 0.5 - h), 6)
@@ -132,20 +149,31 @@ def _robust_integrate(ai, image, npt: int, mask, unit: str,
     ng = getattr(ai, "medfilt1d_ng", None)
     if h > 0:
         if ng is not None:
+            params = _named_params(ng)
+            band = f"quantile_band({lo:.2f}-{hi:.2f})"
+            if {"quant_min", "quant_max"} <= params:
+                try:
+                    return (ng(image, npt, mask=mask, unit=unit,
+                               quant_min=lo, quant_max=hi), band)
+                except TypeError:
+                    pass
+            elif "quantile" in params:
+                try:
+                    return (ng(image, npt, mask=mask, unit=unit,
+                               quantile=(lo, hi)), band)
+                except TypeError:
+                    pass
+        mf = getattr(ai, "medfilt1d", None)
+        if mf is not None:
             try:
-                return (ng(image, npt, mask=mask, unit=unit,
-                           quant_min=lo, quant_max=hi),
-                        f"quantile_band({lo:.2f}-{hi:.2f})")
+                pct = (round(100.0 * lo, 4), round(100.0 * hi, 4))
+                return (mf(image, npt, mask=mask, unit=unit, percentile=pct),
+                        f"percentile_band({pct[0]:.0f}-{pct[1]:.0f})")
             except TypeError:
                 pass
-        try:
-            pct = (round(100.0 * lo, 4), round(100.0 * hi, 4))
-            return (ai.medfilt1d(image, npt, mask=mask, unit=unit, percentile=pct),
-                    f"percentile_band({pct[0]:.0f}-{pct[1]:.0f})")
-        except TypeError:
-            pass
     medfilt = ng or ai.medfilt1d
-    return medfilt(image, npt, mask=mask, unit=unit), "median"
+    est = "median" if h <= 0 else "median(band_unsupported)"
+    return medfilt(image, npt, mask=mask, unit=unit), est
 
 
 def _integrate_one(task: "Tuple[int, str, bool]") -> Dict[str, Any]:
@@ -554,6 +582,13 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
         manifest["robust_estimator"] = robust_estimators[0]
         if len(robust_estimators) > 1:   # mixed pyFAI fallbacks across workers
             manifest["robust_estimators_all"] = robust_estimators
+        if any(e.startswith("median(band_unsupported") for e in robust_estimators):
+            print("[REDUCE] WARNING: this pyFAI accepts none of the quantile-band "
+                  "arguments (it logs 'Got unknown argument ...' and ignores them), "
+                  "so the robust channel fell back to a PURE MEDIAN — quantized on "
+                  "integer counts (staircase patterns at low intensity). Upgrade "
+                  "pyFAI, or fit downstream on the sigma-clip / 'mean' source.",
+                  flush=True)
     # B3: surface robust-pattern warnings in the manifest.
     if robust_errors:
         manifest["robust_warnings"] = robust_errors[:10]
