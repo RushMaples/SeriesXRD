@@ -48,7 +48,17 @@ class Phase:
     """One candidate phase. ``lattice`` is ``{a,b,c,alpha,beta,gamma}`` (Å, deg);
     ``atoms`` is the asymmetric unit ``[{element,x,y,z,occ}]`` (for intensity
     simulation); ``eos`` is ``{type:'BM3', V0, K0, K0p}`` with V0 in Å³ and K0 in
-    GPa. ``builtin`` is set at load time (not persisted in the user file)."""
+    GPa. ``eos`` may also carry ``p_max`` (GPa): the validity ceiling of this
+    entry — usually a phase transition (e.g. NaCl B1→B2 near 30 GPa). Above it
+    the phase is neither searched (identification caps its pressure window) nor
+    simulated (training/ranking clamp to it), so an EOS is never extrapolated
+    into a regime where the phase does not exist.
+
+    ``thermal`` is ``{alpha_v, T0}``: a constant volumetric thermal-expansion
+    coefficient (1/K) referenced to ``T0`` (K, default 298) — the temperature
+    analog of the EOS seam, for furnace/cryostat series at ambient pressure
+    (see :func:`thermal_scale`). ``builtin`` is set at load time (not persisted
+    in the user file)."""
     name: str
     formula: str = ""
     category: str = "other"
@@ -63,6 +73,7 @@ class Phase:
     #   "eos_missing"      -> we lack high-P EOS data (penalise, flag)
     #   "ignore_prior"     -> don't apply the pressure-prior penalty to this phase
     pressure_assumption: str = ""
+    thermal: Dict[str, float] = field(default_factory=dict)
     amorphous: bool = False
     cif_path: str = ""
     source: str = ""
@@ -482,6 +493,55 @@ def has_pressure_dof(phase: Phase) -> bool:
     at ambient (identification, simulation, and ranking must all agree on this).
     """
     return phase.has_eos() or has_axial_eos(phase)
+
+
+def valid_pressure_max(phase: Phase) -> float:
+    """The pressure (GPa) up to which this phase entry is physically valid.
+
+    Read from ``eos['p_max']`` (see :class:`Phase`) — typically the phase
+    transition that ends the structure's stability field (NaCl-B1 → B2 near
+    30 GPa, diamond-cubic Si → β-Sn near 11 GPa). ``inf`` when unset.
+    Identification caps its pressure search here and the simulators clamp to
+    it, so a stability-limited entry can't be fit or trained at pressures where
+    the phase cannot exist.
+    """
+    try:
+        v = float((phase.eos or {}).get("p_max") or 0.0)
+    except (TypeError, ValueError):
+        v = 0.0
+    return v if v > 0 else float("inf")
+
+
+def clamp_to_validity(phase: Phase, pressure: float) -> float:
+    """``pressure`` clamped into the phase's validity range [0, p_max]."""
+    return float(min(max(pressure, 0.0), valid_pressure_max(phase)))
+
+
+def thermal_scale(phase: Phase, temperature_k: "Optional[float]") -> float:
+    """Isotropic linear lattice scale at ``temperature_k`` from the phase's
+    constant volumetric CTE (``thermal = {alpha_v (1/K), T0 (K, default 298)}``).
+
+    ``s = (1 + alpha_v·(T − T0))^(1/3)`` — the temperature analog of
+    :func:`compression_at_pressure`'s cube-root volume scaling, so an ambient-
+    pressure temperature series (furnace/cryostat) can move a phase's lines
+    the way the EOS moves them along pressure. Returns 1.0 when the phase has
+    no thermal data or T is unknown. Deliberately first-order: a constant
+    alpha_v over the series' range, isotropic only (no axial CTE), and it says
+    nothing about combined P-V-T behaviour — identification, residual removal
+    and the heatmap overlays consume it; the ML simulators stay pressure-only.
+    """
+    if temperature_k is None or not math.isfinite(temperature_k):
+        return 1.0
+    th = getattr(phase, "thermal", None) or {}
+    try:
+        a_v = float(th.get("alpha_v") or 0.0)
+    except (TypeError, ValueError):
+        return 1.0
+    if a_v == 0.0:
+        return 1.0
+    T0 = float(th.get("T0") or 298.0)
+    ratio = 1.0 + a_v * (float(temperature_k) - T0)
+    return max(ratio, 1e-6) ** (1.0 / 3.0)
 
 
 def axial_scales(phase: Phase, pressure_gpa: float) -> "tuple":

@@ -17,8 +17,12 @@ Per frame:
   2. Simulate each library phase at the frame's **pressure** (the metadata prior),
      so candidates are already pressure-aligned — the analog of RADAR-PD's
      lattice-nudge. Where pressure is unknown, scan a coarse pressure grid and
-     keep the phase's best.
-  3. Score similarity (cosine over the candidate's support) and keep the top-K.
+     keep the phase's best. Candidate peak widths default to the instrument
+     resolution measured by Step 2 (median fitted FWHM, converted to q — see
+     :func:`estimate_fwhm_q`), so simulated and measured profiles match.
+  3. Score similarity (full-pattern cosine by default — the whole d-grid, not
+     just the candidate's own lines, which is why ranking against the residual
+     matters for minor phases) and keep the top-K.
 
 Writes ``/ml/candidates`` and returns the union of per-frame top-K names, which the
 worker feeds to :func:`identify.run_identification` as the candidate set.
@@ -41,6 +45,51 @@ from .ml_scorer import PhaseScorer, CosineScorer, make_scorer
 SCHEMA_VERSION = "1"
 Reflections = Tuple[np.ndarray, np.ndarray, list]
 
+# Fewer good fitted peaks than this and the width estimate is too noisy to trust.
+_MIN_PEAKS_FOR_FWHM = 5
+
+
+def estimate_fwhm_q(analysis_h5: "str | Path") -> "Optional[float]":
+    """Median FWHM (Å⁻¹, in q) of the good Step-2 peaks — the measured
+    instrument+sample resolution.
+
+    Candidate fingerprints simulated at this width match the measured profiles
+    the ranker compares against (instrument resolution is ~constant in q; a
+    hard-coded constant-in-d width is wrong almost everywhere on the d-grid).
+    Returns None when there are too few good peaks or the axis/wavelength can't
+    be resolved — callers then fall back to the legacy constant ``fwhm_d``.
+    """
+    import h5py  # type: ignore
+    try:
+        with h5py.File(str(Path(analysis_h5).expanduser()), "r") as h5:
+            pk = h5.get("peaks")
+            if pk is None or "fwhm" not in pk or "center" not in pk:
+                return None
+            unit = str(h5.attrs.get("unit", "")).strip().lower()
+            wl = float(h5.attrs.get("wavelength", 0.0) or 0.0)
+            fwhm = np.asarray(pk["fwhm"][:], float)
+            center = np.asarray(pk["center"][:], float)
+            flag = (np.asarray(pk["flag"][:], int) if "flag" in pk
+                    else np.zeros(fwhm.size, int))
+    except Exception:
+        return None
+    good = (flag == 0) & np.isfinite(fwhm) & (fwhm > 0) & np.isfinite(center)
+    if int(good.sum()) < _MIN_PEAKS_FOR_FWHM:
+        return None
+    fwhm, center = fwhm[good], center[good]
+    if unit in ("q_a^-1", "q_a-1", "q_a", "q"):
+        dq = fwhm
+    elif unit in ("q_nm^-1", "q_nm-1", "q_nm"):
+        dq = fwhm * 0.1
+    elif unit in ("2th_deg", "2th_rad") and wl > 0:
+        tt = np.radians(center) if unit == "2th_deg" else center
+        dtt = np.radians(fwhm) if unit == "2th_deg" else fwhm
+        dq = (2.0 * np.pi / wl) * np.cos(tt / 2.0) * dtt   # dq/d(2θ) = 2π·cosθ/λ
+    else:
+        return None
+    med = float(np.median(dq))
+    return med if med > 0 else None
+
 
 def score_phase(meas: np.ndarray, phase: Phase, refl: Reflections, d_grid: np.ndarray,
                 pressure: "Optional[float]", *, fwhm_d: float = 0.03,
@@ -61,6 +110,7 @@ def rank_candidates(
     source: str = "auto",
     top_k: int = 5,
     fwhm_d: float = 0.03,
+    fwhm_q: "float | str | None" = "auto",
     pressure_grid: "Optional[Sequence[float]]" = None,
     reflections: "Optional[Dict[str, Reflections]]" = None,
     scorer: "PhaseScorer | str | Dict[str, Any] | None" = None,
@@ -92,6 +142,12 @@ def rank_candidates(
     :class:`ml_scorer.PhaseScorer` instance or a spec (``"cosine"``,
     ``"torch:<model_path>"``) to swap in a learned scorer. Whatever the scorer
     proposes, Step 3a still verifies.
+
+    ``fwhm_q`` sets the candidate peak width in q (Å⁻¹, the physical
+    constant-resolution model): ``"auto"`` (default) measures it from the Step-2
+    fitted peaks (:func:`estimate_fwhm_q`), a float pins it, and ``None``
+    disables it (legacy constant-in-d ``fwhm_d``). Recorded in the
+    ``/ml/candidates`` attrs so a learned model can reproduce the preprocessing.
     """
     import h5py  # type: ignore
 
@@ -142,10 +198,18 @@ def rank_candidates(
     score = {nm: np.zeros(n, "f8") for nm in names}
     pmat = {nm: np.full(n, np.nan, "f8") for nm in names}
 
+    # Candidate peak width: measured q-resolution when available (auto), else
+    # the pinned/legacy value. Recorded in provenance either way.
+    used_fwhm_q = (estimate_fwhm_q(src) if isinstance(fwhm_q, str)
+                   and fwhm_q.strip().lower() == "auto"
+                   else (float(fwhm_q) if fwhm_q else None))
+
     # The scoring seam: deterministic cosine unless an alternative is injected.
-    the_scorer = make_scorer(scorer, fwhm_d=fwhm_d)
+    the_scorer = make_scorer(scorer, fwhm_d=fwhm_d, fwhm_q=used_fwhm_q)
+    width_txt = (f"fwhm_q={used_fwhm_q:.4g} A^-1" if used_fwhm_q
+                 else f"fwhm_d={fwhm_d:g} A (constant-d fallback)")
     print(f"[ML-RANK] {len(phases)} phase(s), {n} frames, source={want}, "
-          f"scorer={the_scorer.name}, top_k={top_k}", flush=True)
+          f"scorer={the_scorer.name}, top_k={top_k}, {width_txt}", flush=True)
     k = min(int(top_k), len(phases))
     topk_names = np.full((n, k), "", dtype=object)
     topk_score = np.zeros((n, k), "f8")
@@ -166,7 +230,8 @@ def rank_candidates(
             topk_names[i, r] = row[r][1]
 
     _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
-                      requested, want, top_k, fwhm_d, prep, the_scorer.name)
+                      requested, want, top_k, fwhm_d, prep, the_scorer.name,
+                      fwhm_q=used_fwhm_q)
 
     # Union of the per-frame top-K (live frames) — the shortlist for the verifier.
     live = ~excluded
@@ -176,6 +241,7 @@ def rank_candidates(
         "requested_source": requested, "ranking_source": want,
         "resolved_source": feats.source,
         "n_frames": int(n), "top_k": int(top_k),
+        "fwhm_q": used_fwhm_q, "fwhm_d": float(fwhm_d),
         "phases": names, "candidates": shortlist,
     }
     print(f"[ML-RANK] done -> {dst}  (shortlist: {shortlist})", flush=True)
@@ -184,7 +250,7 @@ def rank_candidates(
 
 def _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
                       requested_source, source, top_k, fwhm_d, prep,
-                      method: str = "cosine"):
+                      method: str = "cosine", fwhm_q=None):
     import os
     import shutil
     import h5py  # type: ignore
@@ -205,7 +271,11 @@ def _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
                             "source": str(source),
                             "resolved_source": str(prep.get("source", source)),
                             "top_k": int(top_k), "method": str(method),
-                            "fwhm_d": float(fwhm_d), "phases": ", ".join(names),
+                            "fwhm_d": float(fwhm_d),
+                            # Measured q-resolution used for candidate widths
+                            # (NaN = constant-in-d fwhm_d fallback was used).
+                            "fwhm_q": float(fwhm_q) if fwhm_q else float("nan"),
+                            "phases": ", ".join(names),
                             # ML preprocessing provenance (same pipeline a model must use).
                             "clip_negative": bool(prep.get("clip_negative", True)),
                             "normalize": str(prep.get("normalize", "max")),

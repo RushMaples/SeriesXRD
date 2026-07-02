@@ -19,8 +19,11 @@ on disk plus a shared workspace folder:
    geometry/mask to a sample dataset, parallel batch azimuthal integration →
    1D patterns (mean + azimuthal-median "robust") and optional 2D cakes in
    one HDF5 file + JSON manifest.
-3. **`bulkxrd.analysis`** — pattern analysis (planned): background, peak
-   fitting, pressure determination, equation-of-state / phase work.
+3. **`bulkxrd.analysis`** — pattern analysis: SNIP background + diamond-spot
+   separation (Step 1), pseudo-Voigt peak fitting (Step 2), pressure-aware
+   EOS phase identification + residual removal (Step 3a), and the ML
+   candidate-ranking seam (Step 3b: deterministic cosine ranker by default,
+   optional learned scorer — see `docs/ml-training-ris.md`).
 
 The calib→reduce handoff JSON is an internal artifact written to the workspace
 and automatically loaded by the Reduction tab — users do not need to manage it
@@ -56,7 +59,9 @@ manually.
 │   │   ├── gui.py           tabbed Tkinter GUI (embeddable pane)
 │   │   └── run_gui.py       CLI entry point (bulkxrd-reduce-gui)
 │   ├── app.py           unified application (bulkxrd entry point)
-│   └── analysis/        (planned)
+│   └── analysis/        analysis stage (background, peaks, identify, residual,
+│                        heatmap, ML ranking/training — see CLAUDE.md for the
+│                        full module map and HDF5 schemas)
 ├── tests/               import test + headless smoke test
 ├── examples/            example calibration_session_config.json (schema reference)
 ├── environment.yml      conda environment (recommended install route)
@@ -120,6 +125,18 @@ bulkxrd-inspect <image_file>
 # or:
 python -m bulkxrd.core.inspect <image_file>
 ```
+
+### Headless analysis + ML training
+
+```bash
+bulkxrd-analyze reduced.h5 --phases Au,Re          # Steps 1-3a, no GUI
+bulkxrd-analyze reduced.h5 --ml-rank               # candidate-free: rank whole library
+bulkxrd-ml-train --workspace <dir> --out scorer.pt # train the learned scorer
+```
+
+Training the Step-3b learned scorer (data collection, WashU RIS setup, LSF
+jobs, validation, deployment) is documented in
+[`docs/ml-training-ris.md`](docs/ml-training-ris.md).
 
 ## Tests
 

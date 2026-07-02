@@ -39,6 +39,26 @@ def make_d_grid(d_min: float = D_MIN, d_max: float = D_MAX,
     return np.linspace(float(d_min), float(d_max), int(n_points))
 
 
+def peak_fwhm_d(centers, *, fwhm_d: "Optional[float]" = None,
+                fwhm_q: "Optional[float]" = None) -> np.ndarray:
+    """Per-peak FWHM in d (Å) for reflections at ``centers`` (d-spacings, Å).
+
+    Instrument resolution is roughly constant in q, not in d (the same reason
+    the pipeline fits in q). Since d = 2π/q, a constant width Δq maps to
+    ``Δd = d²·Δq/(2π)`` — a peak at d = 8 Å is ~30× wider on the d-grid than one
+    at d = 1.5 Å. Simulating every peak with one constant ``fwhm_d`` therefore
+    builds a width profile no q-uniform instrument produces (a sim-to-real gap
+    in the very representation the scorer compares).
+
+    ``fwhm_q`` (Å⁻¹) takes precedence and gives the physical q-constant widths;
+    ``fwhm_d`` (Å) is the legacy constant-in-d fallback.
+    """
+    c = np.asarray(centers, dtype=float)
+    if fwhm_q is not None and fwhm_q > 0:
+        return (c * c) * (float(fwhm_q) / (2.0 * np.pi))
+    return np.full(c.shape, float(fwhm_d if fwhm_d else 0.03))
+
+
 def resample_to_d(radial, intensity, unit: str, wavelength: "Optional[float]",
                   d_grid: np.ndarray) -> np.ndarray:
     """Resample one intensity row from the reduced radial axis onto ``d_grid``.
@@ -108,26 +128,38 @@ def export_ml_dataset(
 ) -> Dict[str, Any]:
     """Export experimental frames as an ML-ready ``.npz``.
 
+    ``channels`` accepts every :data:`ml_features.SOURCES` entry — including
+    ``"fit"`` (the channel Step 2 actually fit, the pipeline default) and
+    ``"residual"`` (the Step-3a leftover) — not just the raw background
+    channels. This keeps the export consistent with what the pipeline analyses:
+    exporting only the median-based ``clean`` while Step 2 fits ``sigmaclip``/
+    ``hybrid`` would train a model on a channel the pipeline no longer trusts.
+
     Frames flagged ``excluded`` in the reduce stage are dropped by default
     (``drop_excluded``) so the ML never trains/infers on known-bad frames;
     ``frame_index`` preserves the original indices of the kept frames.
 
     Saved arrays: ``X`` (N, C, P) resampled patterns; ``d_grid`` (P,);
-    ``channels`` (C,); ``frame_index`` (N,); ``y`` (N, n_phases) weak multi-labels
-    and ``phase_names`` (n_phases,) from Step-3a (omitted if no /identify);
-    ``pressure`` (N, n_phases); ``n_good_peaks`` (N,); ``contamination`` (N,) if
-    present; plus scalar meta (``unit``, ``wavelength``, ``conf_threshold``).
-    Returns a manifest dict.
+    ``channels`` (C,) as requested and ``resolved_channels`` (C,) as actually
+    read (e.g. fit→sigmaclip); ``frame_index`` (N,); ``y`` (N, n_phases) weak
+    multi-labels and ``phase_names`` (n_phases,) from Step-3a (omitted if no
+    /identify); ``pressure`` (N, n_phases); ``n_good_peaks`` (N,);
+    ``contamination`` (N,) if present; plus scalar meta (``unit``,
+    ``wavelength``, ``conf_threshold``). Returns a manifest dict.
     """
     import h5py  # type: ignore
+    # Lazy: ml_features imports this module at load time, so the reverse import
+    # must stay inside the function.
+    from .ml_features import SOURCES as _SOURCES, _build_source_stack
 
     src = Path(analysis_h5).expanduser().resolve()
     if not src.is_file():
         raise FileNotFoundError(f"Analysis HDF5 not found: {src}")
     grid = make_d_grid() if d_grid is None else np.asarray(d_grid, float)
-    chans = [c for c in channels if c in ("clean", "baseline", "spot_residual")]
-    if not chans:
-        raise ValueError("No valid channels (choose from clean/baseline/spot_residual).")
+    chans = [str(c) for c in channels]
+    bad = [c for c in chans if c not in _SOURCES]
+    if bad or not chans:
+        raise ValueError(f"Invalid channels {bad or chans} (choose from {_SOURCES}).")
 
     with h5py.File(str(src), "r") as h5:
         unit = str(h5.attrs.get("unit", ""))
@@ -140,7 +172,10 @@ def export_ml_dataset(
             wavelength = stored_wl
         if wavelength is None and unit.strip().lower() in ("2th_deg", "2th_rad"):
             raise ValueError("2θ axis needs a wavelength (none stored); pass wavelength=.")
-        stacks = {c: np.asarray(bg[c][:], dtype=float) for c in chans}
+        stacks = {}
+        resolved = {}
+        for c in chans:
+            stacks[c], resolved[c] = _build_source_stack(h5, c)
         n = stacks[chans[0]].shape[0]
         ident = _read_identify(h5)
         n_good = _good_peaks_per_frame(h5, n)
@@ -186,6 +221,7 @@ def export_ml_dataset(
 
     save: Dict[str, Any] = {
         "X": X, "d_grid": grid, "channels": np.array(chans, dtype=object),
+        "resolved_channels": np.array([resolved[c] for c in chans], dtype=object),
         "frame_index": frame_index, "unit": unit,
         "wavelength": float(wavelength) if wavelength else 0.0,
         "n_good_peaks": n_good, "conf_threshold": float(conf_threshold),
@@ -207,7 +243,8 @@ def export_ml_dataset(
     manifest = {
         "out_npz": str(out), "n_frames": int(X.shape[0]), "n_channels": len(chans),
         "n_excluded": n_excluded if drop_excluded else 0,
-        "channels": chans, "n_points": int(grid.size), "unit": unit,
+        "channels": chans, "resolved_channels": [resolved[c] for c in chans],
+        "n_points": int(grid.size), "unit": unit,
         "n_phases": len(phase_names), "phases": phase_names,
         "has_labels": bool(phase_names),
     }
@@ -222,7 +259,8 @@ def export_ml_dataset(
 
 def simulate_training_pattern(phase: Phase, pressure: float, d_grid: np.ndarray,
                               *, refl=None, fwhm_d: float = 0.03, eta: float = 0.5,
-                              normalize: bool = True) -> np.ndarray:
+                              normalize: bool = True,
+                              fwhm_q: "Optional[float]" = None) -> np.ndarray:
     """A single-phase synthetic pattern on ``d_grid`` at ``pressure`` (GPa).
 
     Reflections are positioned with the **same** :func:`identify.predicted_d`
@@ -230,18 +268,25 @@ def simulate_training_pattern(phase: Phase, pressure: float, d_grid: np.ndarray,
     when the phase has an axial EOS, isotropic otherwise. Using the isotropic
     scale here would leave an axial-only phase at ambient positions for every
     pressure, so the proposer and verifier would disagree. Peaks are pseudo-Voigts
-    of width ``fwhm_d`` (Å) weighted by relative intensity — the profile the
-    experimental peaks are fit with.
+    weighted by relative intensity — the profile the experimental peaks are fit
+    with. Peak heights (not areas) carry the intensity weights: the measured
+    pattern is resampled from a q-uniform axis where widths are constant, so its
+    peak *heights* are proportional to integrated intensity too.
+
+    Widths: ``fwhm_q`` (Å⁻¹, q-constant → ``Δd = d²·Δq/2π`` per peak, see
+    :func:`peak_fwhm_d`) is the physical choice and takes precedence;
+    ``fwhm_d`` (Å, constant in d) is the legacy fallback.
     """
     if refl is None:
         refl = phase_reflections(phase)
     d0, w, hkl = refl
     hkls = [_parse_hkl(h) for h in hkl] if hkl else None
     centers = predicted_d(phase, np.asarray(d0, float), hkls, float(max(pressure, 0.0)))
+    widths = peak_fwhm_d(centers, fwhm_d=fwhm_d, fwhm_q=fwhm_q)
     y = np.zeros_like(d_grid, dtype=float)
-    for c, a in zip(centers, w):
+    for c, a, wd in zip(centers, w, widths):
         if d_grid[0] <= c <= d_grid[-1]:
-            y += pseudo_voigt(d_grid, c, a, fwhm_d, eta)
+            y += pseudo_voigt(d_grid, c, a, wd, eta)
     if normalize:
         mx = y.max()
         if mx > 0:

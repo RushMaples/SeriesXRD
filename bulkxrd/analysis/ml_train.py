@@ -25,12 +25,21 @@ information survives; cf. SimXRD-4M's no-pooling finding), a small multi-head
 self-attention encoder, mean+max pooled head → sigmoid. ~1 M parameters —
 minutes per epoch on a laptop CPU for small libraries, fast on a GPU.
 
-Run on WashU RIS (or any GPU box)::
+Run on WashU RIS (or any GPU box) — full guide in ``docs/ml-training-ris.md``::
 
     pip install -e .[phases,ml]          # pymatgen for reflections, torch for training
     bulkxrd-ml-train --workspace /path/to/workspace --out scorer.pt \
+        --cif-dir /path/to/training_cifs \
         --epochs 20 --mixtures-per-epoch 512 --device cuda
     # use it: rank_candidates(..., scorer="torch:scorer.pt")
+
+Training diversity: the bundled library is ~20 mostly-cubic standards — enough
+to *rank* against, but a similarity model trained only on those overfits to
+sparse high-symmetry patterns. ``--cif-dir`` mixes in a training-only CIF corpus
+(e.g. COD/Materials Project exports across crystal systems) WITHOUT adding them
+to the workspace library; entries lacking an EOS get a synthetic plausible one
+(random K0) so the model sees their compression manifold too — it learns
+pattern similarity under compression, not any specific bulk modulus.
 
 Importing this module never imports torch (safe for the worker/CLI); only
 :func:`train` / :func:`main` do, and a missing torch raises the same instructive
@@ -44,10 +53,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .phases import Phase, has_pressure_dof, pymatgen_available
+from .phases import Phase, has_pressure_dof, pymatgen_available, valid_pressure_max
 from .identify import phase_reflections
 from .mldata import make_d_grid, simulate_training_pattern
-from .ml_simulate import AugmentConfig, simulate_augmented_pattern
+from .ml_simulate import (AugmentConfig, simulate_augmented_pattern,
+                          draw_mixture_pressures)
 
 Reflections = Tuple[np.ndarray, np.ndarray, list]
 
@@ -71,12 +81,16 @@ def generate_pairs(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build ``(X (M, 2, P) float32, y (M,) float32)`` training pairs.
 
-    Per augmented mixture: one positive per present phase (candidate at its true
-    pressure), one pressure-negative per pressure-capable present phase (same
-    phase at ``±wrong_pressure_offset`` GPa), and one absent-negative (a phase
-    not in the mixture at the mixture's pressure). Candidate fingerprints are
-    rendered with the same ``simulate_training_pattern`` the inference-time
-    scorers use. ``reflections`` bypasses pymatgen (name -> (d0, w, hkl)).
+    Per augmented mixture (all members at ONE shared pressure, as in a real DAC
+    frame — see :func:`ml_simulate.draw_mixture_pressures`): one positive per
+    present phase (candidate at the mixture pressure), one pressure-negative per
+    pressure-capable present phase (same phase at ``±wrong_pressure_offset``
+    GPa, kept inside the phase's validity range), and one absent-negative (a
+    phase not in the mixture at the mixture's pressure). Candidate fingerprints
+    are rendered with the same ``simulate_training_pattern`` the inference-time
+    scorers use, at the SAME q-resolution as the mixture (inference simulates
+    candidates at the Step-2-measured width). ``reflections`` bypasses pymatgen
+    (name -> (d0, w, hkl)).
     """
     grid = make_d_grid() if d_grid is None else np.asarray(d_grid, dtype=float)
     cfg = cfg or AugmentConfig()
@@ -95,27 +109,32 @@ def generate_pairs(
     p_lo, p_hi = float(pressures.min()), float(pressures.max())
     k_max = max(1, min(int(max_phases_per_pattern), len(phases)))
 
-    def _cand(ph: Phase, P: float) -> np.ndarray:
-        return simulate_training_pattern(ph, float(P), grid, refl=reflections[ph.name],
-                                         fwhm_d=fwhm_d).astype("f4")
-
     Xs: List[np.ndarray] = []
     ys: List[float] = []
     for _ in range(int(n_mixtures)):
         k = 1 if k_max == 1 else int(rng.integers(1, k_max + 1))
         chosen = list(rng.choice(len(phases), size=k, replace=False))
         present = [phases[j] for j in chosen]
-        ps = [float(rng.choice(pressures)) if has_pressure_dof(p) else 0.0 for p in present]
-        meas = simulate_augmented_pattern(present, ps, reflections, grid, cfg, rng)
+        ps = draw_mixture_pressures(present, pressures, rng)
+        fq = (float(rng.uniform(*cfg.fwhm_q)) if cfg.use_q_widths else None)
+        fd = fwhm_d if fq is None else None
+        meas = simulate_augmented_pattern(present, ps, reflections, grid, cfg, rng,
+                                          fwhm_q=fq)
+
+        def _cand(ph: Phase, P: float) -> np.ndarray:
+            return simulate_training_pattern(ph, float(P), grid,
+                                             refl=reflections[ph.name],
+                                             fwhm_d=fd, fwhm_q=fq).astype("f4")
 
         for ph, P in zip(present, ps):
             # positive: the phase at its true pressure
             Xs.append(np.stack([meas, _cand(ph, P)]))
             ys.append(1.0)
-            # pressure negative: same phase, wrong pressure
+            # pressure negative: same phase, wrong pressure (within validity)
             if has_pressure_dof(ph):
+                hi = min(p_hi, valid_pressure_max(ph))
                 off = wrong_pressure_offset * (1.0 if rng.random() < 0.5 else -1.0)
-                P_wrong = min(max(P + off, p_lo), p_hi)
+                P_wrong = min(max(P + off, p_lo), hi)
                 if abs(P_wrong - P) >= 0.5 * wrong_pressure_offset:
                     Xs.append(np.stack([meas, _cand(ph, P_wrong)]))
                     ys.append(0.0)
@@ -124,7 +143,8 @@ def generate_pairs(
         if absent:
             j = int(rng.choice(absent))
             ph_a = phases[j]
-            P_a = ps[0] if has_pressure_dof(ph_a) else 0.0
+            P_a = (min(ps[0], valid_pressure_max(ph_a))
+                   if has_pressure_dof(ph_a) else 0.0)
             Xs.append(np.stack([meas, _cand(ph_a, P_a)]))
             ys.append(0.0)
 
@@ -240,11 +260,14 @@ def train(
 ) -> Dict[str, Any]:
     """Train the pair scorer and export TorchScript for :class:`TorchScorer`.
 
-    Every epoch regenerates its pairs with a fresh seed (infinite augmentation —
-    the simulator is the dataset), holding out ``val_fraction`` for loss/AUC.
-    Saves the best-validation-AUC weights, exports TorchScript to ``out_path``
-    and verifies the export by scoring through ``ml_scorer.TorchScorer``.
-    Returns a manifest (losses, AUCs, n_params, out path).
+    Every epoch regenerates its training pairs with a fresh seed (infinite
+    augmentation — the simulator is the dataset). Validation is a FIXED set of
+    pairs from mixtures generated once up front (``val_fraction`` of an epoch's
+    worth, disjoint seed), so no mixture ever appears on both sides and the
+    best-model selection compares epochs on the same yardstick. Saves the
+    best-validation-AUC weights, exports TorchScript to ``out_path`` and
+    verifies the export by scoring through ``ml_scorer.TorchScorer``. Returns a
+    manifest (losses, AUCs, n_params, out path).
     """
     torch = _require_torch()
     import torch.nn as nn
@@ -259,16 +282,39 @@ def train(
     log(f"[ML-TRAIN] device={dev} params={n_params:,} phases={len(phases)} "
         f"epochs={epochs} mixtures/epoch={mixtures_per_epoch}")
 
+    # Reflections simulated ONCE (pymatgen is slow; per-epoch re-simulation of a
+    # large CIF corpus would dwarf the actual training time).
+    if reflections is None:
+        if not pymatgen_available():
+            raise RuntimeError("pymatgen is required to simulate reflections "
+                               "(pip install bulkxrd[phases]), or pass reflections=.")
+        reflections = {}
+        kept = []
+        for ph in phases:
+            try:
+                reflections[ph.name] = phase_reflections(ph)
+                kept.append(ph)
+            except Exception as e:
+                log(f"[ML-TRAIN] skipped {ph.name!r}: simulation failed ({e})")
+        phases = kept
+        if len(phases) < 2:
+            raise ValueError("Fewer than 2 phases could be simulated for training.")
+
+    # Fixed validation set from its own mixtures (seed disjoint from every
+    # training epoch): no measured mixture is shared between train and val.
+    n_val_mixtures = max(1, int(val_fraction * mixtures_per_epoch))
+    Xv, yv = generate_pairs(phases, n_mixtures=n_val_mixtures,
+                            max_phases_per_pattern=max_phases_per_pattern,
+                            pressures=pressures, d_grid=grid,
+                            reflections=reflections, seed=seed + 1_000_003)
+
     history: List[Dict[str, float]] = []
     best_auc, best_state = -1.0, None
     for epoch in range(int(epochs)):
-        X, y = generate_pairs(phases, n_mixtures=mixtures_per_epoch,
-                              max_phases_per_pattern=max_phases_per_pattern,
-                              pressures=pressures, d_grid=grid,
-                              reflections=reflections, seed=seed + epoch)
-        n_val = max(1, int(val_fraction * len(y)))
-        Xt, yt = X[:-n_val], y[:-n_val]
-        Xv, yv = X[-n_val:], y[-n_val:]
+        Xt, yt = generate_pairs(phases, n_mixtures=mixtures_per_epoch,
+                                max_phases_per_pattern=max_phases_per_pattern,
+                                pressures=pressures, d_grid=grid,
+                                reflections=reflections, seed=seed + epoch)
 
         model.train()
         perm = np.random.default_rng(seed + epoch).permutation(len(yt))
@@ -286,8 +332,11 @@ def train(
         sched.step()
 
         model.eval()
+        pv = np.zeros(len(yv), dtype="f4")
         with torch.no_grad():
-            pv = model(torch.from_numpy(Xv).to(dev)).cpu().numpy().ravel()
+            for a in range(0, len(yv), batch_size):
+                xb = torch.from_numpy(Xv[a:a + batch_size]).to(dev)
+                pv[a:a + batch_size] = model(xb).cpu().numpy().ravel()
         auc = roc_auc(yv, pv)
         history.append({"epoch": epoch, "train_loss": tot / max(nb, 1), "val_auc": auc})
         log(f"[ML-TRAIN] epoch {epoch + 1}/{epochs} loss={tot / max(nb, 1):.4f} "
@@ -302,6 +351,7 @@ def train(
     manifest = {"out": str(out), "n_params": int(n_params), "device": dev,
                 "best_val_auc": float(best_auc), "history": history,
                 "n_points": int(grid.size),
+                "n_val_pairs": int(len(yv)),
                 "phases": [p.name for p in phases]}
     log(f"[ML-TRAIN] done -> {out} (best val AUC {best_auc:.4f})")
     return manifest
@@ -344,6 +394,45 @@ def export_torchscript(model, out_path: "str | Path", n_points: int) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Training-only CIF corpus
+# ---------------------------------------------------------------------------
+
+def load_cif_corpus(cif_dir: "str | Path", *, synthetic_eos: bool = True,
+                    k0_range: Tuple[float, float] = (30.0, 300.0),
+                    seed: int = 0, log=print) -> List[Phase]:
+    """Training-only phases from a folder of ``*.cif`` files.
+
+    These NEVER touch the workspace library — they exist to give the pair scorer
+    pattern diversity beyond the ~20 bundled standards (crystal systems, peak
+    densities, line multiplicities), which is what a similarity model actually
+    generalises from. With ``synthetic_eos`` (default), corpus entries get a
+    random plausible BM3 bulk modulus (uniform in ``k0_range`` GPa, K0'=4): a
+    phase with no EOS would sit at ambient in every mixture and the model would
+    never see its compression manifold. The model learns similarity under
+    compression, not the (fake) K0 itself; real library phases keep their real
+    EOS.
+    """
+    root = Path(cif_dir).expanduser().resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"CIF corpus directory not found: {root}")
+    files = sorted(root.rglob("*.cif"))
+    if not files:
+        raise ValueError(f"No .cif files under {root}")
+    rng = np.random.default_rng(seed)
+    out: List[Phase] = []
+    for f in files:
+        eos = ({"type": "BM3", "K0": float(rng.uniform(*k0_range)), "K0p": 4.0}
+               if synthetic_eos else {})
+        out.append(Phase(name=f"cif:{f.stem}", category="other",
+                         cif_path=str(f), eos=eos,
+                         source="training-only CIF corpus",
+                         notes="synthetic EOS (training only)" if synthetic_eos else ""))
+    log(f"[ML-TRAIN] CIF corpus: {len(out)} training-only phase(s) from {root}"
+        f"{' (synthetic EOS)' if synthetic_eos else ''}")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # CLI  (bulkxrd-ml-train)
 # ---------------------------------------------------------------------------
 
@@ -355,6 +444,12 @@ def main(argv: "Optional[List[str]]" = None) -> int:
     p.add_argument("--workspace", default="", help="Workspace with the phase library.")
     p.add_argument("--phases", default="", help="Comma-separated subset (default: all "
                                                 "simulatable library phases).")
+    p.add_argument("--cif-dir", default="",
+                   help="Folder of training-only CIFs mixed into the pool for pattern "
+                        "diversity (never added to the workspace library).")
+    p.add_argument("--no-synthetic-eos", action="store_true",
+                   help="Do not assign a random plausible EOS to corpus CIFs lacking "
+                        "one (they will then only ever be simulated at ambient).")
     p.add_argument("--out", default="scorer.pt", help="Output TorchScript path.")
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--mixtures-per-epoch", type=int, default=256)
@@ -373,6 +468,16 @@ def main(argv: "Optional[List[str]]" = None) -> int:
     names = [s.strip() for s in (args.phases or "").split(",") if s.strip()]
     pool = ([lib[n] for n in names if n in lib] if names
             else [ph for ph in lib.values() if ph.has_structure()])
+    if args.cif_dir:
+        try:
+            have = {p.name for p in pool}
+            pool += [p for p in load_cif_corpus(args.cif_dir,
+                                                synthetic_eos=not args.no_synthetic_eos,
+                                                seed=args.seed)
+                     if p.name not in have]
+        except (FileNotFoundError, ValueError) as e:
+            print(f"[ERROR] {e}", flush=True)
+            return 1
     if len(pool) < 2:
         print("[ERROR] need at least 2 simulatable phases (library empty or "
               "--phases too narrow).", flush=True)

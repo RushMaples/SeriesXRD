@@ -88,8 +88,14 @@ def _run(args) -> int:
             if not list(lib.values()):
                 print("[ERROR] reference library is empty — add or bundle phases first.", flush=True)
                 return 1
-            mrank = rank_candidates(analysis_path, list(lib.values()),
-                                    source=args.ml_rank_source, top_k=args.ml_rank_top_k)
+            try:
+                mrank = rank_candidates(analysis_path, list(lib.values()),
+                                        source=args.ml_rank_source,
+                                        top_k=args.ml_rank_top_k,
+                                        scorer=(args.ml_scorer or None))
+            except (RuntimeError, ValueError) as e:
+                print(f"[ERROR] ML ranking failed: {e}", flush=True)
+                return 1
             phases = [lib[n] for n in mrank["candidates"] if n in lib]
             if phases:
                 print(f"[ANALYZE] ML ranker shortlist: {[p.name for p in phases]}", flush=True)
@@ -118,7 +124,9 @@ def _run(args) -> int:
             pressure_window=args.pressure_window,
             pressure_sigma_k=args.pressure_sigma_k,
             min_matched=args.min_matched,
-            marker_prior=args.marker_prior)
+            marker_prior=args.marker_prior,
+            intensity_k=args.intensity_k,
+            use_frame_temperature=not args.no_temperature)
 
         # Remove identified phases and re-fit the residual (Step 3a removal), so a
         # headless run produces the same /residual the GUI/worker does.
@@ -197,6 +205,12 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="With no metadata pressure, estimate it from marker phases first.")
     p.add_argument("--min-matched", type=int, default=3,
                    help="Min one-to-one matched reflections to call a phase present. Default 3.")
+    p.add_argument("--intensity-k", type=float, default=0.3,
+                   help="Weight of the soft intensity-agreement factor in the confidence "
+                        "(0 = position-only; DAC texture makes intensities unreliable, so "
+                        "keep it gentle). Default 0.3.")
+    p.add_argument("--no-temperature", action="store_true",
+                   help="Ignore /frames/temperature (skip the thermal-expansion seam).")
     p.add_argument("--allow-sparse", action="store_true",
                    help="Permit phases below --min-matched to be subtracted in the residual.")
     # Step 3b proposer
@@ -207,10 +221,17 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="How many ranked candidates per frame to verify. Default 5.")
     p.add_argument("--ml-rank-source", default="auto",
                    help="What to rank against: auto|residual|fit. Default auto.")
+    p.add_argument("--ml-scorer", default="",
+                   help="Similarity scorer for --ml-rank: 'cosine' (default) or "
+                        "'torch:<model.pt>' (a trained bulkxrd-ml-train export; "
+                        "needs bulkxrd[ml]). Whatever it proposes, Step 3a verifies.")
     # ML export
     p.add_argument("--ml-export", default="", help="Also export an ML .npz to this path.")
-    p.add_argument("--ml-channels", default="clean,spot_residual",
-                   help="Comma-separated channels for the ML export.")
+    p.add_argument("--ml-channels", default="fit,spot_residual",
+                   help="Comma-separated channels for the ML export: any of "
+                        "fit/residual/clean/hybrid/robust/mean/sigmaclip/baseline/"
+                        "spot_residual. 'fit' = the channel Step 2 actually fit "
+                        "(recommended). Default fit,spot_residual.")
     args = p.parse_args(argv)
     return _run(args)
 

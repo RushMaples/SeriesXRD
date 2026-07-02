@@ -79,7 +79,28 @@ def main() -> None:
     _test_sensitivity_presets()
     _test_winsorize_and_sources()
     _test_auto_fit_range()
+    _test_esd_columns()
     print("PEAKS TEST OK")
+
+
+def _test_esd_columns():
+    """1σ fit uncertainties from the covariance: present, positive, and sane
+    (the center is pinned far better than a FWHM on a clean strong peak)."""
+    rng = np.random.default_rng(3)
+    x = np.linspace(1.0, 8.0, 1600)
+    y = pseudo_voigt(x, 4.0, 300.0, 0.06, 0.4) + rng.normal(0.0, 2.0, x.size)
+    pk = [p for p in fit_pattern(x, y, min_snr=5.0) if p["flag"] == FLAG_OK]
+    assert len(pk) == 1, len(pk)
+    p = pk[0]
+    for k in ("center_err", "amplitude_err", "fwhm_err"):
+        assert k in p and np.isfinite(p[k]) and p[k] > 0, (k, p.get(k))
+    assert p["center_err"] < 0.5 * p["fwhm"]              # well-localised
+    assert abs(p["center"] - 4.0) < 5 * p["center_err"] + 1e-3
+    # A weaker, noisier peak carries a LARGER center esd than a strong one.
+    y2 = pseudo_voigt(x, 4.0, 25.0, 0.06, 0.4) + rng.normal(0.0, 2.0, x.size)
+    pk2 = [p2 for p2 in fit_pattern(x, y2, min_snr=4.0) if p2["flag"] == FLAG_OK]
+    if pk2:                                               # may drown at this SNR
+        assert pk2[0]["center_err"] > p["center_err"]
 
 
 def _test_sensitivity_presets():

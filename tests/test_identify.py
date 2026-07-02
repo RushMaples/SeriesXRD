@@ -256,6 +256,95 @@ def test_one_to_one_matching():
     assert len(pairs2) == 2 and {p[0] for p in pairs2} == {0, 1}
 
 
+def test_esd_weighted_matching():
+    """Per-peak center esd's widen the match tolerance in quadrature: a noisy
+    peak just outside the model tolerance can still match; a sharp one (or one
+    with no esd information) cannot."""
+    pred = np.array([2.0])
+    obs = np.array([2.05])          # gap 0.05; model tol = 2·(0.01·2.0) = 0.04
+    assert not idf._match_pairs(pred, obs, rel_tol=0.01)
+    # esd 0.02 -> tol = 2·hypot(0.02, 0.02) ≈ 0.057 > 0.05: now a match.
+    pairs = idf._match_pairs(pred, obs, rel_tol=0.01, obs_err=np.array([0.02]))
+    assert len(pairs) == 1
+    # NaN esd = no information -> model tolerance alone again.
+    assert not idf._match_pairs(pred, obs, rel_tol=0.01, obs_err=np.array([np.nan]))
+    # The smooth kernel widens too: same gap scores higher with the esd.
+    s_no = idf._score_pred(obs, pred, np.array([1.0]), rel_tol=0.01)[0]
+    s_esd = idf._score_pred(obs, pred, np.array([1.0]), rel_tol=0.01,
+                            obs_err_sorted=np.array([0.02]))[0]
+    assert s_esd > s_no
+
+
+def test_esd_conversion_to_d():
+    """radial_err_to_d_err: q axes via σ_d = d·σ_q/q; 2θ via d·cotθ·σ_2θ/2."""
+    q = np.array([2.0, 4.0])
+    sq = np.array([0.01, 0.02])
+    d = 2 * np.pi / q
+    out = idf.radial_err_to_d_err(q, sq, "q_A^-1")
+    assert np.allclose(out, d * sq / q)
+    tt = np.array([10.0])            # degrees
+    stt = np.array([0.05])
+    lam = 0.4
+    dd = idf.radial_to_d(tt, "2th_deg", lam)
+    theta = np.radians(tt) / 2
+    expect = dd / np.tan(theta) * np.radians(stt) / 2
+    assert np.allclose(idf.radial_err_to_d_err(tt, stt, "2th_deg", lam), expect)
+    # No wavelength on a 2θ axis, or non-positive errs -> NaN (no esd info).
+    assert np.isnan(idf.radial_err_to_d_err(tt, stt, "2th_deg")).all()
+    assert np.isnan(idf.radial_err_to_d_err(q, np.zeros(2), "q_A^-1")).all()
+
+
+def test_intensity_agreement():
+    """Observed amplitudes tracking the predicted relative intensities raise the
+    (soft) intensity factor; anti-correlated amplitudes lower it. k=0 disables."""
+    au, refl = _synth_au()
+    d0, w, _ = refl
+    obs = d0 * idf.scale_at_pressure(au, 20.0)
+    good = idf.fit_pressure_for_phase(obs, au, refl, p_min=0, p_max=200,
+                                      obs_amp=w * 50.0, intensity_k=0.3)
+    bad = idf.fit_pressure_for_phase(obs, au, refl, p_min=0, p_max=200,
+                                     obs_amp=50.0 / (w + 0.05), intensity_k=0.3)
+    assert good["intensity_corr"] > 0.95
+    assert good["intensity_corr"] > bad["intensity_corr"]
+    assert good["confidence"] > bad["confidence"]
+    # Positions are unaffected: intensity only nudges the confidence.
+    assert abs(good["pressure"] - bad["pressure"]) < 0.5
+    # k=0 (or no amplitudes at all) leaves the classic confidence untouched.
+    off = idf.fit_pressure_for_phase(obs, au, refl, p_min=0, p_max=200,
+                                     obs_amp=50.0 / (w + 0.05), intensity_k=0.0)
+    plain = idf.fit_pressure_for_phase(obs, au, refl, p_min=0, p_max=200)
+    assert off["confidence"] == plain["confidence"]
+    assert plain["intensity_corr"] != plain["intensity_corr"]      # NaN: no amps
+    # conservative_confidence folds the factor in gently and ignores NaN.
+    cc = idf.conservative_confidence
+    assert cc(1.0, 1.0, 5, min_matched=3, intensity_corr=0.5, intensity_k=0.3) == 0.85
+    assert cc(1.0, 1.0, 5, min_matched=3, intensity_corr=float("nan"),
+              intensity_k=0.3) == 1.0
+
+
+def test_thermal_expansion_seam():
+    """Phase.thermal moves predicted lines with temperature — the ambient-
+    pressure temperature-series analog of the EOS."""
+    au, refl = _synth_au()
+    au.thermal = {"alpha_v": 4.2e-5, "T0": 298.0}
+    d0, w, hkl = refl
+    s_hot = ph.thermal_scale(au, 898.0)              # (1+4.2e-5·600)^(1/3)
+    assert abs(s_hot - (1 + 4.2e-5 * 600) ** (1 / 3)) < 1e-12 and s_hot > 1.005
+    assert ph.thermal_scale(au, None) == 1.0
+    assert ph.thermal_scale(ph.Phase(name="X"), 898.0) == 1.0
+    hkls = [idf._parse_hkl(h) for h in hkl]
+    assert np.allclose(idf.predicted_d(au, d0, hkls, 0.0, 898.0), d0 * s_hot)
+    # Hot, ambient-pressure observation: with T the fit stays at ~0 GPa and
+    # matches; without it, expansion can't be reached by compression at all.
+    obs = d0 * s_hot
+    hot = idf.fit_pressure_for_phase(obs, au, refl, p_min=0, p_max=50,
+                                     rel_tol=0.003, temperature=898.0)
+    cold = idf.fit_pressure_for_phase(obs, au, refl, p_min=0, p_max=50,
+                                      rel_tol=0.003)
+    assert hot["confidence"] > 0.8 and hot["pressure"] < 1.0
+    assert cold["confidence"] < hot["confidence"]
+
+
 def test_pressure_prior_confines_search():
     au, refl = _synth_au()
     d0, _, _ = refl
@@ -465,6 +554,10 @@ def main() -> None:
     test_sparse_observation_still_seen()
     test_conservative_confidence()
     test_one_to_one_matching()
+    test_esd_weighted_matching()
+    test_esd_conversion_to_d()
+    test_intensity_agreement()
+    test_thermal_expansion_seam()
     test_pressure_prior_confines_search()
     test_pressure_prior_rejects_decoy_end_to_end()
     test_no_eos_penalized_and_range_auto_widens()

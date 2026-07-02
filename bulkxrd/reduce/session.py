@@ -24,7 +24,10 @@ _DEFAULTS = {
                                  # (pyFAI rule of thumb, from the accepted PONI +
                                  # first frame). A fixed low value under-samples
                                  # sharp peaks -> stepped patterns, poor fits.
-    "unit": "2th_deg",
+    "unit": "q_A^-1",            # the pipeline's design decision: fit in q, not 2θ
+                                 # (peak widths ~constant in q -> uniform windows;
+                                 # d-conversion needs no wavelength downstream).
+                                 # 2th_deg remains selectable for Dioptas parity.
     "method": "csr",
     "polarization_factor": "",
     "robust_1d": True,
