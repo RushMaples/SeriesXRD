@@ -22,6 +22,37 @@ overlaps — not a matching label set.
 
 ---
 
+## The data-quality gate (do this before anything below)
+
+The model's input is whatever the deterministic pipeline produces, and the
+weak labels come from Step 3a — so training inherits every upstream data
+pathology. All four checks below are automated and recorded in the files;
+train only when they pass on the dataset(s) you will validate against:
+
+1. **Geometry.** Wavy cake rings (a sample measured off the calibrant
+   position) turn every peak into a constant-splitting doublet the simulator
+   deliberately does not model. Run `reduce.straighten.diagnose_reduced()` on
+   a cakes-enabled reduction: the first-harmonic amplitude `A1` should be ≪
+   the peak FWHM (it also reports the physical offset in mm). Fix by
+   re-refining the PONI on a sample-position ring and re-reducing;
+   `straighten_reduced()` is the rescue path for already-collected data.
+2. **Sampling.** Step 2 measures the median fitted FWHM in bins and warns with
+   a concrete `npt_1d` when peaks are undersampled (< 4 bins) — check
+   `median_fwhm_bins` / `npt_recommended` in the peaks manifest. Undersampled
+   peaks also break the `fwhm_q="auto"` resolution estimate the ranker uses to
+   render candidates at your instrument's width.
+3. **Channel.** Step 1 records `signal_frac_clean` / `spotty_sample` (where
+   the Bragg signal actually lives). On a coarse-grained sample the
+   median-based channels contain background only; `source="auto"` handles it,
+   but a model must be trained/inferred on the *resolved* channel recorded in
+   `/ml/candidates` attrs (`resolved_source`), not on an assumed one.
+4. **Robust channel.** The reduce manifest's `robust_estimator` must say
+   `quantile_band(...)` — `median(band_unsupported)` means your pyFAI ignored
+   the band kwargs (it logs "Got unknown argument ...") and the channel is a
+   quantized pure median.
+
+---
+
 ## 0. Before you train: collect phases
 
 The bundled baseline is ~20 mostly-cubic high-pressure standards. That is fine
@@ -151,6 +182,11 @@ Training conventions baked in (do not need flags):
 * **Fixed validation set** — validation pairs come from mixtures generated
   once with a disjoint seed; no mixture appears on both sides of the split,
   and best-model selection compares epochs on the same yardstick.
+* **Pressure-only simulation** — the temperature seam (`Phase.thermal`) and
+  signed axial expansivity (`axial_eos beta`) move predictions in the
+  deterministic identify/residual/heatmap paths, but the ML simulators stay
+  pressure-only for now: a temperature-series or NLC-heavy problem should be
+  ranked with the deterministic cosine until the simulators grow those axes.
 
 ---
 
