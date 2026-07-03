@@ -90,6 +90,19 @@ Collect two different things, for two different reasons:
    compression, not the fake K0. Disable with `--no-synthetic-eos` if you
    want corpus phases pinned at ambient.
 
+   Two helper commands make corpus building mechanical:
+
+   ```bash
+   bulkxrd-corpus fetch cod_ids.txt ./training_cifs   # COD IDs, one per line
+   bulkxrd-corpus screen ./training_cifs              # parse / dedupe / size-screen
+   ```
+
+   `screen` is not optional hygiene: it drops unparseable files (which would
+   otherwise be silently skipped at training startup), repeat depositions of
+   the same structure (no diversity gained), and giant cells (>200 sites by
+   default — they dominate reflection-simulation time), moving rejects into
+   `rejected/` and writing a `corpus_manifest.json`.
+
 **Should you collect more phases before training? Yes — the corpus.** The
 library only needs what you'll actually verify, but training without a corpus
 (i.e., on the ~20 bundled standards) is only useful as a smoke test. Do not
@@ -178,7 +191,11 @@ Training conventions baked in (do not need flags):
   Δq and every peak gets `Δd = d²·Δq/2π`, matching what a q-uniform detector
   axis produces on the d-grid. Candidate fingerprints are rendered at the same
   width as their mixture, exactly as inference does with the measured
-  resolution.
+  resolution. At inference the ranker goes one step further when the Step-2
+  peaks support it: it fits the smooth resolution CURVE `FWHM_q²(q)` (the
+  q-space Caglioti analog, `ml_rank.fit_resolution`) and renders candidates
+  with per-peak widths from it, falling back to the median Δq otherwise; both
+  are recorded in `/ml/candidates` attrs (`fwhm_q`, `fwhm_q_poly`).
 * **Fixed validation set** — validation pairs come from mixtures generated
   once with a disjoint seed; no mixture appears on both sides of the split,
   and best-model selection compares epochs on the same yardstick.
@@ -212,8 +229,30 @@ Training conventions baked in (do not need flags):
 ## 3. Validate against the deterministic baseline before trusting it
 
 The deterministic cosine stays the default until a trained model is validated
-**on your real data**. Run both scorers over an analysis file whose ground
-truth you know (e.g. your marker + gasket run):
+against known truth. There are two complementary gates.
+
+**Gate A — external labelled patterns (`bulkxrd-benchmark`).** Ingest any
+labelled XY pattern set (RRUFF exports, opXRD dumps — see the dataset notes in
+the project docs) through the pipeline's own preprocessing and score the
+ranker against the labels:
+
+```bash
+# pin the baseline once
+bulkxrd-benchmark ./rruff_patterns --labels labels.csv --workspace ws \
+    --out bench_cosine
+# same command, trained scorer
+bulkxrd-benchmark ./rruff_patterns --labels labels.csv --workspace ws \
+    --out bench_torch --ml-scorer torch:/path/scorer.pt
+```
+
+Compare `hit@1` / `hit@K` / `MRR` in the two `benchmark_report.json` files —
+promote the trained scorer only when it at least matches the cosine baseline.
+The labels CSV is `filename,phases` (`;`-separated for multi-phase rows), and
+the label names must exist in the workspace library (import the corresponding
+structures first — the benchmark measures the scorer, not library coverage).
+
+**Gate B — your own known-truth run.** Run both scorers over an analysis file
+whose ground truth you know (e.g. your marker + gasket run):
 
 ```bash
 # baseline

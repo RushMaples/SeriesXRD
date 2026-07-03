@@ -49,15 +49,11 @@ Reflections = Tuple[np.ndarray, np.ndarray, list]
 _MIN_PEAKS_FOR_FWHM = 5
 
 
-def estimate_fwhm_q(analysis_h5: "str | Path") -> "Optional[float]":
-    """Median FWHM (Å⁻¹, in q) of the good Step-2 peaks — the measured
-    instrument+sample resolution.
+def _peak_widths_q(analysis_h5: "str | Path"
+                   ) -> "Optional[Tuple[np.ndarray, np.ndarray]]":
+    """(q_center, fwhm_q) of every good Step-2 peak, converted to Å⁻¹.
 
-    Candidate fingerprints simulated at this width match the measured profiles
-    the ranker compares against (instrument resolution is ~constant in q; a
-    hard-coded constant-in-d width is wrong almost everywhere on the d-grid).
-    Returns None when there are too few good peaks or the axis/wavelength can't
-    be resolved — callers then fall back to the legacy constant ``fwhm_d``.
+    None when the file lacks peaks or the axis/wavelength can't be resolved.
     """
     import h5py  # type: ignore
     try:
@@ -74,21 +70,76 @@ def estimate_fwhm_q(analysis_h5: "str | Path") -> "Optional[float]":
     except Exception:
         return None
     good = (flag == 0) & np.isfinite(fwhm) & (fwhm > 0) & np.isfinite(center)
-    if int(good.sum()) < _MIN_PEAKS_FOR_FWHM:
+    if not good.any():
         return None
     fwhm, center = fwhm[good], center[good]
     if unit in ("q_a^-1", "q_a-1", "q_a", "q"):
-        dq = fwhm
-    elif unit in ("q_nm^-1", "q_nm-1", "q_nm"):
-        dq = fwhm * 0.1
-    elif unit in ("2th_deg", "2th_rad") and wl > 0:
+        return center, fwhm
+    if unit in ("q_nm^-1", "q_nm-1", "q_nm"):
+        return center * 0.1, fwhm * 0.1
+    if unit in ("2th_deg", "2th_rad") and wl > 0:
         tt = np.radians(center) if unit == "2th_deg" else center
         dtt = np.radians(fwhm) if unit == "2th_deg" else fwhm
+        q = (4.0 * np.pi / wl) * np.sin(tt / 2.0)
         dq = (2.0 * np.pi / wl) * np.cos(tt / 2.0) * dtt   # dq/d(2θ) = 2π·cosθ/λ
-    else:
+        return q, dq
+    return None
+
+
+def estimate_fwhm_q(analysis_h5: "str | Path") -> "Optional[float]":
+    """Median FWHM (Å⁻¹, in q) of the good Step-2 peaks — the measured
+    instrument+sample resolution.
+
+    Candidate fingerprints simulated at this width match the measured profiles
+    the ranker compares against (instrument resolution is ~constant in q; a
+    hard-coded constant-in-d width is wrong almost everywhere on the d-grid).
+    Returns None when there are too few good peaks or the axis/wavelength can't
+    be resolved — callers then fall back to the legacy constant ``fwhm_d``.
+    """
+    qw = _peak_widths_q(analysis_h5)
+    if qw is None or qw[1].size < _MIN_PEAKS_FOR_FWHM:
         return None
-    med = float(np.median(dq))
+    med = float(np.median(qw[1]))
     return med if med > 0 else None
+
+
+def fit_resolution(analysis_h5: "str | Path", *, min_peaks: int = 12,
+                   min_span_frac: float = 0.4) -> Dict[str, Any]:
+    """Fit the smooth resolution curve ``FWHM_q²(q) = c2·q² + c1·q + c0`` to the
+    good Step-2 peaks — the q-space analog of a Caglioti function.
+
+    A single median Δq treats resolution as flat across the whole pattern; real
+    instruments broaden systematically with q (and the DAC adds strain
+    broadening on top). The fitted curve lets candidate fingerprints match the
+    measured profile *shape* bin-for-bin. Deliberately conservative: needs ≥
+    ``min_peaks`` good peaks spanning ≥ ``min_span_frac`` of their q range, and
+    the fitted curve must stay within [0.3×, 3×] of the median over the data —
+    otherwise ``ok=False`` and callers fall back to the median scalar.
+
+    Returns ``{ok, coeffs (c2, c1, c0), median, n}``.
+    """
+    out: Dict[str, Any] = {"ok": False, "coeffs": None,
+                           "median": None, "n": 0}
+    qw = _peak_widths_q(analysis_h5)
+    if qw is None:
+        return out
+    q, dq = qw
+    out["n"] = int(q.size)
+    med = float(np.median(dq)) if dq.size else 0.0
+    out["median"] = med if med > 0 else None
+    if q.size < int(min_peaks) or med <= 0:
+        return out
+    span = float(q.max() - q.min())
+    if span < float(min_span_frac) * float(q.max()):
+        return out                              # too clustered to constrain a curve
+    coeffs = np.polyfit(q, dq ** 2, 2)          # (c2, c1, c0) on FWHM²
+    from .mldata import resolution_curve
+    f = resolution_curve(coeffs)
+    probe = f(np.linspace(q.min(), q.max(), 32))
+    if probe.min() < 0.3 * med or probe.max() > 3.0 * med:
+        return out                              # implausible fit — keep the median
+    out.update(ok=True, coeffs=tuple(float(c) for c in coeffs))
+    return out
 
 
 def score_phase(meas: np.ndarray, phase: Phase, refl: Reflections, d_grid: np.ndarray,
@@ -198,16 +249,36 @@ def rank_candidates(
     score = {nm: np.zeros(n, "f8") for nm in names}
     pmat = {nm: np.full(n, np.nan, "f8") for nm in names}
 
-    # Candidate peak width: measured q-resolution when available (auto), else
-    # the pinned/legacy value. Recorded in provenance either way.
-    used_fwhm_q = (estimate_fwhm_q(src) if isinstance(fwhm_q, str)
-                   and fwhm_q.strip().lower() == "auto"
-                   else (float(fwhm_q) if fwhm_q else None))
+    # Candidate peak width: the fitted resolution CURVE fwhm_q(q) when the
+    # Step-2 peaks support one, else their median Δq, else the pinned/legacy
+    # value. Scalar + curve coefficients are recorded in provenance.
+    used_fwhm_q = None            # scalar or callable, given to the scorer
+    fwhm_q_scalar = None          # median Δq for attrs/log
+    fwhm_q_poly = None            # (c2, c1, c0) of FWHM²(q) when a curve is used
+    if isinstance(fwhm_q, str) and fwhm_q.strip().lower() == "auto":
+        res_fit = fit_resolution(src)
+        fwhm_q_scalar = res_fit["median"] or estimate_fwhm_q(src)
+        if res_fit["ok"]:
+            from .mldata import resolution_curve
+            used_fwhm_q = resolution_curve(res_fit["coeffs"])
+            fwhm_q_poly = res_fit["coeffs"]
+        else:
+            used_fwhm_q = fwhm_q_scalar
+    elif callable(fwhm_q):
+        used_fwhm_q = fwhm_q
+        fwhm_q_poly = tuple(getattr(fwhm_q, "coeffs", ())) or None
+    elif fwhm_q:
+        used_fwhm_q = fwhm_q_scalar = float(fwhm_q)
 
     # The scoring seam: deterministic cosine unless an alternative is injected.
     the_scorer = make_scorer(scorer, fwhm_d=fwhm_d, fwhm_q=used_fwhm_q)
-    width_txt = (f"fwhm_q={used_fwhm_q:.4g} A^-1" if used_fwhm_q
-                 else f"fwhm_d={fwhm_d:g} A (constant-d fallback)")
+    if fwhm_q_poly:
+        width_txt = (f"fwhm_q(q) curve {tuple(round(c, 6) for c in fwhm_q_poly)}"
+                     f" (median {fwhm_q_scalar:.4g} A^-1)")
+    elif fwhm_q_scalar:
+        width_txt = f"fwhm_q={fwhm_q_scalar:.4g} A^-1"
+    else:
+        width_txt = f"fwhm_d={fwhm_d:g} A (constant-d fallback)"
     print(f"[ML-RANK] {len(phases)} phase(s), {n} frames, source={want}, "
           f"scorer={the_scorer.name}, top_k={top_k}, {width_txt}", flush=True)
     k = min(int(top_k), len(phases))
@@ -231,7 +302,7 @@ def rank_candidates(
 
     _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
                       requested, want, top_k, fwhm_d, prep, the_scorer.name,
-                      fwhm_q=used_fwhm_q)
+                      fwhm_q=fwhm_q_scalar, fwhm_q_poly=fwhm_q_poly)
 
     # Union of the per-frame top-K (live frames) — the shortlist for the verifier.
     live = ~excluded
@@ -241,7 +312,8 @@ def rank_candidates(
         "requested_source": requested, "ranking_source": want,
         "resolved_source": feats.source,
         "n_frames": int(n), "top_k": int(top_k),
-        "fwhm_q": used_fwhm_q, "fwhm_d": float(fwhm_d),
+        "fwhm_q": fwhm_q_scalar, "fwhm_q_poly": fwhm_q_poly,
+        "fwhm_d": float(fwhm_d),
         "phases": names, "candidates": shortlist,
     }
     print(f"[ML-RANK] done -> {dst}  (shortlist: {shortlist})", flush=True)
@@ -250,7 +322,7 @@ def rank_candidates(
 
 def _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
                       requested_source, source, top_k, fwhm_d, prep,
-                      method: str = "cosine", fwhm_q=None):
+                      method: str = "cosine", fwhm_q=None, fwhm_q_poly=None):
     import os
     import shutil
     import h5py  # type: ignore
@@ -273,8 +345,13 @@ def _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
                             "top_k": int(top_k), "method": str(method),
                             "fwhm_d": float(fwhm_d),
                             # Measured q-resolution used for candidate widths
-                            # (NaN = constant-in-d fwhm_d fallback was used).
+                            # (NaN = constant-in-d fwhm_d fallback was used);
+                            # fwhm_q_poly = (c2, c1, c0) of the fitted FWHM²(q)
+                            # curve, NaN when a scalar width was used.
                             "fwhm_q": float(fwhm_q) if fwhm_q else float("nan"),
+                            "fwhm_q_poly": (np.asarray(fwhm_q_poly, "f8")
+                                            if fwhm_q_poly
+                                            else np.full(3, np.nan)),
                             "phases": ", ".join(names),
                             # ML preprocessing provenance (same pipeline a model must use).
                             "clip_negative": bool(prep.get("clip_negative", True)),

@@ -39,6 +39,12 @@ bulkxrd/
     ml_rank.py      Step 3b — candidate ranker (ML proposes, physics verifies)
     ml_scorer.py    Step 3b — scorer seam: CosineScorer default; TorchScorer adapter (bulkxrd[ml])
     ml_train.py     Step 3b — learned-scorer training (bulkxrd-ml-train CLI; torch lazy)
+    benchmark.py    known-truth harness (bulkxrd-benchmark): ingest labelled XY
+                    patterns (RRUFF/opXRD) through the REAL Step-1/2 preprocessing,
+                    score any scorer vs labels (hit@1/hit@K/MRR + identify verify) —
+                    the gate a trained scorer must pass vs the cosine baseline
+    corpus.py       training-only CIF corpus tooling (bulkxrd-corpus fetch/screen:
+                    COD download by ID; parse/dedupe/size-screen -> manifest)
     categorization.py  user's workflow spec (read-only notes)
   app.py         top-level launcher that embeds all stages
 tests/
@@ -219,9 +225,12 @@ truncation, noise) on the same grid.
 
 **Simulation physics conventions (post ML-readiness review):**
 - **Peak widths are q-constant, not d-constant** (`mldata.peak_fwhm_d`): resolution is
-  ~constant in q, so per-peak `Δd = d²·Δq/2π`. `rank_candidates(fwhm_q="auto")` measures
-  Δq from the Step-2 fitted peaks (`ml_rank.estimate_fwhm_q`); constant `fwhm_d` is the
-  fallback when too few good peaks exist. Recorded in `/ml/candidates` attrs.
+  ~constant in q, so per-peak `Δd = d²·Δq/2π`. `rank_candidates(fwhm_q="auto")` fits the
+  smooth resolution CURVE `FWHM_q²(q)` from the Step-2 peaks (`ml_rank.fit_resolution`,
+  q-space Caglioti analog; `mldata.resolution_curve` builds the callable), falling back
+  to the median Δq (`estimate_fwhm_q`), then constant `fwhm_d`. Provenance in
+  `/ml/candidates` attrs: `fwhm_q` (median scalar) + `fwhm_q_poly` (c2, c1, c0; NaN =
+  scalar/legacy width was used). Scorers accept scalar-or-callable `fwhm_q`.
 - **One pressure per simulated mixture** (`ml_simulate.draw_mixture_pressures`): all
   phases of a training mixture share a single pressure, as in a real DAC frame
   (independent per-phase pressures taught the scorer an unphysical manifold).

@@ -455,6 +455,68 @@ def test_estimate_fwhm_q():
         assert est2 is not None and abs(est2 - expect) < 1e-9
 
 
+def test_resolution_curve_fit():
+    """fit_resolution recovers a quadratic FWHM²(q) from the Step-2 peaks, the
+    ranker uses it as a per-peak width curve, and the provenance records both
+    the median scalar and the polynomial."""
+    import h5py
+    from bulkxrd.analysis.mldata import resolution_curve, peak_fwhm_d
+    # resolution_curve + callable peak_fwhm_d round-trip
+    f = resolution_curve((0.001, 0.0, 0.0001))       # fwhm² = 0.001 q² + 1e-4
+    q = np.array([1.0, 3.0])
+    assert np.allclose(f(q) ** 2, 0.001 * q**2 + 1e-4)
+    d = 2 * np.pi / q
+    wd = peak_fwhm_d(d, fwhm_q=f)
+    assert np.allclose(wd, d**2 * f(q) / (2 * np.pi))
+
+    c2_true, c0_true = 8e-4, 1e-4
+    with tempfile.TemporaryDirectory() as td:
+        h5 = Path(td) / "an.h5"
+        qc = np.linspace(1.2, 5.5, 24)
+        fw = np.sqrt(c2_true * qc**2 + c0_true)
+        with h5py.File(str(h5), "w") as fh:
+            fh.attrs["unit"] = "q_A^-1"
+            gp = fh.create_group("peaks")
+            gp.create_dataset("center", data=qc)
+            gp.create_dataset("fwhm", data=fw)
+            gp.create_dataset("flag", data=np.zeros(qc.size, "i4"))
+        res = mr.fit_resolution(h5)
+        assert res["ok"], res
+        c2, c1, c0 = res["coeffs"]
+        assert abs(c2 - c2_true) < 0.15 * c2_true
+        assert abs(c0 - c0_true) < 5e-5 and abs(c1) < 5e-4
+        # too few peaks -> fall back (ok=False) but median still reported
+        with h5py.File(str(h5), "r+") as fh:
+            fh["peaks/flag"][...] = np.array([0]*8 + [1]*16, "i4")
+        res2 = mr.fit_resolution(h5)
+        assert not res2["ok"] and res2["median"] is not None
+
+    # end-to-end: rank_candidates(auto) picks up the curve and records it
+    au = Phase(name="Au", eos={"type": "BM3", "K0": 167, "K0p": 5.0})
+    decoy = Phase(name="Decoy", eos={"type": "BM3", "K0": 80, "K0p": 4.0})
+    d0, w, hkl = _au_refl()
+    refl = {"Au": (d0, w, hkl), "Decoy": (d0 * 1.12, w[::-1], hkl)}
+    with tempfile.TemporaryDirectory() as td:
+        h5 = Path(td) / "an.h5"
+        _write_analysis(h5, pressure=30.0)
+        with h5py.File(str(h5), "r+") as fh:
+            qc = np.linspace(1.2, 5.5, 24)
+            gp = fh["peaks"]
+            del gp["frame"], gp["flag"]
+            gp.create_dataset("frame", data=np.zeros(qc.size, "i4"))
+            gp.create_dataset("flag", data=np.zeros(qc.size, "i4"))
+            gp.create_dataset("center", data=qc)
+            gp.create_dataset("fwhm", data=np.sqrt(8e-4 * qc**2 + 1e-4))
+        man = mr.rank_candidates(h5, [au, decoy], reflections=refl, top_k=2)
+        assert man["fwhm_q_poly"] is not None and man["fwhm_q"] is not None
+        with h5py.File(str(h5), "r") as fh:
+            g = fh["ml/candidates"]
+            assert np.isfinite(np.asarray(g.attrs["fwhm_q_poly"])).all()
+            assert np.isfinite(float(g.attrs["fwhm_q"]))
+        rc = mr.read_candidates(h5)
+        assert rc["ok"] and "Au" in rc["shortlist"]
+
+
 def test_validity_ceiling():
     """eos['p_max'] caps identification's pressure search and the scorers'
     candidate pressures — a stability-limited phase (NaCl-B1, Si) can't be fit
@@ -558,6 +620,7 @@ def main() -> None:
     test_q_constant_widths()
     test_truncation_both_ends()
     test_estimate_fwhm_q()
+    test_resolution_curve_fit()
     test_validity_ceiling()
     test_load_cif_corpus()
     test_train_export_rank_roundtrip()

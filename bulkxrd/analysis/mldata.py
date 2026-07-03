@@ -39,21 +39,48 @@ def make_d_grid(d_min: float = D_MIN, d_max: float = D_MAX,
     return np.linspace(float(d_min), float(d_max), int(n_points))
 
 
+def resolution_curve(coeffs) -> "Any":
+    """A callable ``fwhm_q(q)`` from quadratic coefficients of FWHM²(q).
+
+    ``coeffs = (c2, c1, c0)`` parameterise ``FWHM_q²(q) = c2·q² + c1·q + c0`` —
+    the q-space analog of a Caglioti resolution function (which is quadratic in
+    tanθ; over a synchrotron DAC's small angular range a low-order polynomial in
+    q is the standard empirical smooth model). The returned callable clips the
+    polynomial at a small positive floor so a fit that dips negative at the
+    range edge can never produce zero/imaginary widths.
+    """
+    c2, c1, c0 = (float(x) for x in coeffs)
+
+    def fwhm_q(q):
+        v = np.clip(c2 * np.square(q) + c1 * np.asarray(q, float) + c0,
+                    1e-8, None)
+        return np.sqrt(v)
+
+    fwhm_q.coeffs = (c2, c1, c0)          # serialisable provenance
+    return fwhm_q
+
+
 def peak_fwhm_d(centers, *, fwhm_d: "Optional[float]" = None,
-                fwhm_q: "Optional[float]" = None) -> np.ndarray:
+                fwhm_q=None) -> np.ndarray:
     """Per-peak FWHM in d (Å) for reflections at ``centers`` (d-spacings, Å).
 
     Instrument resolution is roughly constant in q, not in d (the same reason
-    the pipeline fits in q). Since d = 2π/q, a constant width Δq maps to
+    the pipeline fits in q). Since d = 2π/q, a width Δq maps to
     ``Δd = d²·Δq/(2π)`` — a peak at d = 8 Å is ~30× wider on the d-grid than one
     at d = 1.5 Å. Simulating every peak with one constant ``fwhm_d`` therefore
     builds a width profile no q-uniform instrument produces (a sim-to-real gap
     in the very representation the scorer compares).
 
-    ``fwhm_q`` (Å⁻¹) takes precedence and gives the physical q-constant widths;
-    ``fwhm_d`` (Å) is the legacy constant-in-d fallback.
+    ``fwhm_q`` takes precedence over the legacy constant-in-d ``fwhm_d`` and may
+    be a scalar (Å⁻¹, constant resolution) or a callable ``fwhm_q(q)`` — e.g.
+    :func:`resolution_curve` fitted from the measured Step-2 peaks — evaluated
+    per peak at q = 2π/d.
     """
     c = np.asarray(centers, dtype=float)
+    if callable(fwhm_q):
+        with np.errstate(divide="ignore"):
+            q = np.where(c > 0, 2.0 * np.pi / c, np.inf)
+        return (c * c) * (np.asarray(fwhm_q(q), float) / (2.0 * np.pi))
     if fwhm_q is not None and fwhm_q > 0:
         return (c * c) * (float(fwhm_q) / (2.0 * np.pi))
     return np.full(c.shape, float(fwhm_d if fwhm_d else 0.03))
