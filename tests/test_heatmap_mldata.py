@@ -165,9 +165,10 @@ def test_tracks_layers_and_export():
 def test_export_fit_and_residual_channels():
     """export_ml_dataset accepts every ml_features source — notably 'fit' (the
     channel Step 2 actually fit, resolved via /peaks.attrs) and 'residual' —
-    and records the resolved channel names. Runs without pymatgen."""
+    and records the resolved channel names. Runs with or without pymatgen
+    (the fixture simulates reflections only when pymatgen is present)."""
     import h5py
-    au = ph.Phase(name="Au", eos={"type": "BM3", "K0": 167, "K0p": 5.0})
+    au = ph.load_bundled()["Au"]
     with tempfile.TemporaryDirectory() as td:
         h5 = Path(td) / "a.h5"
         _build_analysis(h5, au)

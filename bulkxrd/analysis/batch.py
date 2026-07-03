@@ -131,10 +131,15 @@ def _run(args) -> int:
         # Remove identified phases and re-fit the residual (Step 3a removal), so a
         # headless run produces the same /residual the GUI/worker does.
         from .residual import run_residual
-        run_residual(
+        mres = run_residual(
             analysis_path, phases,
             seen_conf=args.seen_conf, rel_tol=args.rel_tol, min_snr=(args.min_snr or 5.0),
             min_matched=args.min_matched, allow_sparse=args.allow_sparse)
+
+        # Step 3c: coherent-track clustering of whatever the knowns didn't explain.
+        if not args.no_unknowns and mres.get("n_residual_peaks"):
+            from .unknowns import run_unknowns
+            run_unknowns(analysis_path)
 
     if args.ml_export:
         from .mldata import export_ml_dataset
@@ -213,6 +218,8 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="Ignore /frames/temperature (skip the thermal-expansion seam).")
     p.add_argument("--allow-sparse", action="store_true",
                    help="Permit phases below --min-matched to be subtracted in the residual.")
+    p.add_argument("--no-unknowns", action="store_true",
+                   help="Skip Step 3c (co-occurrence clustering of residual peaks).")
     # Step 3b proposer
     p.add_argument("--ml-rank", action="store_true",
                    help="Rank the whole library per frame (deterministic cosine vs simulated "

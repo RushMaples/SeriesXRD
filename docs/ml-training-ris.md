@@ -251,6 +251,13 @@ The labels CSV is `filename,phases` (`;`-separated for multi-phase rows), and
 the label names must exist in the workspace library (import the corresponding
 structures first — the benchmark measures the scorer, not library coverage).
 
+A ready-made real-data example: `examples/fetch_benchmark_example.sh` pulls 8
+measured lab patterns + 18 reference CIFs (Li-Mn-Ti-O-F space, incl. three
+multi-phase mixtures and polymorph decoys) from the open XRD-AutoAnalyzer
+repository with a pre-built labels CSV. Verified baseline on this set:
+**cosine hit@1 = 1.000, MRR = 1.000, identify hit rate = 1.000** — the number a
+trained scorer must not fall below.
+
 **Gate B — your own known-truth run.** Run both scorers over an analysis file
 whose ground truth you know (e.g. your marker + gasket run):
 

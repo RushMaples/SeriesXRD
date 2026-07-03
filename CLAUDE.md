@@ -45,6 +45,12 @@ bulkxrd/
                     the gate a trained scorer must pass vs the cosine baseline
     corpus.py       training-only CIF corpus tooling (bulkxrd-corpus fetch/screen:
                     COD download by ID; parse/dedupe/size-screen -> manifest)
+    unknowns.py     Step 3c — DONE: residual peaks -> coherent tracks (gap-tolerant
+                    one-to-one linking) -> co-occurrence clusters (/unknowns) with
+                    per-cluster d-fingerprints + transition-candidate frames
+    microstructure.py  Williamson-Hall size/strain per frame (esd-weighted,
+                    dq = 2piK/D + 2*eps*q; instrument profile optional and the
+                    output is flagged uncorrected without one)
     categorization.py  user's workflow spec (read-only notes)
   app.py         top-level launcher that embeds all stages
 tests/
@@ -268,7 +274,10 @@ Step 3 compound ID:
         wrong P / absent (neg); `bulkxrd-ml-train` CLI → TorchScript → TorchScorer;
         train on WashU RIS with pip install -e .[phases,ml]). Untrained-on-real-data;
         deterministic cosine stays the default until a trained model is validated.
-    3c  TODO  Unknown clustering (co-occurrence of unmatched peak tracks)
+    3c  DONE  Unknown clustering (unknowns.py): residual peaks -> gap-tolerant
+              track linking -> Jaccard co-occurrence clusters -> /unknowns with
+              d-fingerprints; runs automatically after the residual in
+              worker/batch (--no-unknowns to skip)
 → per-substance heatmaps (pressure vs frame, filterable by phase)
 ```
 
