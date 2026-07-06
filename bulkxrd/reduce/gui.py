@@ -1,10 +1,17 @@
-"""Tabbed Tkinter GUI for the batch reduction stage (initial view).
+"""Tabbed Tkinter GUI for the batch reduction stage.
+
+This is stage 2 of the pipeline: calibrate (calib/gui.py) -> accept a PONI ->
+reduce (this stage) -> analysis (analysis/gui.py). Accepting a calibration
+fills in the Calibration tab below automatically; a finished reduction here
+hands its output HDF5 to the analysis stage the same way.
 
 Workflow left-to-right across tabs:
     1 Calibration — the accepted calibration (auto-filled; import a prior run optionally)
-    2 Dataset   — pick the frame folder, preview the file list
-    3 Settings  — integration parameters
-    4 Run       — launch the crash-isolated worker, watch progress + log
+    2 Dataset     — pick the frame folder, preview the file list
+    3 Settings    — integration parameters
+    4 Run         — launch the crash-isolated worker, watch progress + log
+    5 Review      — inspect the reduced HDF5 before handing it to analysis
+    6 Gallery     — per-frame cake/1D thumbnails; click to exclude bad frames
 
 Same supervision model as calib/gui.py: pyFAI runs in reduce/worker.py as a
 subprocess; this process never imports pyFAI.
@@ -34,27 +41,27 @@ def _tk_imports():
 
 
 HELP = {
-    "handoff_file":   "The accepted calibration (PONI + mask) for this reduction. Auto-filled when you accept a calibration; or import a previous run.",
+    "handoff_file":   "The accepted calibration (PONI + mask) this reduction uses. Auto-fills when you accept a calibration on the Calibration stage; use Import to pull one from an earlier run.",
     "dataset_dir":    "Folder containing the sample dataset frames to integrate.",
     "file_patterns":  "Semicolon-separated glob patterns, e.g. *.tif;*.edf",
-    "npt_1d":         ("Number of bins in the 1D intensity pattern. Leave BLANK for auto: "
-                       "~1 bin per pixel of radial extent from the detector geometry "
-                       "(pyFAI rule of thumb). Too few bins under-samples sharp peaks — "
-                       "patterns look stepped and peak fitting degrades."),
+    "npt_1d":         ("Number of bins in the 1D intensity pattern. Leave blank for auto: about 1 bin "
+                       "per pixel of radial extent from the detector geometry (pyFAI's rule of thumb). "
+                       "Too few bins under-samples sharp peaks, so patterns look stepped and peak "
+                       "fitting degrades."),
     "method":         "pyFAI 1D integration method. csr is fast after the first frame.",
-    "robust_1d":      ("Also compute a spot-suppressed pattern: the mean of a narrow azimuthal "
-                       "quantile band around the median. Rejects diamond single-crystal spots "
-                       "like a median, without the median's integer-count quantization."),
-    "robust_quant_halfwidth": ("Half-width of the azimuthal quantile band averaged for the robust "
-                               "pattern: 0.05 = the 45–55% band (default). 0 = pure median — beware: "
-                               "on integer photon counts a pure median is QUANTIZED, so low-intensity "
-                               "patterns render as staircases and clean/baseline inherit the steps."),
-    "sigmaclip_1d":   "Also compute an azimuthal sigma-clipped (trimmed-mean) pattern: rejects diamond spots like the median but keeps azimuthally-sparse real sample peaks (textured/incomplete rings). The recommended Step-2 fit source.",
-    "save_cakes":     "Also save 2D cakes (larger output file; needed for azimuthal analysis).",
+    "robust_1d":      ("Also computes a spot-suppressed pattern: the mean of a narrow azimuthal "
+                       "quantile band around the median. Rejects diamond spots like a median does, "
+                       "but without the median's integer-count quantization."),
+    "robust_quant_halfwidth": ("Half-width of the azimuthal quantile band the robust pattern averages "
+                               "over. Default 0.05 = the 45-55% band. Set to 0 for a pure median: on "
+                               "integer photon counts that quantizes, so low-intensity patterns render "
+                               "as staircases and clean/baseline inherit the steps."),
+    "sigmaclip_1d":   "Also computes an azimuthal sigma-clipped (trimmed-mean) pattern. Rejects diamond spots like the median does, but keeps real peaks on sparse/textured rings that a median would drop. This is the recommended fit source for Step 2 peak fitting.",
+    "save_cakes":     "Also saves 2D cakes. Increases the output file size; needed for azimuthal analysis.",
     "cake_every":     "Save a cake for every Nth frame only, to bound file size.",
     "num_workers":    "Parallel worker processes. 0 = automatic (CPU count - 1).",
-    "make_thumbnails": "Render a small cake+1D preview per frame during reduction for the Gallery tab. Turn off for very large datasets to save time/disk.",
-    "reduced_h5_file": "A reduced_*.h5 produced by a reduction run. Inspect it before analysis.",
+    "make_thumbnails": "Renders a small cake+1D preview per frame during reduction, for the Gallery tab. Turn off for very large datasets to save time and disk space.",
+    "reduced_h5_file": "A reduced_*.h5 produced by a reduction run. Inspect it here before handing it to the Analysis stage.",
 }
 
 
@@ -340,9 +347,9 @@ class ReductionApp:
     def _tab_calibration(self, frame):
         ttk = self.ttk
         self.field(frame, "handoff_file", "Active calibration", browse=None, row=0)
-        ttk.Label(frame, text="The accepted calibration (PONI + mask) used for this reduction. "
-                  "It fills in automatically when you accept a calibration on the Calibration tab. "
-                  "To reduce data from an earlier session, import a previous run.",
+        ttk.Label(frame, text="The accepted calibration (PONI + mask) this reduction uses. "
+                  "It fills in automatically when you accept a calibration in the Calibration stage. "
+                  "To reduce data against a calibration from an earlier session, import its handoff file.",
                   foreground=MUTED, wraplength=640, justify="left").grid(
                   row=1, column=0, columnspan=3, sticky="w", padx=4)
         btns = ttk.Frame(frame)
