@@ -23,7 +23,7 @@ on disk plus a shared workspace folder:
    separation (Step 1), pseudo-Voigt peak fitting (Step 2), pressure-aware
    EOS phase identification + residual removal (Step 3a), and the ML
    candidate-ranking seam (Step 3b: deterministic cosine ranker by default,
-   optional learned scorer — see `docs/ml-training-ris.md`).
+   optional learned scorer — see `docs/ml-training.md`).
 
 The calib→reduce handoff JSON is an internal artifact written to the workspace
 and automatically loaded by the Reduction tab — users do not need to manage it
@@ -134,9 +134,9 @@ bulkxrd-analyze reduced.h5 --ml-rank               # candidate-free: rank whole 
 bulkxrd-ml-train --workspace <dir> --out scorer.pt # train the learned scorer
 ```
 
-Training the Step-3b learned scorer (data collection, WashU RIS setup, LSF
-jobs, validation, deployment) is documented in
-[`docs/ml-training-ris.md`](docs/ml-training-ris.md).
+Training the Step-3b learned scorer (data collection, environment setup,
+corpus building, validation gates, deployment) is documented in
+[`docs/ml-training.md`](docs/ml-training.md).
 
 ## Tests
 
@@ -144,6 +144,14 @@ jobs, validation, deployment) is documented in
 python tests/test_imports.py   # all modules import cleanly
 python tests/smoke_test.py     # headless config round-trip (no pyFAI/display needed)
 ```
+
+## Documentation
+
+- [`docs/workflow.md`](docs/workflow.md) — end-to-end analysis workflow.
+- [`docs/ml-training.md`](docs/ml-training.md) — training, validating, and
+  deploying the Step-3b learned scorer (cluster-agnostic).
+- [`docs/ml-training-ris.md`](docs/ml-training-ris.md) — WashU RIS-specific
+  addendum (LSF jobs, storage paths).
 
 ## Roadmap
 

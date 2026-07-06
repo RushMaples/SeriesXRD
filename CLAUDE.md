@@ -251,7 +251,8 @@ truncation, noise) on the same grid.
   (no train/val mixture leakage); reflections are simulated once, not per epoch.
 - A trained scorer is used via `--ml-scorer torch:<model.pt>` (batch), the `ml_scorer`
   worker-config key, or `rank_candidates(scorer=...)`. Full training/deployment guide:
-  `docs/ml-training-ris.md`.
+  `docs/ml-training.md` (cluster-agnostic; `docs/ml-training-ris.md` is a short
+  WashU-RIS-specific addendum).
 
 All HDF5 writes are atomic: `.tmp` file + `os.replace`.
 
