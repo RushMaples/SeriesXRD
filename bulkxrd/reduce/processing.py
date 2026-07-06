@@ -125,7 +125,8 @@ def _named_params(fn) -> "set":
 
 
 def _robust_integrate(ai, image, npt: int, mask, unit: str,
-                      quant_halfwidth: float) -> "Tuple[Any, str]":
+                      quant_halfwidth: float,
+                      azimuth_range=None) -> "Tuple[Any, str]":
     """The spot-suppressed 'robust' 1D pattern; returns ``(result, estimator)``.
 
     A pure azimuthal MEDIAN of integer photon counts can only take integer /
@@ -146,6 +147,7 @@ def _robust_integrate(ai, image, npt: int, mask, unit: str,
     h = float(quant_halfwidth or 0.0)
     lo = round(max(0.0, 0.5 - h), 6)
     hi = round(min(1.0, 0.5 + h), 6)
+    extra = {"azimuth_range": azimuth_range} if azimuth_range else {}
     ng = getattr(ai, "medfilt1d_ng", None)
     if h > 0:
         if ng is not None:
@@ -154,26 +156,27 @@ def _robust_integrate(ai, image, npt: int, mask, unit: str,
             if {"quant_min", "quant_max"} <= params:
                 try:
                     return (ng(image, npt, mask=mask, unit=unit,
-                               quant_min=lo, quant_max=hi), band)
+                               quant_min=lo, quant_max=hi, **extra), band)
                 except TypeError:
                     pass
             elif "quantile" in params:
                 try:
                     return (ng(image, npt, mask=mask, unit=unit,
-                               quantile=(lo, hi)), band)
+                               quantile=(lo, hi), **extra), band)
                 except TypeError:
                     pass
         mf = getattr(ai, "medfilt1d", None)
         if mf is not None:
             try:
                 pct = (round(100.0 * lo, 4), round(100.0 * hi, 4))
-                return (mf(image, npt, mask=mask, unit=unit, percentile=pct),
+                return (mf(image, npt, mask=mask, unit=unit, percentile=pct,
+                           **extra),
                         f"percentile_band({pct[0]:.0f}-{pct[1]:.0f})")
             except TypeError:
                 pass
     medfilt = ng or ai.medfilt1d
     est = "median" if h <= 0 else "median(band_unsupported)"
-    return medfilt(image, npt, mask=mask, unit=unit), est
+    return medfilt(image, npt, mask=mask, unit=unit, **extra), est
 
 
 def _integrate_one(task: "Tuple[int, str, bool]") -> Dict[str, Any]:
@@ -186,9 +189,11 @@ def _integrate_one(task: "Tuple[int, str, bool]") -> Dict[str, Any]:
         image = read_detector_image(file_str)
         if mask is not None and mask.shape != image.shape:
             raise ValueError(f"mask shape {mask.shape} != image shape {image.shape}")
+        az_range = s.get("azimuth_range")     # optional (min°, max°) sector
         res = ai.integrate1d(
             image, int(s["npt_1d"]), mask=mask, unit=s["unit"],
             method=s["method"], polarization_factor=s.get("polarization_factor"),
+            azimuth_range=az_range,
         )
         out: Dict[str, Any] = {
             "index": index, "file": file_str, "ok": True, "error": "",
@@ -201,7 +206,8 @@ def _integrate_one(task: "Tuple[int, str, bool]") -> Dict[str, Any]:
             try:
                 rres, est = _robust_integrate(
                     ai, image, int(s["npt_1d"]), mask, s["unit"],
-                    float(s.get("robust_quant_halfwidth", 0.05) or 0.0))
+                    float(s.get("robust_quant_halfwidth", 0.05) or 0.0),
+                    azimuth_range=az_range)
                 out["intensity_robust"] = np.asarray(rres.intensity)
                 out["robust_estimator"] = est
             except Exception as e:
@@ -219,10 +225,12 @@ def _integrate_one(task: "Tuple[int, str, bool]") -> Dict[str, Any]:
                     raise AttributeError("AzimuthalIntegrator has no sigma_clip_ng/sigma_clip")
                 thr = float(s.get("sigmaclip_thresh", 3.0) or 3.0)
                 mit = int(s.get("sigmaclip_maxiter", 5) or 5)
+                az_kw = {"azimuth_range": az_range} if az_range else {}
                 try:
                     sres = sclip(image, int(s["npt_1d"]), mask=mask, unit=s["unit"],
                                  error_model="azimuthal", thres=thr, max_iter=mit,
-                                 polarization_factor=s.get("polarization_factor"))
+                                 polarization_factor=s.get("polarization_factor"),
+                                 **az_kw)
                 except TypeError:
                     # Older signature: no error_model/polarization kwargs.
                     sres = sclip(image, int(s["npt_1d"]), mask=mask, unit=s["unit"],
@@ -299,15 +307,23 @@ def _resolve_npt_1d(raw_npt, poni_file, first_image_file
 
     if explicit:
         npt = int(float(raw))
+        # Always show the comparison (a stale explicit value in an old workspace
+        # config is indistinguishable from a deliberate choice otherwise).
+        print(f"[REDUCE] npt_1d={npt} (explicit; geometry suggests "
+              f"~{suggested if suggested else '?'})", flush=True)
         if suggested and npt < 0.7 * suggested:
-            print(f"[REDUCE] WARNING: npt_1d={npt} but the detector geometry "
-                  f"suggests ~{suggested} bins (~1/pixel of radial extent). "
+            print(f"[REDUCE] WARNING: npt_1d={npt} is well below the geometric "
+                  f"suggestion ~{suggested} (~1 bin/pixel of radial extent). "
                   f"Under-sampled peaks look stepped and fit poorly — leave "
                   f"'1D bins' blank to use the suggestion.", flush=True)
         return npt, suggested, "explicit"
     if suggested:
-        print(f"[REDUCE] npt_1d auto -> {suggested} (from detector geometry)", flush=True)
+        print(f"[REDUCE] npt_1d auto -> {suggested} (from detector geometry). "
+              f"NOTE: this is ~1 bin/pixel — if Step 2 later reports "
+              f"undersampled peaks (median FWHM < 4 bins), re-reduce with its "
+              f"recommended npt_1d.", flush=True)
         return suggested, suggested, "auto"
+    print("[REDUCE] npt_1d fallback -> 1500 (geometry unreadable)", flush=True)
     return 1500, None, "fallback"
 
 
@@ -334,8 +350,30 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
 
     npt_1d, npt_suggested, npt_mode = _resolve_npt_1d(
         config.get("npt_1d", ""), handoff.accepted_poni, files[0])
+    def _parse_az(v):
+        """'min,max' / (min, max) in degrees → tuple, else None (full azimuth)."""
+        if v in (None, "", (), []):
+            return None
+        try:
+            if isinstance(v, str):
+                a, b = (float(x) for x in v.replace(";", ",").split(",")[:2])
+            else:
+                a, b = float(v[0]), float(v[1])
+            return (a, b) if b > a else None
+        except (TypeError, ValueError, IndexError):
+            print(f"[REDUCE] WARNING: unparseable azimuth_range {v!r} — using "
+                  f"the full azimuth.", flush=True)
+            return None
+
     settings = {
         "npt_1d": npt_1d,
+        # Optional azimuthal sector (deg) applied to ALL 1D channels alike —
+        # mean/robust/sigmaclip must see the same pixels or spot_residual =
+        # mean − robust becomes meaningless. Cakes stay full-azimuth (they are
+        # the waviness/texture diagnostic). Useful stopgap for wavy rings when
+        # re-calibration isn't possible; needs a pyFAI whose robust integrators
+        # accept azimuth_range.
+        "azimuth_range": _parse_az(config.get("azimuth_range", "")),
         # Default q: the analysis stage is designed around q (peak widths
         # ~constant in q; d-conversion is wavelength-free). 2th_deg is honoured
         # when a session explicitly selects it.

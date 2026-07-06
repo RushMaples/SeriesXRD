@@ -80,7 +80,30 @@ def main() -> None:
     _test_winsorize_and_sources()
     _test_auto_fit_range()
     _test_esd_columns()
+    _test_group_size_cap()
     print("PEAKS TEST OK")
+
+
+def _test_group_size_cap():
+    """A chain of overlapping candidates must be split at its widest gaps
+    instead of forming one unbounded joint fit (which effectively hangs —
+    observed on noisy detections with sensitive thresholds)."""
+    from bulkxrd.analysis.peaks import _group_peaks, MAX_GROUP_SIZE
+    cands = [{"center": 1.0 + 0.05 * i, "amplitude": 10.0, "fwhm": 0.05}
+             for i in range(40)]                        # windows all chain
+    groups = _group_peaks(cands, window_factor=3.0)
+    assert sum(len(g) for g in groups) == 40            # nothing lost
+    assert max(len(g) for g in groups) <= MAX_GROUP_SIZE
+    flat = [c["center"] for g in groups for c in g]
+    assert flat == sorted(flat)                         # order preserved
+    # Small groups pass through untouched.
+    g2 = _group_peaks(cands[:3], window_factor=3.0)
+    assert len(g2) == 1 and len(g2[0]) == 3
+    # Splits prefer the widest internal gap.
+    uneven = ([{"center": 1.0 + 0.02 * i, "amplitude": 1, "fwhm": 0.05} for i in range(8)]
+              + [{"center": 1.5 + 0.02 * i, "amplitude": 1, "fwhm": 0.05} for i in range(8)])
+    gs = _group_peaks(uneven, window_factor=3.0, max_group_size=10)
+    assert len(gs) == 2 and len(gs[0]) == 8 and len(gs[1]) == 8
 
 
 def _test_esd_columns():

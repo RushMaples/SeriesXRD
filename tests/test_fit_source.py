@@ -107,7 +107,54 @@ def main() -> None:
     # sigmaclip view errors cleanly when the channel is absent.
     assert not pattern_image(ana2, source="sigmaclip")["ok"]
 
+    # A normal powder must NOT be flagged spotty (the diagnosis is data-driven,
+    # not biased toward coarse-grained samples).
+    with h5py.File(ana, "r") as h:
+        assert not bool(h.attrs["spotty_sample"]), h.attrs["signal_frac_clean"]
+
+    _test_spotty_sample_auto_source(td, q, rng)
     print("FIT SOURCE TEST OK")
+
+
+def _test_spotty_sample_auto_source(td, q, rng):
+    """Coarse-grained/near-single-crystal sample: ALL Bragg intensity lives in
+    azimuthal spots, so the median AND sigma-clip channels hold only background.
+    Step 1 must diagnose it (spotty_sample attr) and Step 2's auto source must
+    fall through to 'mean' — with narrow peaks also triggering the measured
+    undersampling feedback (npt recommendation)."""
+    N, nb = 4, q.size
+    bg = 60 + 30 * np.exp(-q / 2.0)
+    sample = (pseudo_voigt(q, 2.1, 300, 0.012, 0.4)      # sharp: ~3 bins FWHM
+              + pseudo_voigt(q, 2.9, 220, 0.012, 0.4)
+              + pseudo_voigt(q, 4.1, 260, 0.012, 0.4))
+    robust_s = np.array([bg + rng.normal(0, 1.5, nb) for _ in range(N)])
+    sigma_s = np.array([bg + rng.normal(0, 1.5, nb) for _ in range(N)])
+    mean_s = np.array([bg + sample + rng.normal(0, 1.5, nb) for _ in range(N)])
+    red = td / "reduced_spotty.h5"
+    _write_reduced(red, q, mean_s, robust_s, sigma_s)
+
+    m1 = run_background_separation(red, td / "an_spotty.h5",
+                                   max_half_window=40, n_passes=1)
+    assert m1["spotty_sample"] is True, m1["signal_frac_clean"]
+    ana = Path(m1["out_h5"])
+    with h5py.File(ana, "r") as h:
+        assert bool(h.attrs["spotty_sample"])
+        assert float(h.attrs["signal_frac_clean"]) < 0.5
+
+    m2 = run_peak_fitting(ana, None, source="auto", sensitivity="normal")
+    with h5py.File(ana, "r") as h:
+        assert h["peaks"].attrs["source"] == "mean", h["peaks"].attrs["source"]
+    assert _has_good_peak(ana, 2.9), "auto->mean must recover the spotty sample"
+    # Measured-sampling feedback: ~3-bin peaks -> concrete re-reduce advice.
+    assert m2["median_fwhm_bins"] < 4.0
+    assert m2["npt_recommended"] and m2["npt_recommended"] > q.size
+
+    # An EXPLICIT source is never overridden by the diagnosis.
+    a2 = td / "an_spotty_clean.h5"
+    shutil.copy2(ana, a2)
+    run_peak_fitting(a2, None, source="clean", sensitivity="normal")
+    with h5py.File(a2, "r") as h:
+        assert h["peaks"].attrs["source"] == "clean"
 
 
 if __name__ == "__main__":

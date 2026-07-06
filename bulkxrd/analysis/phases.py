@@ -481,9 +481,13 @@ def volume_at_pressure(P: float, V0: float, K0: float, K0p: float,
 
 
 def has_axial_eos(phase: Phase) -> bool:
-    """True if the phase carries a per-axis (anisotropic) EOS for ≥1 axis."""
+    """True if the phase carries a per-axis (anisotropic) pressure response for
+    ≥1 axis — either a BM-style axial EOS (``K0``) or a signed linear
+    expansivity (``beta``, see :func:`axial_scales`)."""
     ax = getattr(phase, "axial_eos", None) or {}
-    return any(isinstance(ax.get(k), dict) and ax[k].get("K0") for k in ("a", "b", "c"))
+    return any(isinstance(ax.get(k), dict)
+               and (ax[k].get("K0") or ax[k].get("beta") is not None)
+               for k in ("a", "b", "c"))
 
 
 def has_pressure_dof(phase: Phase) -> bool:
@@ -552,6 +556,13 @@ def axial_scales(phase: Phase, pressure_gpa: float) -> "tuple":
     so the linear scale is ``compression(axial_eos[axis], P)**(1/3)``. Axes with
     no axial EOS fall back to the isotropic volume scale (and a symmetry-equal
     second axis, e.g. b=a for hexagonal/tetragonal, inherits the a-axis scale).
+
+    An axis may instead carry a SIGNED linear expansivity: ``{"beta": β}`` with
+    ``β = d(ln x)/dP`` in 1/GPa — the scale is ``exp(β·P)`` ≈ ``1 + β·P``.
+    ``β > 0`` expands under pressure (negative linear compressibility, e.g. the
+    UOTe c-axis; a BM form cannot represent that because K0 must be positive)
+    and ``β < 0`` is a soft linear alternative to a full axial EOS. ``beta``
+    takes precedence over ``K0`` when both are present.
     """
     if pressure_gpa <= 0:
         return (1.0, 1.0, 1.0)
@@ -561,6 +572,11 @@ def axial_scales(phase: Phase, pressure_gpa: float) -> "tuple":
 
     def _axis(key: str, fallback: float) -> float:
         e = ax.get(key)
+        if isinstance(e, dict) and e.get("beta") is not None:
+            try:
+                return float(math.exp(float(e["beta"]) * float(pressure_gpa)))
+            except (TypeError, ValueError):
+                return fallback
         if isinstance(e, dict) and e.get("K0"):
             return compression_at_pressure(e, float(pressure_gpa)) ** (1.0 / 3.0)
         return fallback

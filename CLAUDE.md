@@ -16,12 +16,16 @@ bulkxrd/
   guikit/        theme, tkstyle, tooltip, dpi — shared Tkinter helpers
   calib/         calibration stage (pyFAI geometry refinement, Dioptas-style GUI)
   reduce/        reduction stage (azimuthal integration → HDF5)
-    processing.py   pure logic (pyFAI integrate1d / integrate2d)
+    processing.py   pure logic (pyFAI integrate1d / integrate2d; optional
+                    azimuth_range sector applied to ALL 1D channels alike)
     worker.py       crash-isolated subprocess
     gui.py          embeddable Tkinter pane
     run_gui.py      CLI entry
     session.py      config seeding
     review.py       read-only reduced-HDF5 inspector + gallery frame metadata
+    straighten.py   cake-waviness diagnosis (sample-off-calibrant offset →
+                    double-horned 1D peaks) + straightened-1D rescue channel
+                    (straighten_reduced → /patterns/intensity_straightened)
   analysis/      analysis stage (THIS IS THE ACTIVE WORK)
     background.py   Step 1 — DONE (also carries /frames pressure/temp/timestamp)
     peaks.py        Step 2 — DONE
@@ -35,6 +39,18 @@ bulkxrd/
     ml_rank.py      Step 3b — candidate ranker (ML proposes, physics verifies)
     ml_scorer.py    Step 3b — scorer seam: CosineScorer default; TorchScorer adapter (bulkxrd[ml])
     ml_train.py     Step 3b — learned-scorer training (bulkxrd-ml-train CLI; torch lazy)
+    benchmark.py    known-truth harness (bulkxrd-benchmark): ingest labelled XY
+                    patterns (RRUFF/opXRD) through the REAL Step-1/2 preprocessing,
+                    score any scorer vs labels (hit@1/hit@K/MRR + identify verify) —
+                    the gate a trained scorer must pass vs the cosine baseline
+    corpus.py       training-only CIF corpus tooling (bulkxrd-corpus fetch/screen:
+                    COD download by ID; parse/dedupe/size-screen -> manifest)
+    unknowns.py     Step 3c — DONE: residual peaks -> coherent tracks (gap-tolerant
+                    one-to-one linking) -> co-occurrence clusters (/unknowns) with
+                    per-cluster d-fingerprints + transition-candidate frames
+    microstructure.py  Williamson-Hall size/strain per frame (esd-weighted,
+                    dq = 2piK/D + 2*eps*q; instrument profile optional and the
+                    output is flagged uncorrected without one)
     categorization.py  user's workflow spec (read-only notes)
   app.py         top-level launcher that embeds all stages
 tests/
@@ -84,7 +100,11 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
 ### Analysis HDF5 (output of `analysis/background.py` Step 1)
 
 ```
-/  attrs: schema_version="1", source_reduced, unit, max_half_window, n_passes, use_lls, has_sigmaclip
+/  attrs: schema_version="1", source_reduced, unit, max_half_window, n_passes, use_lls,
+          has_sigmaclip, signal_frac_clean + spotty_sample (Step-1 channel diagnosis: a
+          coarse-grained sample whose Bragg signal the azimuthal median rejects →
+          Step-2 source="auto" falls through to "mean"), npt_1d/npt_1d_mode/
+          npt_1d_suggested (binning provenance carried from the reduced file)
 /radial                      (N_bins,)
 /frames/filename             (N,)   copied from reduced
 /frames/contamination        (N,)   integrated positive spot residual per frame
@@ -160,6 +180,9 @@ and **intensity-aware** (a soft factor `1 − intensity_k·(1 − intensity_corr
 volumetric CTE) + `/frames/temperature` scale predicted d's isotropically
 (`phases.thermal_scale`, consumed by identify/residual/heatmap; ML simulators stay
 pressure-only) — the ambient-pressure temperature-series analog of the EOS.
+**Signed axial expansivity**: an `axial_eos` axis may carry `{"beta": d(ln x)/dP}`
+instead of a BM `K0` — `beta > 0` = the axis EXPANDS under pressure (negative linear
+compressibility, e.g. the UOTe c-axis), which no positive-K0 BM form can represent.
 
 `run_residual` runs automatically after `run_identification` in the worker. It reuses
 the cached `/identify/<phase>/refl_d`+`refl_hkl` and `predicted_d` (same compression
@@ -208,9 +231,12 @@ truncation, noise) on the same grid.
 
 **Simulation physics conventions (post ML-readiness review):**
 - **Peak widths are q-constant, not d-constant** (`mldata.peak_fwhm_d`): resolution is
-  ~constant in q, so per-peak `Δd = d²·Δq/2π`. `rank_candidates(fwhm_q="auto")` measures
-  Δq from the Step-2 fitted peaks (`ml_rank.estimate_fwhm_q`); constant `fwhm_d` is the
-  fallback when too few good peaks exist. Recorded in `/ml/candidates` attrs.
+  ~constant in q, so per-peak `Δd = d²·Δq/2π`. `rank_candidates(fwhm_q="auto")` fits the
+  smooth resolution CURVE `FWHM_q²(q)` from the Step-2 peaks (`ml_rank.fit_resolution`,
+  q-space Caglioti analog; `mldata.resolution_curve` builds the callable), falling back
+  to the median Δq (`estimate_fwhm_q`), then constant `fwhm_d`. Provenance in
+  `/ml/candidates` attrs: `fwhm_q` (median scalar) + `fwhm_q_poly` (c2, c1, c0; NaN =
+  scalar/legacy width was used). Scorers accept scalar-or-callable `fwhm_q`.
 - **One pressure per simulated mixture** (`ml_simulate.draw_mixture_pressures`): all
   phases of a training mixture share a single pressure, as in a real DAC frame
   (independent per-phase pressures taught the scorer an unphysical manifold).
@@ -248,7 +274,10 @@ Step 3 compound ID:
         wrong P / absent (neg); `bulkxrd-ml-train` CLI → TorchScript → TorchScorer;
         train on WashU RIS with pip install -e .[phases,ml]). Untrained-on-real-data;
         deterministic cosine stays the default until a trained model is validated.
-    3c  TODO  Unknown clustering (co-occurrence of unmatched peak tracks)
+    3c  DONE  Unknown clustering (unknowns.py): residual peaks -> gap-tolerant
+              track linking -> Jaccard co-occurrence clusters -> /unknowns with
+              d-fingerprints; runs automatically after the residual in
+              worker/batch (--no-unknowns to skip)
 → per-substance heatmaps (pressure vs frame, filterable by phase)
 ```
 
@@ -276,6 +305,9 @@ Key design:
 - **Overlapping peaks**: grouped by window overlap, fitted jointly (sum of pseudo-Voigts + constant baseline), still one scipy least_squares call.
 - **Rejection flags**: `FLAG_LOW_AMP=1, FLAG_BAD_CHI2=2, FLAG_CENTER_DRIFT=4, FLAG_WIDTH_BOUND=8, FLAG_NO_CONVERGE=16`
 - **No JAX**: scipy + vectorized model (numpy broadcasting) handles ~10³ frames in seconds. JAX deferred — needs fixed peak count per batch, heavy dep, rarely the bottleneck.
+- **Bounded joint fits**: `_group_peaks` splits chains longer than `MAX_GROUP_SIZE=12` at their widest gaps — noisy detections used to link the whole pattern into one O(K²) fit that never converged.
+- **Measured-sampling feedback**: after fitting, a median good-peak FWHM < 4 bins triggers a warning with a concrete `npt_1d` re-reduction recommendation (manifest `median_fwhm_bins` / `npt_recommended`) — the geometric ~1 bin/pixel suggestion is necessary, not sufficient, for very sharp peaks.
+- **Spotty-sample seam**: Step 1 records `signal_frac_clean`/`spotty_sample` (where the Bragg signal lives); `source="auto"` falls through to `mean` when the median-based channels rejected the sample itself (coarse-grained/near-single-crystal DAC loads). Data-driven — normal powders are unaffected.
 
 Analytical area: `A·(η·π·Γ/2 + (1−η)·√(π/4ln2)·Γ)` — matches numeric integral to <1%.
 

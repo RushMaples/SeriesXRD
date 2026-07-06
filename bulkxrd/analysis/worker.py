@@ -261,6 +261,18 @@ def run_analysis(cfg: dict) -> dict:
         manifest["step3_residual"] = m3r
         manifest["steps"].append("residual")
 
+        # Step 3c: cluster the residual peaks into coherent unknown-phase
+        # candidates (cheap; skipped when the residual left nothing behind).
+        if _as_bool(cfg.get("run_step3c", True), True) and m3r.get("n_residual_peaks"):
+            from .unknowns import run_unknowns   # local: keeps script-mode bootstrap simple
+            m3c = run_unknowns(
+                out_path,
+                min_track_frames=_as_int(cfg.get("unknown_min_frames"), 3),
+                jaccard_threshold=_as_float(cfg.get("unknown_jaccard"), 0.6),
+            )
+            manifest["step3_unknowns"] = m3c
+            manifest["steps"].append("unknowns")
+
     manifest["analysis_h5_file"] = out_path
     return manifest
 

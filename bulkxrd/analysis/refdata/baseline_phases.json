@@ -324,13 +324,13 @@
         }
       ],
       "eos": {
-        "type": "BM3",
+        "type": "Vinet",
         "V0": 88.967,
         "K0": 1.16,
         "K0p": 8.23
       },
-      "source": "Dewaele, Datchi, Loubeyre & Mezouar (2008), Phys. Rev. B 77, 094106.",
-      "notes": "Solid Ne (FCC) above ~4.8 GPa. Excellent quasi-hydrostatic medium; V0/K0 are EOS-fit extrapolations to zero pressure, not the ambient solid."
+      "source": "Dewaele, Datchi, Loubeyre & Mezouar (2008), Phys. Rev. B 77, 094106 (Vinet cold curve).",
+      "notes": "Solid Ne (FCC) above ~4.8 GPa. Excellent quasi-hydrostatic medium; V0/K0 are EOS-fit extrapolations to zero pressure, not the ambient solid. NOTE: for K0 ~ 1 GPa the EOS FORM matters (BM3 vs Vinet differ ~2-3% in V over 5-15 GPa, ~1% in d) - keep the form matched to the source fit."
     },
     {
       "name": "Ar",

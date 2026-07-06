@@ -111,9 +111,11 @@ class CosineScorer(PhaseScorer):
 
     name = "cosine"
 
-    def __init__(self, fwhm_d: float = 0.03, *, fwhm_q: "Optional[float]" = None):
+    def __init__(self, fwhm_d: float = 0.03, *, fwhm_q=None):
         self.fwhm_d = float(fwhm_d)
-        self.fwhm_q = float(fwhm_q) if fwhm_q else None
+        # Scalar Δq (Å⁻¹) or a callable fwhm_q(q) resolution curve
+        # (mldata.resolution_curve) — peak_fwhm_d handles both.
+        self.fwhm_q = fwhm_q if callable(fwhm_q) else (float(fwhm_q) if fwhm_q else None)
 
     def score(self, meas, phase, refl, d_grid, pressure, *, pressure_grid=None):
         best_s, best_p = 0.0, 0.0
@@ -141,7 +143,7 @@ class TorchScorer(PhaseScorer):
     name = "torch"
 
     def __init__(self, model_path: "str | Path", *, fwhm_d: float = 0.03,
-                 fwhm_q: "Optional[float]" = None, batch_size: int = 256):
+                 fwhm_q=None, batch_size: int = 256):
         try:
             import torch  # noqa: F401  (lazy; optional dependency)
         except ImportError as e:
@@ -160,7 +162,7 @@ class TorchScorer(PhaseScorer):
         self.model = torch.jit.load(str(p), map_location="cpu").eval()
         self.model_path = str(p)
         self.fwhm_d = float(fwhm_d)
-        self.fwhm_q = float(fwhm_q) if fwhm_q else None
+        self.fwhm_q = fwhm_q if callable(fwhm_q) else (float(fwhm_q) if fwhm_q else None)
         self.batch_size = max(1, int(batch_size))
 
     def _simulate(self, phase, P, refl, d_grid) -> np.ndarray:

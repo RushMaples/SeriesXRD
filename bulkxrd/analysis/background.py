@@ -119,6 +119,53 @@ def contamination_score(residual: np.ndarray) -> float:
     return float(np.sum(np.clip(r, 0.0, None)))
 
 
+def _significant_bins(row: np.ndarray, k: float = 8.0) -> int:
+    """Bins standing ``k``×MAD above a row's median — a crude Bragg-signal count."""
+    r = np.asarray(row, float)
+    r = r[np.isfinite(r)]
+    if r.size == 0:
+        return 0
+    med = float(np.median(r))
+    mad = 1.4826 * float(np.median(np.abs(r - med)))
+    if mad <= 0:
+        return 0
+    return int(np.sum(r > med + k * mad))
+
+
+def diagnose_signal_channels(clean: np.ndarray, spots: np.ndarray,
+                             excluded: "Optional[np.ndarray]" = None
+                             ) -> Dict[str, Any]:
+    """Where does the Bragg signal actually live — the spot-suppressed ``clean``
+    or the azimuthal-mean excess?
+
+    For a fine-grained powder the two agree (``signal_frac_clean`` ≈ 1). For a
+    coarse-grained / spotty / near-single-crystal sample the rings are a few
+    azimuthal spots, so the median-based channels reject the SAMPLE itself as
+    outliers: ``clean`` holds only background while the whole pattern sits in
+    ``spot_residual`` (``signal_frac_clean`` → 0). Fitting the default channel
+    then fits noise — the correct source is ``mean``. Returns ``{ok,
+    signal_frac_clean, spotty_sample, n_frames_used}``; the diagnosis is
+    data-driven per dataset (no sample-type assumptions), and undecidable when
+    no frame shows significant bins at all.
+    """
+    n = clean.shape[0]
+    live = (~excluded if excluded is not None and excluded.size == n
+            else np.ones(n, bool))
+    fracs = []
+    for i in np.nonzero(live)[0]:
+        mean_row = clean[i] + spots[i]
+        n_mean = _significant_bins(mean_row)
+        if n_mean < 3:                       # frame carries no clear peaks at all
+            continue
+        fracs.append(_significant_bins(clean[i]) / float(n_mean))
+    if not fracs:
+        return {"ok": False, "signal_frac_clean": float("nan"),
+                "spotty_sample": False, "n_frames_used": 0}
+    frac = float(np.median(fracs))
+    return {"ok": True, "signal_frac_clean": frac,
+            "spotty_sample": bool(frac < 0.5), "n_frames_used": len(fracs)}
+
+
 def separate_background(intensity, intensity_robust,
                         max_half_window: int = 40, n_passes: int = 1,
                         use_lls: bool = True) -> Dict[str, Any]:
@@ -244,6 +291,10 @@ def run_background_separation(
         if isinstance(poni, (bytes, bytearray)):
             poni = poni.decode("utf-8", "replace")
         wavelength = _parse_wavelength(poni)
+        # Binning provenance carried forward so any analysis file shows how the
+        # 1D bin count was chosen (auto/explicit/fallback + the suggestion).
+        npt_prov = {k: h5.attrs[k] for k in
+                    ("npt_1d", "npt_1d_mode", "npt_1d_suggested") if k in h5.attrs}
         frames = h5.get("frames")
         names = None
         if frames is not None and "filename" in frames:
@@ -308,6 +359,19 @@ def run_background_separation(
     if contamination_threshold is not None:
         flagged = contam > float(contamination_threshold)
 
+    # Where does the Bragg signal live? A spotty/coarse-grained sample is
+    # rejected by the median-based channels (clean holds only background) —
+    # record the diagnosis so Step 2's source="auto" can act on DATA, not on a
+    # sample-type assumption.
+    diag = diagnose_signal_channels(clean, spots, excluded)
+    if diag["spotty_sample"]:
+        print(f"[ANALYSIS] WARNING: spotty/coarse-grained sample — only "
+              f"{100 * diag['signal_frac_clean']:.0f}% of the significant bins "
+              f"survive in the spot-suppressed 'clean' channel (the rest sit in "
+              f"spot_residual). The azimuthal median is rejecting the SAMPLE "
+              f"itself; peak fitting should use source='mean' (Step 2 auto will).",
+              flush=True)
+
     # Resolve the per-frame pressure channel: carry the reduced value through,
     # but if it is absent / all-NaN (the usual placeholder case) parse it from
     # the filenames so phase identification has a pressure prior with no manual
@@ -332,7 +396,10 @@ def run_background_separation(
                 "max_half_window": int(max_half_window), "n_passes": int(n_passes),
                 "use_lls": bool(use_lls),
                 "has_sigmaclip": bool(sigmaclip_residual is not None),
+                "signal_frac_clean": float(diag["signal_frac_clean"]),
+                "spotty_sample": bool(diag["spotty_sample"]),
             })
+            o.attrs.update(npt_prov)
             if radial is not None:
                 o.create_dataset("radial", data=radial)
             gf = o.create_group("frames")
@@ -385,6 +452,8 @@ def run_background_separation(
         "contamination_threshold": contamination_threshold,
         "n_flagged": int(flagged.sum()) if flagged is not None else None,
         "has_sigmaclip": bool(sigmaclip_residual is not None),
+        "signal_frac_clean": diag["signal_frac_clean"],
+        "spotty_sample": diag["spotty_sample"],
         "contamination_min": float(np.min(contam)) if n else 0.0,
         "contamination_max": float(np.max(contam)) if n else 0.0,
     }

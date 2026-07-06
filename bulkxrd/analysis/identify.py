@@ -41,10 +41,14 @@ from .parallel import resolve_workers, chunk_ranges
 SCHEMA_VERSION = "1"
 
 # Wavelength used only to drive pymatgen's 2theta window when extracting the
-# ambient reflection list. Small + wide window => all reflections down to
-# ~0.14 A are captured; the d-spacings returned are wavelength-independent.
+# ambient reflection list; the d-spacings returned are wavelength-independent.
+# The window is derived from a d_min cutoff (see phase_reflections): simulating
+# far beyond the instrument's d-range is pure waste — the old fixed 90° window
+# (d >= 0.14 Å) took SECONDS per phase even for cubic cells and minutes for
+# low-symmetry polymorphs, while everything the pipeline consumes lives at
+# d >= ~1 Å (reduce q <= ~6.3 Å⁻¹; the ML d-grid starts at 1.199 Å).
 _SIM_WAVELENGTH = 0.2
-_SIM_TWO_THETA_MAX = 90.0
+_SIM_D_MIN_DEFAULT = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -122,16 +126,24 @@ def wavelength_from_reduced(reduced_path: "str | Path") -> "Optional[float]":
 # ---------------------------------------------------------------------------
 
 def phase_reflections(phase: Phase, *, max_reflections: int = 40,
-                      min_rel_intensity: float = 0.01
+                      min_rel_intensity: float = 0.01,
+                      d_min: float = _SIM_D_MIN_DEFAULT
                       ) -> "Tuple[np.ndarray, np.ndarray, List[str]]":
     """Ambient (d, weight, hkl) reflection list for a phase, strongest first.
 
     ``weight`` is the relative intensity normalised to its max. Keeps the
-    strongest ``max_reflections`` lines above ``min_rel_intensity``. Requires
-    pymatgen (via :func:`phases.simulate_pattern`).
+    strongest ``max_reflections`` lines above ``min_rel_intensity`` with
+    d ≥ ``d_min`` (Å). The default 1.0 Å covers the reduce stage's q-range and
+    the ML d-grid; lower it for very high-q instruments. Restricting the
+    simulation window this way also keeps pymatgen fast for low-symmetry
+    cells, and stops sub-Å lines the detector can never see from crowding real
+    lines out of the strongest-``max_reflections`` selection. Requires pymatgen
+    (via :func:`phases.simulate_pattern`).
     """
+    tt_max = 2.0 * math.degrees(math.asin(
+        min(1.0, _SIM_WAVELENGTH / (2.0 * max(float(d_min), 0.05)))))
     pat = simulate_pattern(phase, _SIM_WAVELENGTH, two_theta_min=0.0,
-                           two_theta_max=_SIM_TWO_THETA_MAX)
+                           two_theta_max=tt_max)
     d = np.array([p["d"] for p in pat], dtype=float)
     inten = np.array([p["intensity"] for p in pat], dtype=float)
     hkl = [p["hkl"] for p in pat]

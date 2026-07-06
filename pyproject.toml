@@ -51,6 +51,8 @@ bulkxrd-reduce-gui = "bulkxrd.reduce.run_gui:main"
 bulkxrd-analysis-gui = "bulkxrd.analysis.run_gui:main"
 bulkxrd-analyze = "bulkxrd.analysis.batch:main"
 bulkxrd-ml-train = "bulkxrd.analysis.ml_train:main"
+bulkxrd-benchmark = "bulkxrd.analysis.benchmark:main"
+bulkxrd-corpus = "bulkxrd.analysis.corpus:main"
 bulkxrd-inspect = "bulkxrd.core.inspect:main"
 
 [tool.setuptools.packages.find]
