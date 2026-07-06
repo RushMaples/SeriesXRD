@@ -68,8 +68,13 @@ def _run(args) -> int:
             analysis_path, None,
             source=args.source, sensitivity=args.sensitivity,
             auto_range=not args.no_auto_range, hybrid_spike_bins=args.hybrid_spike_bins,
-            min_snr=args.min_snr, window_factor=args.window_factor,
-            max_chi2=args.max_chi2, propagate_seeds=not args.no_seeds,
+            min_snr=args.min_snr, min_prominence_snr=args.min_prominence_snr,
+            window_factor=args.window_factor,
+            max_chi2=args.max_chi2, edge_bins=args.edge_bins,
+            fit_min=args.fit_min, fit_max=args.fit_max,
+            min_fwhm_bins=args.min_fwhm_bins,
+            local_baseline_bins=args.detrend_bins,
+            propagate_seeds=not args.no_seeds,
             num_workers=args.workers)
 
     if "3" in steps:
@@ -184,8 +189,24 @@ def main(argv: "list[str] | None" = None) -> int:
                         "diamond spike and removed. Default 5.")
     p.add_argument("--min-snr", type=float, default=None,
                    help="Override the sensitivity preset's min SNR (height). Default: preset.")
+    p.add_argument("--min-prominence-snr", type=float, default=None,
+                   help="Override the preset's min prominence SNR (controls whether a "
+                        "shoulder on a stronger peak counts). Default: preset.")
     p.add_argument("--window-factor", type=float, default=3.0)
     p.add_argument("--max-chi2", type=float, default=25.0)
+    p.add_argument("--edge-bins", type=int, default=None,
+                   help="Drop peaks within this many bins of either pattern end. "
+                        "Default: preset.")
+    p.add_argument("--fit-min", type=float, default=None,
+                   help="Lower fit bound (q or 2θ). Default: auto-inferred range "
+                        "(full pattern with --no-auto-range).")
+    p.add_argument("--fit-max", type=float, default=None,
+                   help="Upper fit bound (q or 2θ). Default: auto-inferred range.")
+    p.add_argument("--min-fwhm-bins", type=float, default=None,
+                   help="Reject peaks narrower than this many bins. Default: preset.")
+    p.add_argument("--detrend-bins", type=int, default=81,
+                   help="Detection-only local-baseline window (bins); 0 = off. "
+                        "Default 81, same as the GUI.")
     p.add_argument("--no-seeds", action="store_true", help="Disable seed propagation.")
     # Step 3a
     p.add_argument("--phases", default="", help="Comma-separated candidate phase names.")

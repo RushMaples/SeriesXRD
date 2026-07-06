@@ -1,10 +1,17 @@
-"""Tabbed Tkinter GUI for the batch reduction stage (initial view).
+"""Tabbed Tkinter GUI for the batch reduction stage.
+
+This is stage 2 of the pipeline: calibrate (calib/gui.py) -> accept a PONI ->
+reduce (this stage) -> analysis (analysis/gui.py). Accepting a calibration
+fills in the Calibration tab below automatically; a finished reduction here
+hands its output HDF5 to the analysis stage the same way.
 
 Workflow left-to-right across tabs:
     1 Calibration — the accepted calibration (auto-filled; import a prior run optionally)
-    2 Dataset   — pick the frame folder, preview the file list
-    3 Settings  — integration parameters
-    4 Run       — launch the crash-isolated worker, watch progress + log
+    2 Dataset     — pick the frame folder, preview the file list
+    3 Settings    — integration parameters
+    4 Run         — launch the crash-isolated worker, watch progress + log
+    5 Review      — inspect the reduced HDF5 before handing it to analysis
+    6 Gallery     — per-frame cake/1D thumbnails; click to exclude bad frames
 
 Same supervision model as calib/gui.py: pyFAI runs in reduce/worker.py as a
 subprocess; this process never imports pyFAI.
@@ -34,27 +41,27 @@ def _tk_imports():
 
 
 HELP = {
-    "handoff_file":   "The accepted calibration (PONI + mask) for this reduction. Auto-filled when you accept a calibration; or import a previous run.",
+    "handoff_file":   "The accepted calibration (PONI + mask) this reduction uses. Auto-fills when you accept a calibration on the Calibration stage; use Import to pull one from an earlier run.",
     "dataset_dir":    "Folder containing the sample dataset frames to integrate.",
     "file_patterns":  "Semicolon-separated glob patterns, e.g. *.tif;*.edf",
-    "npt_1d":         ("Number of bins in the 1D intensity pattern. Leave BLANK for auto: "
-                       "~1 bin per pixel of radial extent from the detector geometry "
-                       "(pyFAI rule of thumb). Too few bins under-samples sharp peaks — "
-                       "patterns look stepped and peak fitting degrades."),
+    "npt_1d":         ("Number of bins in the 1D intensity pattern. Leave blank for auto: about 1 bin "
+                       "per pixel of radial extent from the detector geometry (pyFAI's rule of thumb). "
+                       "Too few bins under-samples sharp peaks, so patterns look stepped and peak "
+                       "fitting degrades."),
     "method":         "pyFAI 1D integration method. csr is fast after the first frame.",
-    "robust_1d":      ("Also compute a spot-suppressed pattern: the mean of a narrow azimuthal "
-                       "quantile band around the median. Rejects diamond single-crystal spots "
-                       "like a median, without the median's integer-count quantization."),
-    "robust_quant_halfwidth": ("Half-width of the azimuthal quantile band averaged for the robust "
-                               "pattern: 0.05 = the 45–55% band (default). 0 = pure median — beware: "
-                               "on integer photon counts a pure median is QUANTIZED, so low-intensity "
-                               "patterns render as staircases and clean/baseline inherit the steps."),
-    "sigmaclip_1d":   "Also compute an azimuthal sigma-clipped (trimmed-mean) pattern: rejects diamond spots like the median but keeps azimuthally-sparse real sample peaks (textured/incomplete rings). The recommended Step-2 fit source.",
-    "save_cakes":     "Also save 2D cakes (larger output file; needed for azimuthal analysis).",
+    "robust_1d":      ("Also computes a spot-suppressed pattern: the mean of a narrow azimuthal "
+                       "quantile band around the median. Rejects diamond spots like a median does, "
+                       "but without the median's integer-count quantization."),
+    "robust_quant_halfwidth": ("Half-width of the azimuthal quantile band the robust pattern averages "
+                               "over. Default 0.05 = the 45-55% band. Set to 0 for a pure median: on "
+                               "integer photon counts that quantizes, so low-intensity patterns render "
+                               "as staircases and clean/baseline inherit the steps."),
+    "sigmaclip_1d":   "Also computes an azimuthal sigma-clipped (trimmed-mean) pattern. Rejects diamond spots like the median does, but keeps real peaks on sparse/textured rings that a median would drop. This is the recommended fit source for Step 2 peak fitting.",
+    "save_cakes":     "Also saves 2D cakes. Increases the output file size; needed for azimuthal analysis.",
     "cake_every":     "Save a cake for every Nth frame only, to bound file size.",
     "num_workers":    "Parallel worker processes. 0 = automatic (CPU count - 1).",
-    "make_thumbnails": "Render a small cake+1D preview per frame during reduction for the Gallery tab. Turn off for very large datasets to save time/disk.",
-    "reduced_h5_file": "A reduced_*.h5 produced by a reduction run. Inspect it before analysis.",
+    "make_thumbnails": "Renders a small cake+1D preview per frame during reduction, for the Gallery tab. Turn off for very large datasets to save time and disk space.",
+    "reduced_h5_file": "A reduced_*.h5 produced by a reduction run. Inspect it here before handing it to the Analysis stage.",
 }
 
 
@@ -340,9 +347,9 @@ class ReductionApp:
     def _tab_calibration(self, frame):
         ttk = self.ttk
         self.field(frame, "handoff_file", "Active calibration", browse=None, row=0)
-        ttk.Label(frame, text="The accepted calibration (PONI + mask) used for this reduction. "
-                  "It fills in automatically when you accept a calibration on the Calibration tab. "
-                  "To reduce data from an earlier session, import a previous run.",
+        ttk.Label(frame, text="The accepted calibration (PONI + mask) this reduction uses. "
+                  "It fills in automatically when you accept a calibration in the Calibration stage. "
+                  "To reduce data against a calibration from an earlier session, import its handoff file.",
                   foreground=MUTED, wraplength=640, justify="left").grid(
                   row=1, column=0, columnspan=3, sticky="w", padx=4)
         btns = ttk.Frame(frame)
@@ -656,6 +663,27 @@ class ReductionApp:
         self._review_overlay = tk.BooleanVar(value=bool(self.config.get("review_overlay", False)))
         ttk.Checkbutton(ctrl, text="Overlay patterns", variable=self._review_overlay,
                         command=self._on_review_overlay_toggle).pack(side="left", padx=(12, 0))
+        _diag_btn = ttk.Button(ctrl, text="Diagnose waviness",
+                               command=lambda: self._run_straighten_job("diagnose"))
+        _diag_btn.pack(side="left", padx=(12, 0))
+        _ToolTip(_diag_btn, (
+            "Fits r(φ) to the strongest rings of every saved cake and reports the "
+            "waviness amplitude, the 1D doublet splitting it causes (~2·A1), and "
+            "the implied transverse sample offset in mm. Needs cakes in the file "
+            "(Settings: save 2D cakes). Wavy rings mean the sample sat off the "
+            "calibrant position — the proper fix is re-refining the geometry and "
+            "re-reducing."))
+        _str_btn = ttk.Button(ctrl, text="Write straightened 1D",
+                              command=lambda: self._run_straighten_job("straighten"))
+        _str_btn.pack(side="left", padx=(6, 0))
+        _ToolTip(_str_btn, (
+            "Rescue channel for wavy data you can't re-collect or re-reduce: "
+            "aligns each cake's rings before averaging and writes the corrected "
+            "pattern to /patterns/intensity_straightened (plus /frames/"
+            "waviness_A1). Frames without a saved cake stay NaN. Lower radial "
+            "resolution than a proper re-reduction — prefer fixing the geometry."))
+        self._straighten_status = ttk.Label(ctrl, text="", foreground=MUTED)
+        self._straighten_status.pack(side="left", padx=12)
         paned = ttk.PanedWindow(frame, orient="horizontal")
         paned.grid(row=3, column=0, columnspan=3, sticky="nsew", padx=4, pady=4)
         frame.rowconfigure(3, weight=1)
@@ -702,6 +730,94 @@ class ReductionApp:
         review = getattr(self, "_last_review", None)
         if review is not None:
             self._render_review_plots(review)
+
+    def _run_straighten_job(self, kind: str):
+        """Run the cake-waviness diagnosis or the straightened-1D rescue in a
+        worker thread; results land in the log + review text. ``kind`` is
+        "diagnose" or "straighten". Widgets are only touched from the Tk
+        thread (a main-thread poll watches the worker)."""
+        if getattr(self, "_straighten_busy", False):
+            self.messagebox.showinfo("Busy", "A waviness job is already running.")
+            return
+        self.pull_vars()
+        path = str(self.config.get("reduced_h5_file", "") or "").strip()
+        if not path or not Path(path).is_file():
+            self.messagebox.showerror("Waviness", "Select a reduced .h5 file first.")
+            return
+        self._straighten_busy = True
+        label = "Diagnosing waviness" if kind == "diagnose" else "Straightening"
+        self._straighten_status.configure(text=f"{label} …")
+        self.log(f"{label}: {path}")
+        box: "Dict[str, Any]" = {}
+
+        def _work():
+            try:
+                from .straighten import diagnose_reduced, straighten_reduced
+                box["result"] = (diagnose_reduced(path) if kind == "diagnose"
+                                 else straighten_reduced(path))
+            except Exception as e:
+                box["error"] = repr(e)
+
+        t = threading.Thread(target=_work, daemon=True)
+        t.start()
+
+        def _poll():
+            if t.is_alive():
+                self.root.after(200, _poll)
+                return
+            self._straighten_busy = False
+            err = box.get("error")
+            res = box.get("result") or {}
+            if err is None and kind == "diagnose" and not res.get("ok", True):
+                err = res.get("error", "diagnosis failed")
+            if err:
+                self._straighten_status.configure(text=err, foreground=WARN)
+                self.log(f"Waviness job failed: {err}", "ERROR")
+                return
+            lines = [f"=== {label} ==="]
+            if kind == "diagnose":
+                summ = res.get("summary") or {}
+                unit = res.get("unit", "")
+                if not summ:
+                    lines.append(f"{res.get('n_cakes', 0)} cake(s) examined; "
+                                 "no ring fit succeeded.")
+                    status = "diagnosis: no usable rings"
+                else:
+                    lines.append(f"{res.get('n_cakes', 0)} cake(s) examined.")
+                    lines.append(f"median waviness A1 = {summ['A1_median']:.4g} {unit} "
+                                 f"(A2 = {summ['A2_median']:.4g})")
+                    lines.append(f"implied 1D doublet splitting ≈ "
+                                 f"{summ['doublet_splitting']:.4g} {unit}")
+                    if "offset_mm" in summ:
+                        lines.append(
+                            f"implied transverse sample offset ≈ "
+                            f"{summ['offset_mm']:.3f} mm at "
+                            f"{summ['distance_mm']:.1f} mm distance")
+                        lines.append("Fix: re-refine the geometry on a sample ring "
+                                     "and re-reduce; 'Write straightened 1D' is the "
+                                     "rescue for data you can't re-reduce.")
+                    status = (f"A1 = {summ['A1_median']:.4g} {unit}; "
+                              f"doublet ≈ {summ['doublet_splitting']:.4g}")
+            else:
+                lines.append(f"{res.get('n_straightened', 0)}/{res.get('n_frames', 0)} "
+                             "frames written to /patterns/intensity_straightened")
+                a1 = res.get("A1_median")
+                if a1 is not None:
+                    lines.append(f"median waviness A1 = {a1:.4g}")
+                status = (f"straightened {res.get('n_straightened', 0)}"
+                          f"/{res.get('n_frames', 0)} frames")
+            self._straighten_status.configure(text=status, foreground=MUTED)
+            for ln in lines:
+                self.log(ln)
+            try:
+                self.review_text.configure(state="normal")
+                self.review_text.insert("end", "\n" + "\n".join(lines) + "\n")
+                self.review_text.see("end")
+                self.review_text.configure(state="disabled")
+            except self.tk.TclError:
+                pass
+
+        self.root.after(200, _poll)
 
     @staticmethod
     def _style_review_ax(ax):

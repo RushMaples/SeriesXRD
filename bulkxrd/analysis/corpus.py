@@ -2,7 +2,7 @@
 
 The learned scorer's generalisation comes from pattern DIVERSITY, and the
 diversity lever is a large training-only CIF corpus (see
-``docs/ml-training-ris.md``). This module makes building one a two-command
+``docs/ml-training.md``). This module makes building one a two-command
 job:
 
     bulkxrd-corpus fetch  ids.txt  ./training_cifs      # COD IDs, one per line

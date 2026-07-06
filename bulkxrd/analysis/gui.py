@@ -1,16 +1,20 @@
 """Tabbed Tkinter GUI for the analysis stage (Steps 1-3).
 
-Workflow left-to-right across tabs — configure, run, then inspect:
+Workflow left-to-right across tabs — configure (1-6), run (7), inspect (8-11):
     1 Input       — pick the reduced HDF5, inspect its structure, see the analysis output
-    2 Background  — SNIP baseline + diamond-spot residual parameters
+    2 Background  — SNIP baseline + spot-residual parameters
     3 Peaks       — pseudo-Voigt fitting parameters
     4 Phases      — reference-phase library: bundled + user phases, import CIFs, toggle candidates
-    5 Frame meta  — per-frame pressure/temperature: parse filenames or import a CSV (Step-3 prior)
-    6 Identify    — Step 3a/3b settings: EOS matching, pressure prior, ML candidate ranking
+    5 Frame meta  — per-frame conditions (P, T): parse filenames or import a CSV (Step-3 prior)
+    6 Identify    — Step 3a/3b settings: EOS matching, metadata prior, ML candidate ranking
     7 Run         — launch the crash-isolated worker, watch progress + log
     8 Review      — single-frame QC: traces + fitted peaks + contamination curve
-    9 Heatmap     — scatter of peak positions across all frames (uses Step-3a results when present)
-    10 Pattern map — waterfall / reflection tracks / per-phase layers (needs Step 3a)
+    9 Peak map    — scatter of fitted peak positions across the series
+    10 Pattern map — waterfall / reflection tracks / per-phase intensity (needs Step 3a)
+    11 Grid map   — per-frame scalars refolded onto a 2D scan grid (mapping runs)
+
+Series plots (9-11) can use frame index, pressure, temperature, or elapsed
+time as the independent variable.
 
 Same supervision model as reduce/gui.py: heavy computation runs in
 analysis/worker.py as a subprocess; this process never imports numpy/h5py
@@ -47,177 +51,190 @@ def _tk_imports():
 HELP: Dict[str, str] = {
     # Input / output
     "reduced_h5_file": (
-        "A reduced_*.h5 produced by the reduction stage. Must contain "
-        "intensity_robust (azimuthal-median pattern) for Step 1."
+        "A reduced_*.h5 from the reduction stage. Step 1 needs its "
+        "intensity_robust channel; if it is missing, re-run reduction with "
+        "the robust pattern enabled."
     ),
     "analysis_h5_file": (
-        "Output analysis HDF5. Leave blank to auto-place beside the reduced "
-        "file as <stem>_analysis.h5."
+        "Output analysis HDF5. Blank = <stem>_analysis.h5 beside the reduced file."
     ),
     # Run scope
-    "run_step1": "Run Step 1: SNIP baseline estimation + diamond-spot residual extraction.",
-    "run_step2": ("Run Step 2: pseudo-Voigt peak fitting on the selected Peak source "
-                  "(default auto → the reduce-side sigmaclip channel if present, else the "
-                  "analysis-side hybrid; 'clean' is the conservative alternative)."),
+    "run_step1": "Run Step 1: SNIP baseline + spot-residual separation.",
+    "run_step2": "Run Step 2: pseudo-Voigt peak fitting on the selected Peak source.",
     "run_step3": (
-        "Run Step 3a: match the fitted peaks against the enabled candidate phases by fitting "
-        "each phase's Birch–Murnaghan EOS — gives a per-frame pressure and match confidence "
-        "per phase."
+        "Run Step 3a: match fitted peaks against the candidate phases via each "
+        "phase's EOS. Gives per-frame phase confidence and, for pressure series, "
+        "a per-frame pressure estimate."
     ),
     # Step 3a
     "identify_all_phases": (
-        "Open-set mode: score every phase in the reference library against each "
-        "frame, so you don't have to mark candidates beforehand. Phases above the "
-        "present-in-frame confidence are reported and removed in the residual step. "
-        "Note: 'the library' is the bundled + your added phases, not all of ICSD/MP — "
-        "true database/ML search is Step 3b. Leave off to restrict to the Phases-tab "
-        "selection (faster, fewer spurious matches)."
+        "Score every phase in the reference library (bundled + yours) against "
+        "each frame instead of only the Phases-tab selection. Slower and more "
+        "prone to spurious matches; use it when you don't know what is in the "
+        "sample. This searches your library, not all of ICSD/MP."
     ),
-    "p_min": "Pressure search range (GPa) for the EOS fit.",
-    "p_max": "Pressure search range (GPa) for the EOS fit.",
+    "p_min": "Lower bound (GPa) of the EOS pressure search. 0 for ambient work.",
+    "p_max": (
+        "Upper bound (GPa) of the EOS pressure search. Phases with an EOS "
+        "validity ceiling (p_max in their entry) are capped there regardless."
+    ),
     "rel_tol": (
-        "Peak-match tolerance as a fraction of d-spacing (e.g. 0.01 = 1%). "
-        "Looser = more tolerant matching, fuzzier pressure."
+        "Peak-match tolerance as a fraction of d-spacing (0.01 = 1%). Raise it "
+        "if real lines just miss their match; too loose lets wrong phases match."
     ),
     "seen_conf": (
-        "Confidence bar (0–1) for calling a phase present in a frame. Phases above "
-        "it are removed from the pattern in the residual step, exposing weaker and "
-        "unknown features underneath."
+        "Confidence (0-1) above which a phase counts as present in a frame. "
+        "Present phases are subtracted in the residual step. Default 0.5."
     ),
     "identify_wavelength": (
-        "X-ray wavelength (Å). Needed only for a 2θ axis; leave blank to auto-read it "
-        "from the reduced file's PONI. Not needed for q-axis data."
+        "X-ray wavelength (Å). Only needed for 2θ data; blank = read from the "
+        "reduced file's PONI. q-axis data never needs it."
+    ),
+    "intensity_k": (
+        "Weight (0-1) of the intensity-agreement factor in the confidence. "
+        "0 = match on positions only. Keep it low (default 0.3): texture and "
+        "spotty rings distort measured intensities."
+    ),
+    "use_frame_temperature": (
+        "Apply each frame's temperature (Frame metadata tab) to the predicted "
+        "d-spacings of phases that define thermal expansion. Uncheck to treat "
+        "all frames as ambient temperature."
     ),
     # Step 1
     "max_half_window": (
-        "Widest feature (in bins) treated as background; ~1.5-2x the broadest "
-        "Bragg peak half-width. Wider values = more background. Too wide erodes "
-        "real broad peaks irreversibly — conservative is safer."
+        "Widest feature (bins) SNIP treats as background. Set to 1.5-2x the "
+        "half-width of your broadest real peak. Too wide flattens broad peaks "
+        "into the baseline. Default 40."
     ),
-    "n_passes": (
-        "Number of SNIP iteration passes. 1 is almost always sufficient; "
-        "more passes make the baseline slightly smoother at a small cost."
-    ),
+    "n_passes": "SNIP passes. 1 is enough in practice. Default 1.",
     "use_lls": (
-        "Apply Log-Log-Sqrt (LLS) transform before SNIP to compress dynamic "
-        "range. Strongly recommended for XRD — suppresses baseline overshoot "
-        "under sharp intense peaks."
+        "Compress dynamic range (log-log-sqrt) before SNIP. Keep it on: without "
+        "it the baseline overshoots under intense sharp peaks."
     ),
     "contamination_threshold": (
-        "Flag frames whose diamond contamination score exceeds this value. "
-        "Leave blank to skip flagging. The score is the sum of positive "
-        "spot_residual bins per frame."
+        "Flag frames whose spot-contamination score (sum of positive "
+        "spot_residual) exceeds this value. Blank = no flagging."
     ),
     # Step 2
     "peak_source": (
-        "Which signal to fit peaks on. 'clean' = robust(azimuthal median) − "
-        "baseline: conservative, but the median drops real intensity on spotty / "
-        "textured / incomplete rings. 'hybrid' adds the broad part of "
-        "(mean − median) back while rejecting narrow diamond single-crystal "
-        "spikes. 'sigmaclip' uses the reduce-side azimuthal trimmed-mean channel "
-        "(most faithful — re-run reduction with it enabled). 'mean' adds the full "
-        "azimuthal mean (keeps diamond spots — diagnostic only). 'auto' = "
-        "sigmaclip if its channel is present, else hybrid. Default auto."
+        "Signal the peaks are fit on. auto (default) = the reduce-side sigmaclip "
+        "channel if present, else hybrid. clean = azimuthal median minus "
+        "baseline: cleanest, but drops intensity on spotty/textured/incomplete "
+        "rings. hybrid = clean plus the broad part of (mean − median), rejecting "
+        "narrow single-crystal spikes. sigmaclip = the reduce-side trimmed mean "
+        "(best; enable it in reduction). mean keeps everything including "
+        "diamond spots — diagnostic only. If peaks you can see in the pattern "
+        "are missing from the fit, try hybrid or mean."
     ),
     "sensitivity": (
-        "Preset that sets the detection knobs (Min SNR, Min prominence SNR, Min "
-        "FWHM, Edge guard) for any left blank below — explicit values always win. "
-        "conservative = fewer, cleaner peaks; sensitive = catches weak shoulders. "
-        "Default normal."
+        "Preset for the detection knobs below (any left blank). conservative = "
+        "fewer, cleaner peaks; sensitive = catches weak shoulders but more noise "
+        "hits. Explicit values below override the preset. Default normal."
     ),
     "auto_range": (
-        "Infer the valid fit window automatically when Fit min/max are blank: "
-        "skip the beamstop-onset ramp and the dead/noisy detector tail. "
-        "Conservative — never trims more than the outer ~15 % of the axis, so "
-        "interior peaks are safe. Uncheck to fit the full pattern."
+        "When Fit min/max are blank, skip the beamstop ramp and the dead "
+        "detector tail automatically (trims at most the outer ~15%). Uncheck to "
+        "fit the full axis."
     ),
     "hybrid_spike_bins": (
-        "Hybrid source only: radial width (in bins) below which mean-excess is "
-        "treated as a diamond single-crystal spike and removed; broader excess is "
-        "kept as real textured-ring signal. Blank = 5."
+        "Hybrid source only: mean-excess narrower than this many bins is "
+        "removed as a single-crystal spike; broader excess is kept as texture. "
+        "Default 5."
     ),
     "min_snr": (
-        "Minimum signal-to-noise ratio (peak HEIGHT / MAD noise floor) for a "
-        "peak to be accepted. Lower = more peaks, more noise hits. "
-        "Blank = from the Sensitivity preset (normal = 5)."
+        "Peak height threshold in noise-floor units. Lower = more peaks, more "
+        "noise hits. Blank = preset (normal 5)."
     ),
     "min_prominence_snr": (
-        "Minimum peak PROMINENCE in noise-floor units. Prominence is measured "
-        "against the taller neighbour, so a real peak on the shoulder of a "
-        "stronger one needs this lower than Min SNR to register. "
-        "Blank = from the Sensitivity preset (normal = 2)."
+        "Peak prominence threshold in noise-floor units; controls whether a "
+        "shoulder on a stronger peak counts as its own peak. Blank = preset "
+        "(normal 2)."
     ),
     "window_factor": (
-        "Fit-window half-width as a multiple of the initial FWHM estimate. "
-        "Wider windows capture more baseline; narrow windows are faster. Default 3."
+        "Fit-window half-width as a multiple of the estimated FWHM. Default 3."
     ),
     "max_chi2": (
-        "Maximum reduced chi-square for a fitted peak to be accepted as 'good'. "
-        "Higher = more permissive. Default 25 is already generous; tighten for "
-        "cleaner peak maps."
+        "Reduced χ² above which a fit is flagged bad. Default 25. Tighten for "
+        "cleaner peak maps; loosen if good peaks are being rejected."
     ),
     "fit_min": (
-        "Lower bound of the valid fit window in the radial unit (2θ° or q). "
-        "Set this just above the beamstop onset so the steep low-angle shoulder "
-        "is excluded — it otherwise inflates the noise floor and hides real "
-        "peaks. Blank = use the full pattern."
+        "Lower fit bound (q or 2θ). Set just above the beamstop onset — the "
+        "low-angle ramp inflates the noise floor and hides weak peaks. "
+        "Blank = auto range."
     ),
     "fit_max": (
-        "Upper bound of the valid fit window (2θ° or q). Set below the detector "
-        "truncation/noisy tail. Blank = use the full pattern."
+        "Upper fit bound (q or 2θ). Set below the noisy detector tail. "
+        "Blank = auto range."
     ),
     "edge_bins": (
-        "Drop peaks within this many bins of either end of the pattern — kills "
-        "beamstop-onset and detector-truncation edge artefacts. "
-        "Blank = from the Sensitivity preset (normal = 5)."
+        "Drop peaks within this many bins of either end of the pattern (edge "
+        "artefacts). Blank = preset (normal 5)."
     ),
     "min_fwhm_bins": (
-        "Reject peaks narrower than this many bins (a real Bragg peak spans "
-        "several): removes single-bin quantization spikes. Flagged WIDTH_BOUND. "
-        "Blank = from the Sensitivity preset (normal = 2)."
+        "Reject peaks narrower than this many bins — a real peak spans several; "
+        "1-bin spikes are noise. If real peaks trip this, the pattern is "
+        "under-sampled: re-reduce with more bins (see the run log's npt "
+        "recommendation). Blank = preset (normal 2)."
     ),
     "detrend_bins": (
-        "Local-baseline window (bins) used FOR DETECTION ONLY: a morphological "
-        "opening of this width removes residual broad background (whatever SNIP "
-        "left), so the noise floor reflects real noise and small peaks aren't "
-        "lost under an inflated threshold. Size it a few× a peak width but below "
-        "the background scale. 0 = off. Default 81. (Fitting still uses the raw "
-        "clean intensities.)"
+        "Detection-only local-baseline window (bins): removes broad background "
+        "SNIP left behind so weak peaks clear the noise threshold. Fitting "
+        "still uses the un-detrended signal. Size it a few peak widths. "
+        "0 = off. Default 81."
     ),
     "propagate_seeds": (
-        "Seed peak detection for frame k+1 from good centers in frame k. "
-        "Recommended — keeps reflections continuous as the lattice compresses "
-        "under pressure."
+        "Seed each frame's detection with the previous frame's good peak "
+        "centers, so a reflection keeps its identity as it drifts through the "
+        "series (compression, heating). Keep on for series data."
     ),
-    # Step 3a pressure-prior knobs
+    # Step 3a metadata-prior knobs
     "use_pressure_prior": (
-        "Confine each phase's pressure fit to the frame's metadata pressure ± window, "
-        "instead of searching the whole p_min..p_max range. This is the key DAC accuracy "
-        "fix: pressure stops being a free parameter every candidate can exploit. Needs a "
-        "frame pressure (Frame metadata tab). Uncheck for the old free search."
+        "Confine each phase's pressure fit to the frame's metadata pressure "
+        "± window instead of the full p_min-p_max search. This is the main "
+        "accuracy control for pressure series: without it, a wrong phase can "
+        "slide along pressure until a few lines coincide. Needs frame "
+        "pressures (Frame metadata tab)."
     ),
     "pressure_window": (
-        "Half-width (GPa) of the pressure search/penalty window used where a frame has "
-        "no per-frame pressure uncertainty. Typical 0.5–2 GPa."
+        "Half-width (GPa) of the prior window when a frame has no per-frame "
+        "uncertainty. 0.5-2 GPa is typical. Default 2."
     ),
     "pressure_sigma_k": (
-        "When a per-frame pressure_sigma is known (from a CSV), the window half-width is "
-        "this k times sigma instead of the fixed window."
+        "When a frame has a pressure uncertainty (CSV import), the window is "
+        "k·σ instead of the fixed value. Default 2."
     ),
     "marker_prior": (
-        "If no frame pressure metadata exists, first identify the marker-category phases, "
-        "take the best marker's pressure per frame, and reuse it as the prior for all "
-        "other phases."
+        "No metadata pressures? Fit the marker-category phases first and reuse "
+        "the best marker's per-frame pressure as the prior for everything else."
     ),
     "min_matched": (
-        "Minimum number of one-to-one matched reflections to call a phase present in a "
-        "frame (and to subtract it in the residual). Guards against one- or two-line "
-        "coincidences. Default 3."
+        "Reflections a phase must match (one-to-one) to count as present. "
+        "Guards against 1-2 line coincidences. Default 3."
     ),
     "allow_sparse": (
-        "Permit phases with fewer than 'Min matched reflections' to still be subtracted "
-        "in the residual step (e.g. sparse pressure markers). Off by default."
+        "Let phases below Min matched still be subtracted in the residual "
+        "(e.g. sparse pressure markers). Off by default."
     ),
+    # Series plots / grid map
+    "map_value": (
+        "Per-frame scalar shown on the grid: integrated or max intensity of "
+        "the fit source (optionally within the ROI below), contamination "
+        "score, peak count, P, T, or one phase's matched-reflection intensity."
+    ),
+    "map_line_len": (
+        "Frames per scan line — how many frames the stage collected before "
+        "turning (horizontal) or how many rows tall a column is (vertical)."
+    ),
+    "map_order": (
+        "horizontal = scan lines are rows of the map; vertical = scan lines "
+        "are columns."
+    ),
+    "map_serpentine": (
+        "Checked = boustrophedon (stage reverses direction every line). "
+        "Unchecked = unidirectional raster (every line scans the same way)."
+    ),
+    "map_roi_min": "ROI lower bound on the radial axis for intensity values. Blank = full axis.",
+    "map_roi_max": "ROI upper bound on the radial axis for intensity values. Blank = full axis.",
 }
 
 
@@ -307,8 +324,8 @@ class AnalysisApp:
         for name, builder in [
             # Workflow order: configure everything (input → background → peaks
             # → phases → frame metadata → identify), then run, then inspect the
-            # results (review → heatmap → pattern map). Result tabs that need
-            # Step-3a output now sit AFTER the tabs that configure it.
+            # results (review → peak map → pattern map → grid map). Result tabs
+            # that need Step-3a output sit AFTER the tabs that configure it.
             ("1 Input",      self._tab_input),
             ("2 Background", self._tab_background),
             ("3 Peaks",      self._tab_peaks),
@@ -317,8 +334,9 @@ class AnalysisApp:
             ("6 Identify",   self._tab_identify),
             ("7 Run",        self._tab_run),
             ("8 Review",     self._tab_review),
-            ("9 Heatmap",    self._tab_heatmap),
+            ("9 Peak map",   self._tab_heatmap),
             ("10 Pattern map", self._tab_patternmap),
+            ("11 Grid map",  self._tab_gridmap),
         ]:
             frame = ttk.Frame(self.nb, padding=10)
             builder(frame)
@@ -690,17 +708,14 @@ class AnalysisApp:
         ttk.Label(
             frame,
             text=(
-                "Step 1 separates background from powder signal.\n\n"
-                "spot_residual = azimuthal mean − azimuthal median\n"
-                "  Diamond single-crystal spots appear in the mean but not in the\n"
-                "  median (< 50 % of azimuthal bins), so the difference isolates them.\n\n"
-                "baseline = SNIP(robust)  — Statistics-sensitive Non-linear Iterative\n"
-                "  Peak-clipping on the robust (median) pattern, optionally with LLS\n"
-                "  transform for dynamic-range compression under intense peaks.\n\n"
-                "clean = robust − baseline\n"
-                "  The conservative peak-fit source. Step 2 defaults to 'auto'\n"
-                "  (the sigmaclip / hybrid channel) — see the Peaks tab — and keeps\n"
-                "  clean available; all are rebuilt from what Step 1 stores here."
+                "Step 1 splits each pattern into background, sample signal, and\n"
+                "single-crystal contamination:\n\n"
+                "  spot_residual = mean − median   (spots hit the mean, not the median)\n"
+                "  baseline = SNIP(robust)         (iterative peak-clipping estimate)\n"
+                "  clean = robust − baseline       (what the later steps build on)\n\n"
+                "If broad peaks lose height after Step 1, the SNIP window is too\n"
+                "wide — reduce Max half-window. The stored channels let every later\n"
+                "step rebuild its own fit source, so nothing is lost."
             ),
             foreground=MUTED, justify="left", wraplength=640,
         ).grid(row=8, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
@@ -736,20 +751,17 @@ class AnalysisApp:
         ttk.Label(
             frame,
             text=(
-                "Step 2 fits pseudo-Voigt profiles to a background-subtracted pattern.\n\n"
-                "Peak source — what to fit on. clean (azimuthal median) is conservative\n"
-                "but drops real peaks on spotty/textured/incomplete rings; hybrid adds the\n"
-                "broad part of (mean−median) back (rejecting narrow diamond spikes);\n"
-                "sigmaclip uses the reduce-side trimmed-mean channel (best — re-run reduction\n"
-                "with it on); auto = sigmaclip if present, else hybrid.\n\n"
-                "Sensitivity sets the detection knobs below (any left blank); explicit values\n"
-                "win. Auto range infers the valid window (beamstop onset + dead tail) when\n"
-                "Fit min/max are blank — conservative, never trims interior peaks.\n\n"
-                "Profile: A·(η·Lorentzian + (1−η)·Gaussian). Detection: find_peaks on a\n"
-                "locally-detrended signal with a MAD noise floor. Min FWHM rejects\n"
-                "sub-resolution spikes; Edge guard drops end artefacts.\n\n"
+                "Step 2 fits pseudo-Voigt profiles A·(η·Lorentzian + (1−η)·Gaussian)\n"
+                "to the selected source.\n\n"
+                "Start with Peak source, Sensitivity, and Auto range; leave the advanced\n"
+                "fields blank unless a specific problem points at one (each field's\n"
+                "tooltip says which problem that is). Common cases:\n"
+                "  Visible peaks missing from the fit → source 'hybrid' or 'mean'.\n"
+                "  Weak shoulders not detected → Sensitivity 'sensitive'.\n"
+                "  Noise fitted as peaks → Sensitivity 'conservative'.\n"
+                "  Stepped/blocky patterns → too few bins; re-reduce (see run log).\n\n"
                 "Rejection flags: LOW_AMP=1, BAD_CHI2=2, CENTER_DRIFT=4,\n"
-                "WIDTH_BOUND=8 (also sub-resolution width), NO_CONVERGE=16."
+                "WIDTH_BOUND=8, NO_CONVERGE=16."
             ),
             foreground=MUTED, justify="left", wraplength=640,
         ).grid(row=16, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
@@ -973,7 +985,7 @@ class AnalysisApp:
         loaders = [
             ("inspect", self.inspect_input_clicked),
             ("review", self.load_review),
-            ("heatmap", self.load_heatmap),
+            ("peak map", self.load_heatmap),
             ("identify", self.load_identify),
             ("pattern map", self.load_pattern_map),
         ]
@@ -1369,19 +1381,19 @@ class AnalysisApp:
             self.messagebox.showerror("Open in window", f"Could not open: {e!r}")
 
     def _attach_hover(self, canvas, status_label):
-        """Live frame read-out: show the frame index under the cursor (the x-axis
-        of these plots is the frame index) in ``status_label``, restoring its text
-        on leave. Call AFTER the label's base text is set."""
+        """Live cursor read-out into ``status_label``, restoring its text on
+        leave. Call AFTER the label's base text is set. The x value is shown
+        as-is (frame index, pressure, ... — whatever the plot's x-axis is)."""
         if canvas is None or status_label is None:
             return
         base = {"text": status_label.cget("text")}
         def _move(event):
             if event.inaxes is not None and event.xdata is not None:
-                fr = int(round(event.xdata))
                 if event.ydata is not None:
-                    status_label.configure(text=f"{base['text']}   |   frame {fr}, y={event.ydata:.4g}")
+                    status_label.configure(
+                        text=f"{base['text']}   |   x={event.xdata:.6g}, y={event.ydata:.4g}")
                 else:
-                    status_label.configure(text=f"{base['text']}   |   frame {fr}")
+                    status_label.configure(text=f"{base['text']}   |   x={event.xdata:.6g}")
         def _leave(event):
             status_label.configure(text=base["text"])
         try:
@@ -1444,9 +1456,16 @@ class AnalysisApp:
         # Initial fit: <Configure> only fires on later resizes, so without this
         # the first render keeps the figure's large default size and overflows
         # the pane until the user resizes the window. Poll until the widget has
-        # its real allocated size, then size the figure to it.
+        # its real allocated size, then size the figure to it. The poll must
+        # tolerate the widget being destroyed mid-flight (a reload replaces the
+        # canvas while an earlier poll is still scheduled).
         def _initial_fit(tries=0, widget=widget):
-            if _apply_size(widget.winfo_width(), widget.winfo_height()):
+            try:
+                if not widget.winfo_exists():
+                    return
+                if _apply_size(widget.winfo_width(), widget.winfo_height()):
+                    return
+            except self.tk.TclError:
                 return
             if tries < 40:
                 self.root.after(25, lambda: _initial_fit(tries + 1))
@@ -1489,14 +1508,14 @@ class AnalysisApp:
             return None
 
     # ------------------------------------------------------------------
-    # Tab 6 — Heatmap
+    # Tab 9 — Peak map (fitted peak positions across the series)
     # ------------------------------------------------------------------
 
     def _tab_heatmap(self, frame):
         tk, ttk = self.tk, self.ttk
         top = ttk.Frame(frame)
         top.pack(fill="x", pady=(0, 4))
-        ttk.Button(top, text="Load heatmap", command=self.load_heatmap).pack(
+        ttk.Button(top, text="Load peak map", command=self.load_heatmap).pack(
             side="left", padx=4)
         self._heatmap_good_only = tk.BooleanVar(value=True)
         ttk.Checkbutton(
@@ -1510,6 +1529,14 @@ class AnalysisApp:
             values=["area", "amplitude", "fwhm"],
             width=10, state="readonly",
         ).pack(side="left", padx=2)
+        ttk.Label(top, text="X axis:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        self._heatmap_xaxis = ttk.Combobox(
+            top, values=["frame", "pressure", "temperature", "time"],
+            state="readonly", width=11)
+        self._heatmap_xaxis.set("frame")
+        self._heatmap_xaxis.pack(side="left", padx=2)
+        self._heatmap_xaxis.bind("<<ComboboxSelected>>",
+                                 lambda e: self.load_heatmap())
         ttk.Button(top, text="Refresh", command=self.load_heatmap).pack(
             side="left", padx=4)
         ttk.Button(top, text="Open in window",
@@ -1524,7 +1551,7 @@ class AnalysisApp:
         self.heatmap_plot_frame.pack(fill="both", expand=True)
         ttk.Label(
             self.heatmap_plot_frame,
-            text="Load the analysis HDF5 to display the peak heatmap.",
+            text="Load the analysis HDF5 to display the peak map.",
             foreground=MUTED,
         ).pack(anchor="center", expand=True)
 
@@ -1591,7 +1618,28 @@ class AnalysisApp:
         color_by = str(self._heatmap_color_by.get())
         c_arr = np.asarray(pm.get(color_by, pm["area"]), dtype=float)
 
-        n_pts = int(frame_arr.size)
+        # Map the frame index onto the chosen independent variable.
+        x_kind = getattr(self._heatmap_xaxis, "get", lambda: "frame")() or "frame"
+        x_arr, x_label = frame_arr, "frame index"
+        if x_kind != "frame":
+            from .heatmap import series_axis
+            sx = series_axis(path, x_kind)
+            if not sx["ok"]:
+                self.ttk.Label(self.heatmap_plot_frame, text=sx["error"],
+                               foreground=WARN).pack(anchor="center", expand=True)
+                if hasattr(self, "heatmap_status"):
+                    self.heatmap_status.configure(text=sx["error"])
+                return
+            xv = np.asarray(sx["x"], dtype=float)
+            idx = frame_arr.astype(int)
+            ok = (idx >= 0) & (idx < xv.size)
+            x_arr = np.full(frame_arr.size, np.nan)
+            x_arr[ok] = xv[idx[ok]]
+            x_label = sx["label"]
+            keep = np.isfinite(x_arr)
+            x_arr, center_arr, c_arr = x_arr[keep], center_arr[keep], c_arr[keep]
+
+        n_pts = int(center_arr.size)
         if hasattr(self, "heatmap_status"):
             self.heatmap_status.configure(
                 text=f"{n_pts} peaks plotted" + (" (good only)" if good_only else ""))
@@ -1622,7 +1670,7 @@ class AnalysisApp:
             # Larger markers with a light edge so even dark-coloured (low-value)
             # points read against the dark axes background.
             sc = ax.scatter(
-                frame_arr, center_arr, c=c_arr,
+                x_arr, center_arr, c=c_arr,
                 cmap="viridis", s=28, alpha=0.9, norm=norm,
                 edgecolors=FG, linewidths=0.4,
             )
@@ -1631,7 +1679,7 @@ class AnalysisApp:
                 self._style_colorbar(cb)
             except Exception:
                 pass
-            ax.set_xlabel("frame index", color=FG)
+            ax.set_xlabel(x_label, color=FG)
             ax.set_ylabel(f"peak center ({unit})", color=FG)
             ax.set_title(f"Peak map — {n_pts} peaks", color=FG)
 
@@ -1760,6 +1808,7 @@ class AnalysisApp:
                     text=("pymatgen not installed — CIF auto-parsing & pattern simulation "
                           "disabled (pip install pymatgen). You can still add phases manually."),
                     foreground=WARN)
+        self._refresh_gridmap_values()
 
     def _phases_tree_click(self, event):
         col = self.phases_tree.identify_column(event.x)
@@ -1795,6 +1844,7 @@ class AnalysisApp:
                 text=(f"{n_total} phases ({n_user} user, {n_builtin} bundled)"
                       f"  ·  {n_enabled} enabled"))
         self.log(f"Phase '{name}' {'enabled' if mark else 'disabled'} as candidate.")
+        self._refresh_gridmap_values()
 
     def _phase_dialog(self, existing):
         """Add (existing=None) or Edit (existing=Phase) a user phase."""
@@ -2086,13 +2136,14 @@ class AnalysisApp:
         ttk = self.ttk
 
         ttk.Label(
-            frame, text="Frame metadata — pressure prior",
+            frame, text="Frame metadata — series conditions (P, T)",
             font=("TkDefaultFont", 12, "bold"),
         ).pack(anchor="w", padx=6, pady=(4, 0))
         ttk.Label(
             frame,
             text=(
-                "Pressures drive Step-3 phase identification; populate them here."
+                "Per-frame pressure and temperature feed the Step-3 prior and "
+                "the series plots. Populate them here (filenames, CSV, or by hand)."
             ),
             foreground=MUTED, justify="left",
         ).pack(anchor="w", padx=6, pady=(0, 6))
@@ -2168,11 +2219,11 @@ class AnalysisApp:
         ttk.Label(
             frame,
             text=(
-                "CSV columns: a `frame` (0-based index) or `filename` column, plus "
-                "`pressure_gpa`; optional `pressure_sigma_gpa`, `temperature_K`. "
-                "Pressures are also auto-parsed from filenames during Step 1 "
-                "(e.g. UOTe-1p5GPa → 1.5 GPa); use this tab to override or to add "
-                "ruby/membrane-gauge pressures."
+                "CSV columns: `frame` (0-based) or `filename`, plus `pressure_gpa`; "
+                "optional `pressure_sigma_gpa`, `temperature_K`. Step 1 also "
+                "auto-parses pressures from filenames (e.g. sample-1p5GPa → 1.5). "
+                "Use this tab to override those or to enter gauge readings "
+                "(ruby, membrane, thermocouple)."
             ),
             foreground=MUTED, justify="left", wraplength=700,
         ).pack(anchor="w", padx=6, pady=(4, 4))
@@ -2488,7 +2539,7 @@ class AnalysisApp:
         self.field(frame, "identify_wavelength",
                    "Wavelength (Å, blank=auto)", row=7, width=12)
 
-        # -- pressure-prior knobs -----------------------------------------
+        # -- metadata-prior + evidence knobs --------------------------------
         self.checkbox(frame, "use_pressure_prior",
                       "Use frame-pressure prior (confine fit to ±window)", row=8)
         self.field(frame, "pressure_window",
@@ -2501,10 +2552,14 @@ class AnalysisApp:
                    "Min matched reflections", row=12, width=12)
         self.checkbox(frame, "allow_sparse",
                       "Allow sparse/marker-only matches in residual", row=13)
+        self.field(frame, "intensity_k",
+                   "Intensity weight (0 = positions only)", row=14, width=12)
+        self.checkbox(frame, "use_frame_temperature",
+                      "Apply frame temperatures (thermal expansion)", row=15)
 
         # -- Step 3b proposer: ML candidate ranking -----------------------
         mlrow = ttk.Frame(frame)
-        mlrow.grid(row=14, column=0, columnspan=3, sticky="w", pady=(6, 2))
+        mlrow.grid(row=16, column=0, columnspan=3, sticky="w", pady=(6, 2))
         self.vars["run_ml_rank"] = tk.BooleanVar(value=bool(self.config.get("run_ml_rank", False)))
         _mlcb = ttk.Checkbutton(
             mlrow, text="ML candidate ranking (propose top-K from library, verify with Step 3a)",
@@ -2529,34 +2584,33 @@ class AnalysisApp:
         _ToolTip(_mlsc, (
             "Similarity scorer for the ranking. Blank/'cosine' = the deterministic "
             "baseline. 'torch:<path to scorer.pt>' = a trained bulkxrd-ml-train "
-            "export (needs bulkxrd[ml]; see docs/ml-training-ris.md). Whatever the "
+            "export (needs bulkxrd[ml]; see docs/ml-training.md). Whatever the "
             "scorer proposes, Step 3a still verifies."))
 
         self._identify_help = ttk.Label(
             frame,
             text=(
-                "What this does: for each candidate phase, fit its Birch–Murnaghan "
-                "equation of state to find the pressure whose simulated peak "
-                "positions best match the fitted peaks in each frame — giving a "
-                "per-frame pressure estimate and a match confidence per phase. "
-                "(This is “Step 3a” of the analysis pipeline; requires pymatgen for "
-                "d-spacing simulation.)\n\n"
-                "How to run it:\n"
-                "  1. Phases tab — enable the candidate phases known to be in the cell.\n"
-                "  2. Here — tick “Enable phase identification” and set the pressure "
-                "range / tolerance.\n"
-                "  3. Run tab — click Run (it executes every enabled step).\n"
-                "  4. Back here — click “Load identification” to plot pressure vs frame.\n"
-                "Already have a results file? Just click “Load identification” below."
+                "Step 3a fits each candidate phase's equation of state to every "
+                "frame's peak list and reports a match confidence (and, for "
+                "pressure series, a best-fit pressure). Needs pymatgen.\n\n"
+                "To run it:\n"
+                "  1. Phases tab — enable the candidate phases (or tick Search "
+                "entire library here).\n"
+                "  2. Tick 'Enable phase identification' above.\n"
+                "  3. Run tab — Run analysis.\n"
+                "  4. Click 'Load identification' to see the results.\n"
+                "The residual step then subtracts confirmed phases and re-fits, "
+                "and the unknowns step clusters whatever is left."
             ),
             foreground=MUTED, justify="left", wraplength=640,
         )
-        self._identify_help.grid(row=16, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
-        self._identify_help.grid_remove()   # collapsed by default → bigger plot
+        self._identify_help.grid(row=18, column=0, columnspan=3, sticky="w",
+                                 padx=6, pady=(8, 4))
+        self._identify_help.grid_remove()   # hidden until the checkbox reveals it
 
         # -- controls row -------------------------------------------------
         ctrl = ttk.Frame(frame)
-        ctrl.grid(row=15, column=0, columnspan=3, sticky="w", pady=(4, 2))
+        ctrl.grid(row=17, column=0, columnspan=3, sticky="w", pady=(4, 2))
 
         ttk.Button(ctrl, text="Load identification",
                    command=self.load_identify).pack(side="left", padx=4)
@@ -2579,9 +2633,13 @@ class AnalysisApp:
         self._identify_status.pack(side="left", padx=12)
 
         # -- body: per-frame phase table (left) + plot (right) ------------
+        # NOTE: the body has its own row. The help label above shares no cell
+        # with it — sharing row 16 was the bug that made the 'Show
+        # instructions' checkbox appear to do nothing (the label toggled
+        # underneath the body frame).
         body = ttk.Frame(frame)
-        body.grid(row=16, column=0, columnspan=3, sticky="nsew")
-        frame.rowconfigure(16, weight=1)
+        body.grid(row=19, column=0, columnspan=3, sticky="nsew")
+        frame.rowconfigure(19, weight=1)
         frame.columnconfigure(0, weight=1)
 
         # Left: a frame selector and a ranked table of phases for that frame.
@@ -2656,8 +2714,9 @@ class AnalysisApp:
 
         ttk.Label(
             self.identify_plot_frame,
-            text="Enable phase identification and Run (see steps above), or click "
-                 "\"Load identification\" to view per-frame phases + confidence.",
+            text="Enable phase identification and Run, or click \"Load "
+                 "identification\" to view per-frame phases + confidence. "
+                 "Tick \"Show instructions\" (top) for the step-by-step workflow.",
             foreground=MUTED,
         ).pack(anchor="center", expand=True)
 
@@ -2978,6 +3037,42 @@ class AnalysisApp:
         names = self.config.get("candidate_phases", [])
         return [library[n] for n in names if n in library]
 
+    # Result caches so toggling a plot option doesn't recompute reflection
+    # simulation / ROI integration. Keyed on the file's mtime — a re-run
+    # invalidates them automatically.
+
+    @staticmethod
+    def _analysis_mtime(path) -> int:
+        try:
+            return Path(path).stat().st_mtime_ns
+        except OSError:
+            return 0
+
+    def _cached_tracks(self, path, phase):
+        cache = getattr(self, "_tracks_cache", None)
+        if cache is None:
+            cache = self._tracks_cache = {}
+        key = (str(path), self._analysis_mtime(path), phase.name)
+        if key not in cache:
+            if len(cache) > 64:
+                cache.clear()
+            from .heatmap import reflection_tracks
+            cache[key] = reflection_tracks(path, phase)
+        return cache[key]
+
+    def _cached_layers(self, path, phases):
+        cache = getattr(self, "_layers_cache", None)
+        if cache is None:
+            cache = self._layers_cache = {}
+        key = (str(path), self._analysis_mtime(path),
+               tuple(sorted(p.name for p in phases)))
+        if key not in cache:
+            if len(cache) > 16:
+                cache.clear()
+            from .heatmap import phase_layers
+            cache[key] = phase_layers(path, phases)
+        return cache[key]
+
     # ------------------------------------------------------------------
     # Tab 9 — Pattern map (Hrubiak/XDI-style waterfall + tracks + layers)
     # ------------------------------------------------------------------
@@ -3011,8 +3106,8 @@ class AnalysisApp:
         ttk.Label(row1, text="X axis:", foreground=MUTED).pack(side="left", padx=(12, 2))
         self._pm_xaxis = ttk.Combobox(
             row1,
-            values=["frame", "pressure"],
-            state="readonly", width=10,
+            values=["frame", "pressure", "temperature", "time"],
+            state="readonly", width=11,
         )
         self._pm_xaxis.set("frame")
         self._pm_xaxis.pack(side="left", padx=2)
@@ -3020,10 +3115,13 @@ class AnalysisApp:
                             lambda e: self.load_pattern_map())
 
         self._pm_tracks = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
+        _trk_cb = ttk.Checkbutton(
             row1, text="Overlay reflection tracks",
             variable=self._pm_tracks, command=self.load_pattern_map,
-        ).pack(side="left", padx=8)
+        )
+        _trk_cb.pack(side="left", padx=8)
+        _ToolTip(_trk_cb, "Predicted reflection positions of the enabled phases. "
+                          "Drawn on the frame axis only.")
 
         self._pm_layers = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -3092,7 +3190,7 @@ class AnalysisApp:
 
         import numpy as np
 
-        from .heatmap import pattern_image, reflection_tracks, phase_layers
+        from .heatmap import pattern_image
         from .phases import pymatgen_available
 
         # Update pymatgen hint label
@@ -3138,9 +3236,12 @@ class AnalysisApp:
         self._patternmap_fig = fig
 
         # Waterfall
-        Z = img["Z"]
+        Z = img["Z"]                      # (n_bins, n_frames)
         radial = img["radial"]
         n = img["n_frames"]
+        x_label = img.get("x_label") or "frame index"
+        xv = (np.asarray(img["x"], dtype=float) if img.get("x") is not None
+              else np.arange(n, dtype=float))
 
         pos = Z[np.isfinite(Z) & (Z > 0)]
         if pos.size:
@@ -3150,39 +3251,43 @@ class AnalysisApp:
             vmin = None
             vmax = None
 
-        # X-axis extent: frame index (default) or pressure
-        if x_axis == "pressure" and img.get("x") is not None:
-            x_arr = np.asarray(img["x"], dtype=float)
-            finite_x = x_arr[np.isfinite(x_arr)]
-            if finite_x.size >= 2:
-                x_extent_min = float(np.nanmin(x_arr))
-                x_extent_max = float(np.nanmax(x_arr))
-            else:
-                x_extent_min = 0.0
-                x_extent_max = float(max(n - 1, 1))
-            x_label = img.get("x_label") or "pressure (GPa)"
+        if x_axis == "frame":
+            # Uniform grid → imshow; nearest keeps frame columns crisp.
+            ax.imshow(
+                Z, aspect="auto", origin="lower", cmap="magma",
+                interpolation="nearest",
+                extent=[-0.5, float(n) - 0.5,
+                        float(radial.min()), float(radial.max())],
+                vmin=vmin, vmax=vmax,
+            )
         else:
-            x_extent_min = 0.0
-            x_extent_max = float(max(n - 1, 1))
-            x_label = "frame index"
-
-        ax.imshow(
-            Z, aspect="auto", origin="lower", cmap="magma",
-            extent=[x_extent_min, x_extent_max,
-                    float(radial.min()), float(radial.max())],
-            vmin=vmin, vmax=vmax,
-        )
+            # Physical (possibly non-uniform) coordinates → pcolormesh on the
+            # frames sorted by x; imshow would silently pretend the values are
+            # evenly spaced.
+            fin = np.isfinite(xv)
+            if fin.sum() < 2:
+                msg = f"Fewer than two frames have a finite {x_axis} value."
+                self.ttk.Label(self.patternmap_plot_frame, text=msg,
+                               foreground=WARN).pack(anchor="center", expand=True)
+                if hasattr(self, "_pm_status"):
+                    self._pm_status.configure(text=msg)
+                return
+            order = np.argsort(xv[fin], kind="stable")
+            xs = xv[fin][order]
+            Zs = Z[:, fin][:, order]
+            ax.pcolormesh(xs, radial, Zs, cmap="magma", shading="nearest",
+                          vmin=vmin, vmax=vmax)
         ax.set_xlabel(x_label)
         ax.set_ylabel(img["unit"] or "radial")
         ax.set_title(f"Pattern waterfall — {img['source']}", color=FG)
         self._style_ax(ax)
 
-        # Reflection-track overlays (frame x-axis only — pressure axis uses
-        # a different grid that track coordinates don't align to)
+        # Reflection-track overlays (frame x-axis only — on a sorted physical
+        # axis, frames are reordered and track curves would not align)
         if self._pm_tracks.get() and pymatgen_available() and x_axis == "frame":
             any_phase_plotted = False
             for phase_obj in self._enabled_phase_objects():
-                tr = reflection_tracks(path, phase_obj)
+                tr = self._cached_tracks(path, phase_obj)
                 if not tr["ok"]:
                     continue
                 phase_color = None
@@ -3206,18 +3311,19 @@ class AnalysisApp:
             if any_phase_plotted:
                 ax.legend(fontsize=7, framealpha=0.4)
 
-        # Phase layers on the bottom axis
+        # Per-phase intensity on the bottom axis, vs the same x variable.
         if show_layers and ax2 is not None:
-            pl = phase_layers(path, self._enabled_phase_objects())
+            pl = self._cached_layers(path, self._enabled_phase_objects())
             if pl["ok"]:
                 for layer in pl["layers"]:
-                    ax2.plot(
-                        np.arange(layer["intensity"].size),
-                        layer["intensity"],
-                        lw=0.8, label=layer["name"],
-                    )
-                ax2.set_xlabel("frame index")
-                ax2.set_ylabel("layer intensity (norm.)")
+                    y = np.asarray(layer["intensity"], dtype=float)
+                    lx = xv[:y.size]
+                    m = np.isfinite(lx) & np.isfinite(y)
+                    o = np.argsort(lx[m], kind="stable")
+                    ax2.plot(lx[m][o], y[m][o], lw=0.8, marker=".",
+                             markersize=2, label=layer["name"])
+                ax2.set_xlabel(x_label)
+                ax2.set_ylabel("phase intensity (norm.)")
                 handles2, _ = ax2.get_legend_handles_labels()
                 if handles2:
                     ax2.legend(fontsize=7, framealpha=0.4)
@@ -3231,6 +3337,230 @@ class AnalysisApp:
             self._pm_status.configure(
                 text=f"{img['n_frames']} frames × {radial.size} bins")
         self._attach_hover(self._patternmap_canvas, self._pm_status)
+
+    # ------------------------------------------------------------------
+    # Tab 11 — Grid map (per-frame scalars on the 2D scan grid)
+    # ------------------------------------------------------------------
+
+    def _tab_gridmap(self, frame):
+        tk, ttk = self.tk, self.ttk
+
+        ttk.Label(
+            frame,
+            text=("For mapping runs: frames collected as a raster over the sample "
+                  "are refolded onto their 2D scan grid and coloured by a "
+                  "per-frame value (total/ROI intensity, contamination, peak "
+                  "count, P, T, or one phase's matched intensity)."),
+            foreground=MUTED, justify="left", wraplength=760,
+        ).pack(anchor="w", padx=4, pady=(0, 6))
+
+        row1 = ttk.Frame(frame)
+        row1.pack(fill="x", pady=(0, 2))
+        ttk.Button(row1, text="Load grid map",
+                   command=self.load_grid_map).pack(side="left", padx=4)
+        ttk.Button(row1, text="Open in window",
+                   command=lambda: self._open_plot_window(
+                       getattr(self, "_gridmap_fig", None), "Grid map")
+                   ).pack(side="left", padx=4)
+
+        ttk.Label(row1, text="Value:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        self.vars["map_value"] = tk.StringVar(
+            value=str(self.config.get("map_value", "total")))
+        self._gm_value = ttk.Combobox(
+            row1, textvariable=self.vars["map_value"],
+            values=["total", "max", "contamination", "n_peaks",
+                    "pressure", "temperature"],
+            state="readonly", width=16)
+        self._gm_value.pack(side="left", padx=2)
+        _ToolTip(self._gm_value, HELP["map_value"])
+
+        ttk.Label(row1, text="ROI min/max:", foreground=MUTED).pack(
+            side="left", padx=(12, 2))
+        self.vars["map_roi_min"] = tk.StringVar(
+            value=str(self.config.get("map_roi_min", "")))
+        _roi_lo = ttk.Entry(row1, textvariable=self.vars["map_roi_min"], width=8)
+        _roi_lo.pack(side="left", padx=1)
+        _ToolTip(_roi_lo, HELP["map_roi_min"])
+        self.vars["map_roi_max"] = tk.StringVar(
+            value=str(self.config.get("map_roi_max", "")))
+        _roi_hi = ttk.Entry(row1, textvariable=self.vars["map_roi_max"], width=8)
+        _roi_hi.pack(side="left", padx=1)
+        _ToolTip(_roi_hi, HELP["map_roi_max"])
+
+        self._gm_status = ttk.Label(row1, text="", foreground=MUTED)
+        self._gm_status.pack(side="right", padx=8)
+
+        row2 = ttk.Frame(frame)
+        row2.pack(fill="x", pady=(0, 4))
+        ttk.Label(row2, text="Frames per line:", foreground=MUTED).pack(
+            side="left", padx=(4, 2))
+        self.vars["map_line_len"] = tk.StringVar(
+            value=str(self.config.get("map_line_len", "")))
+        _len_e = ttk.Entry(row2, textvariable=self.vars["map_line_len"], width=8)
+        _len_e.pack(side="left", padx=2)
+        _ToolTip(_len_e, HELP["map_line_len"])
+
+        ttk.Label(row2, text="Scan lines:", foreground=MUTED).pack(
+            side="left", padx=(12, 2))
+        self.vars["map_order"] = tk.StringVar(
+            value=str(self.config.get("map_order", "horizontal")))
+        _ord_c = ttk.Combobox(row2, textvariable=self.vars["map_order"],
+                              values=["horizontal", "vertical"],
+                              state="readonly", width=11)
+        _ord_c.pack(side="left", padx=2)
+        _ToolTip(_ord_c, HELP["map_order"])
+
+        self.vars["map_serpentine"] = tk.BooleanVar(
+            value=bool(self.config.get("map_serpentine", True)))
+        _serp = ttk.Checkbutton(row2, text="Boustrophedon (serpentine)",
+                                variable=self.vars["map_serpentine"])
+        _serp.pack(side="left", padx=12)
+        _ToolTip(_serp, HELP["map_serpentine"])
+
+        self.gridmap_plot_frame = ttk.Frame(frame)
+        self.gridmap_plot_frame.pack(fill="both", expand=True)
+        ttk.Label(
+            self.gridmap_plot_frame,
+            text="Set the frames-per-line to your scan width and Load grid map.",
+            foreground=MUTED,
+        ).pack(anchor="center", expand=True)
+
+    def load_grid_map(self):
+        """Render the scan-grid map of the selected per-frame value."""
+        self.pull_vars()
+        self.save_config(silent=True)
+        path = str(self.config.get("analysis_h5_file", "") or "").strip()
+        if not path or not Path(path).is_file():
+            self._gm_status.configure(text="No analysis HDF5 — run Step 1 first.")
+            return
+
+        prev = getattr(self, "_gridmap_fig", None)
+        if prev is not None:
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.close(prev)
+            except Exception:
+                pass
+            self._gridmap_fig = None
+        for w in self.gridmap_plot_frame.winfo_children():
+            w.destroy()
+
+        def _fail(msg):
+            self.ttk.Label(self.gridmap_plot_frame, text=msg,
+                           foreground=WARN).pack(anchor="center", expand=True)
+            self._gm_status.configure(text=msg)
+
+        try:
+            line_len = int(str(self.config.get("map_line_len", "")).strip())
+            if line_len <= 0:
+                raise ValueError
+        except (ValueError, TypeError):
+            _fail("Enter the frames-per-line of your scan (a positive integer).")
+            return
+
+        def _opt(key):
+            raw = str(self.config.get(key, "")).strip()
+            return float(raw) if raw else None
+        try:
+            roi_lo, roi_hi = _opt("map_roi_min"), _opt("map_roi_max")
+        except ValueError:
+            _fail("ROI min/max must be numbers (or blank).")
+            return
+
+        try:
+            import matplotlib
+            matplotlib.use("TkAgg", force=False)
+            from matplotlib.figure import Figure
+        except Exception as e:
+            _fail(f"matplotlib unavailable: {e}")
+            return
+        import numpy as np
+        from .heatmap import frame_values, frame_grid, grid_map
+
+        kind = str(self.config.get("map_value", "total") or "total")
+        if kind.startswith("phase:"):
+            name = kind.split(":", 1)[1].strip()
+            match = [p for p in self._enabled_phase_objects() if p.name == name]
+            if not match:
+                _fail(f"Phase {name!r} is not enabled on the Phases tab.")
+                return
+            pl = self._cached_layers(path, match)
+            if not pl["ok"] or not pl["layers"]:
+                _fail(pl.get("error") or f"No layer for {name!r} — run Step 3a.")
+                return
+            values = np.asarray(pl["layers"][0]["intensity_raw"], dtype=float)
+            label = f"phase intensity — {name}"
+        else:
+            fv = frame_values(path, kind, radial_min=roi_lo, radial_max=roi_hi)
+            if not fv["ok"]:
+                _fail(fv["error"])
+                return
+            values = fv["values"]
+            label = fv["label"]
+
+        order = str(self.config.get("map_order", "horizontal") or "horizontal")
+        serp = bool(self.config.get("map_serpentine", True))
+        kwargs = ({"n_cols": line_len} if order == "horizontal"
+                  else {"n_rows": line_len})
+        try:
+            grid = grid_map(values, order=order, serpentine=serp, **kwargs)
+            gidx = frame_grid(values.size, order=order, serpentine=serp, **kwargs)
+        except ValueError as e:
+            _fail(str(e))
+            return
+
+        fig = Figure(figsize=(7, 6), dpi=100, layout="constrained")
+        self._gridmap_fig = fig
+        fig.patch.set_facecolor(BG)
+        ax = fig.add_subplot(1, 1, 1)
+        im = ax.imshow(grid, origin="upper", cmap="viridis",
+                       interpolation="nearest", aspect="equal")
+        try:
+            cb = fig.colorbar(im, ax=ax, label=label)
+            self._style_colorbar(cb)
+        except Exception:
+            pass
+        ax.set_xlabel("scan column")
+        ax.set_ylabel("scan row")
+        path_txt = "boustrophedon" if serp else "unidirectional"
+        ax.set_title(f"{label} — {order} lines, {path_txt}", color=FG)
+        self._style_ax(ax)
+
+        canvas = self._embed_figure(self.gridmap_plot_frame, fig)
+        self._gridmap_canvas = canvas
+        n_pad = int(np.sum(gidx < 0))
+        base_txt = (f"{values.size} frames on a {grid.shape[0]}×{grid.shape[1]} "
+                    f"grid" + (f" ({n_pad} empty cells)" if n_pad else ""))
+        self._gm_status.configure(text=base_txt)
+
+        # Hover: resolve (row, col) back to the frame index via the scan path.
+        def _move(event):
+            if event.inaxes is None or event.xdata is None or event.ydata is None:
+                return
+            r, c = int(round(event.ydata)), int(round(event.xdata))
+            if 0 <= r < gidx.shape[0] and 0 <= c < gidx.shape[1]:
+                fi = int(gidx[r, c])
+                if fi >= 0:
+                    v = grid[r, c]
+                    self._gm_status.configure(
+                        text=f"{base_txt}   |   frame {fi}, value {v:.5g}")
+        def _leave(event):
+            self._gm_status.configure(text=base_txt)
+        try:
+            canvas.mpl_connect("motion_notify_event", _move)
+            canvas.mpl_connect("axes_leave_event", _leave)
+        except Exception:
+            pass
+
+    def _refresh_gridmap_values(self):
+        """Extend the Value combo with per-phase entries for enabled phases."""
+        base = ["total", "max", "contamination", "n_peaks",
+                "pressure", "temperature"]
+        names = [f"phase: {p.name}" for p in self._enabled_phase_objects()]
+        try:
+            self._gm_value.configure(values=base + names)
+        except Exception:
+            pass
 
     def export_ml_clicked(self):
         """Export the analysis frames as an ML-ready .npz dataset."""

@@ -1,7 +1,12 @@
-"""Standalone tabbed calibration review GUI.
+"""Tabbed calibration GUI: stage 1 of the pipeline.
 
-This GUI is launched as a supervised subprocess from Jupyter. It prints every
-major action to stdout so the notebook captures a live debug log.
+Pipeline order: calibrate (this stage) -> accept a PONI -> reduce
+(reduce/gui.py) -> analysis (analysis/gui.py). Accepting a calibration here
+hands its PONI + mask to the Reduction stage automatically.
+
+Runs standalone (`bulkxrd-calib-gui`) or embedded as a pane in the unified
+app.py window; either way it prints every major action to stdout, which the
+Console Logs window captures live.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -1132,8 +1137,8 @@ class CalibrationApp:
         if "energy_kev" in self.vars:
             self.vars["energy_kev"].trace_add("write", _sync_from_energy)
 
-        self.ttk.Label(frame, text="Distance, PONI, rotations & wavelength are applied to integration; "
-                       "detector & pixel size come from the PONI file.",
+        self.ttk.Label(frame, text="Distance, PONI, rotations, and wavelength are applied to integration. "
+                       "Detector name and pixel size come from the PONI file.",
                        foreground=MUTED, wraplength=600, justify="left").grid(
             row=len(frame.grid_slaves()), column=0, columnspan=4, sticky="w", padx=4, pady=(0, 6))
 
@@ -1269,7 +1274,7 @@ class CalibrationApp:
         # Main: derive bin counts from detector geometry.
         self.ttk.Button(frame, text="Auto-set bins from image/PONI",
                         command=lambda: self._suggest_generation_bins(force=True)).grid(row=8, column=0, padx=4, pady=6, sticky="w")
-        self.ttk.Label(frame, text="Derives bin counts from the detector geometry (~1 bin per pixel of radial extent). Will not override edited values.",
+        self.ttk.Label(frame, text="Derives bin counts from the detector geometry (about 1 bin per pixel of radial extent). Won't overwrite values you've already edited.",
                        foreground=MUTED, wraplength=700).grid(row=8, column=1, columnspan=3, sticky="w", padx=4)
         self.entry_widgets.get("radial_min") and self.entry_widgets["radial_min"].configure(state="normal")
         self.entry_widgets.get("radial_max") and self.entry_widgets["radial_max"].configure(state="normal")

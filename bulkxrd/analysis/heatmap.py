@@ -8,12 +8,19 @@ pressure) in place of their 2D spatial grid.
 This module turns the analysis HDF5 into the arrays the GUI plots:
 
   * ``pattern_image``  — the I(q)/I(2θ) stack as a waterfall image
-    (radial axis × frame|pressure), the base "SXDM image".
+    (radial axis × series axis), the base "SXDM image".
   * ``reflection_tracks`` — predicted hkl positions of a phase across frames
     (d0·s(P) → radial unit), to overlay on the waterfall.
   * ``phase_layers``  — per-substance ROI-integrated intensity F(I) vs frame
     (Eq. 1 of the paper), i.e. the filterable per-phase "layers" / false-color
     composite source.
+  * ``series_axis``   — the per-frame independent variable (frame index,
+    pressure, temperature, or elapsed time) any series plot can use as x.
+  * ``frame_grid`` / ``grid_map`` — refold a linear frame series onto the 2D
+    scan grid it was collected on (horizontal/vertical scan lines,
+    boustrophedon or unidirectional), for mapping experiments.
+  * ``frame_values``  — per-frame scalars (integrated/max intensity, optional
+    ROI, contamination, peak count, P, T) to display on that grid.
 
 Pure numpy + h5py (h5py lazy). ``reflection_tracks``/``phase_layers`` need the
 phase reflection lists (pymatgen, via ``identify``); ``pattern_image`` does not.
@@ -81,6 +88,254 @@ def _frame_temperature(h5) -> "Optional[np.ndarray]":
     return tt if np.any(np.isfinite(tt)) else None
 
 
+def _frame_elapsed_seconds(h5) -> "Optional[np.ndarray]":
+    """Per-frame elapsed time (s) from ``/frames/timestamp`` ISO strings,
+    relative to the first parseable stamp. None when absent/unparseable."""
+    from datetime import datetime
+    fr = h5.get("frames")
+    if fr is None or "timestamp" not in fr:
+        return None
+    raw = fr["timestamp"][:]
+    secs = np.full(len(raw), np.nan)
+    for i, s in enumerate(raw):
+        txt = s.decode("utf-8", "replace") if isinstance(s, (bytes, bytearray)) else str(s)
+        txt = txt.strip()
+        if not txt:
+            continue
+        try:
+            secs[i] = datetime.fromisoformat(txt).timestamp()
+        except ValueError:
+            continue
+    if not np.any(np.isfinite(secs)):
+        return None
+    return secs - np.nanmin(secs)
+
+
+# Independent variables a series plot can use on its x-axis.
+SERIES_AXES = ("frame", "pressure", "temperature", "time")
+
+
+def _series_x(h5, kind: str, pressure_phase: "Optional[str]" = None,
+              n: "Optional[int]" = None):
+    """Resolve the per-frame independent variable on an OPEN analysis file.
+
+    Returns ``(x, label)``. Raises ValueError with an instructive message when
+    the requested variable is not in the file.
+    """
+    k = (kind or "frame").strip().lower()
+    if k in ("frame", "index", ""):
+        if n is None:
+            raise ValueError("frame axis needs the frame count")
+        return np.arange(int(n), dtype=float), "frame index"
+    if k == "pressure":
+        if pressure_phase:
+            pr = _pressure_track(h5, pressure_phase)
+            if pr is None:
+                raise ValueError(f"No Step-3a pressure track for {pressure_phase!r} "
+                                 "— run Step 3a first.")
+            return pr, f"pressure (GPa) — {pressure_phase}"
+        pr = _frame_pressure(h5)
+        if pr is None:
+            raise ValueError("No frame pressure — extract/import one on the "
+                             "Frame metadata tab, or pass a pressure_phase "
+                             "with a Step-3a track.")
+        return pr, "pressure (GPa)"
+    if k == "temperature":
+        tt = _frame_temperature(h5)
+        if tt is None:
+            raise ValueError("No frame temperature — import a CSV with a "
+                             "temperature_K column on the Frame metadata tab.")
+        return tt, "temperature (K)"
+    if k in ("time", "timestamp"):
+        ts = _frame_elapsed_seconds(h5)
+        if ts is None:
+            raise ValueError("No parseable /frames/timestamp in this file.")
+        return ts, "elapsed time (s)"
+    raise ValueError(f"Unknown series axis {kind!r} (choose from {SERIES_AXES}).")
+
+
+def series_axis(analysis_h5: "str | Path", kind: str = "frame", *,
+                pressure_phase: "Optional[str]" = None) -> Dict[str, Any]:
+    """Per-frame independent variable for plotting.
+
+    Returns ``{ok, error, x, label, kind, n_frames}``. ``kind`` is one of
+    :data:`SERIES_AXES`; "pressure" uses ``/frames/pressure`` (or the
+    ``pressure_phase`` Step-3a track), "temperature" uses
+    ``/frames/temperature``, "time" parses ``/frames/timestamp``.
+    """
+    out: Dict[str, Any] = {"ok": False, "error": "", "x": None,
+                           "label": "", "kind": kind, "n_frames": 0}
+    p = Path(analysis_h5).expanduser()
+    if not p.is_file():
+        out["error"] = f"File does not exist: {p}"
+        return out
+    try:
+        with _open(p) as h5:
+            bg = h5.get("background")
+            fr = h5.get("frames")
+            if bg is not None and "clean" in bg:
+                n = int(bg["clean"].shape[0])
+            elif fr is not None and "filename" in fr:
+                n = int(fr["filename"].shape[0])
+            else:
+                out["error"] = "No frames in file — run Step 1 first."
+                return out
+            x, label = _series_x(h5, kind, pressure_phase, n=n)
+        out.update({"ok": True, "x": np.asarray(x, dtype=float),
+                    "label": label, "n_frames": n})
+    except ValueError as e:
+        out["error"] = str(e)
+    except Exception as e:
+        out["error"] = f"Failed to read HDF5: {e!r}"
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Scan-grid mapping (2D raster/mapping experiments)
+# ---------------------------------------------------------------------------
+
+def frame_grid(n_frames: int, *, n_cols: "Optional[int]" = None,
+               n_rows: "Optional[int]" = None, order: str = "horizontal",
+               serpentine: bool = True) -> np.ndarray:
+    """Map a linear frame series onto a 2D scan grid.
+
+    ``order="horizontal"`` fills scan lines as ROWS (give ``n_cols`` = frames
+    per line); ``order="vertical"`` fills scan lines as COLUMNS (give
+    ``n_rows`` = frames per line). Only one of ``n_cols``/``n_rows`` is
+    needed; the other is derived. ``serpentine=True`` (boustrophedon) reverses
+    every second scan line, as collected by a back-and-forth stage raster;
+    ``False`` is a unidirectional raster (every line same direction).
+
+    Returns an int array (n_rows, n_cols) of frame indices, ``-1`` where the
+    last line is not filled. Frame 0 is the top-left of the first scan line.
+    """
+    n = int(n_frames)
+    if n <= 0:
+        raise ValueError("n_frames must be positive")
+    nc = int(n_cols) if n_cols else 0
+    nr = int(n_rows) if n_rows else 0
+    if nc < 0 or nr < 0:
+        raise ValueError("n_cols/n_rows must be positive")
+    if not nc and not nr:
+        raise ValueError("give n_cols (horizontal) or n_rows (vertical) — "
+                         "the frames-per-scan-line count")
+    o = (order or "horizontal").strip().lower()
+    if o not in ("horizontal", "vertical"):
+        raise ValueError(f"order must be 'horizontal' or 'vertical', got {order!r}")
+    # Scan-line length and number of lines, regardless of orientation.
+    if o == "horizontal":
+        line = nc or int(np.ceil(n / nr))
+    else:
+        line = nr or int(np.ceil(n / nc))
+    if line <= 0:
+        raise ValueError("scan-line length must be positive")
+    n_lines = int(np.ceil(n / line))
+    flat = np.full(n_lines * line, -1, dtype=int)
+    flat[:n] = np.arange(n)
+    g = flat.reshape(n_lines, line)
+    if serpentine:
+        g[1::2] = g[1::2, ::-1]
+    return g if o == "horizontal" else g.T
+
+
+def grid_map(values, *, n_cols: "Optional[int]" = None,
+             n_rows: "Optional[int]" = None, order: str = "horizontal",
+             serpentine: bool = True) -> np.ndarray:
+    """Arrange a per-frame scalar onto the scan grid (see :func:`frame_grid`).
+
+    Returns a float array (n_rows, n_cols); padding cells are NaN.
+    """
+    v = np.asarray(values, dtype=float).ravel()
+    g = frame_grid(v.size, n_cols=n_cols, n_rows=n_rows, order=order,
+                   serpentine=serpentine)
+    out = np.full(g.shape, np.nan)
+    ok = g >= 0
+    out[ok] = v[g[ok]]
+    return out
+
+
+# Per-frame scalars the scan-grid map can display (besides phase layers).
+FRAME_VALUES = ("total", "max", "contamination", "n_peaks",
+                "pressure", "temperature")
+
+
+def frame_values(analysis_h5: "str | Path", kind: str = "total", *,
+                 radial_min: "Optional[float]" = None,
+                 radial_max: "Optional[float]" = None) -> Dict[str, Any]:
+    """One scalar per frame, for the scan-grid map or a series plot.
+
+    ``kind``: "total"/"max" integrate/peak the Step-2 fit source, optionally
+    restricted to ``radial_min..radial_max`` (an ROI on the radial axis);
+    "contamination" reads ``/frames/contamination``; "n_peaks" reads
+    ``/peaks/counts``; "pressure"/"temperature" read the frame metadata.
+    Returns ``{ok, error, values, label, n_frames}``.
+    """
+    out: Dict[str, Any] = {"ok": False, "error": "", "values": None,
+                           "label": kind, "n_frames": 0}
+    p = Path(analysis_h5).expanduser()
+    if not p.is_file():
+        out["error"] = f"File does not exist: {p}"
+        return out
+    k = (kind or "total").strip().lower()
+    try:
+        with _open(p) as h5:
+            if k in ("total", "max"):
+                bg = h5.get("background")
+                if bg is None or "clean" not in bg:
+                    out["error"] = "No /background/clean — run Step 1 first."
+                    return out
+                data = _peaks_fit_source(h5)
+                radial = np.asarray(h5["radial"][:], dtype=float) \
+                    if "radial" in h5 else np.arange(data.shape[1], dtype=float)
+                sel = np.ones(radial.size, dtype=bool)
+                if radial_min is not None:
+                    sel &= radial >= float(radial_min)
+                if radial_max is not None:
+                    sel &= radial <= float(radial_max)
+                if not sel.any():
+                    out["error"] = "Radial window selects no bins."
+                    return out
+                roi = (radial_min is not None or radial_max is not None)
+                if k == "total":
+                    vals = np.nansum(data[:, sel], axis=1)
+                    label = "integrated intensity" + (" (ROI)" if roi else "")
+                else:
+                    vals = np.nanmax(data[:, sel], axis=1)
+                    label = "max intensity" + (" (ROI)" if roi else "")
+            elif k == "contamination":
+                fr = h5.get("frames")
+                if fr is None or "contamination" not in fr:
+                    out["error"] = "No /frames/contamination — run Step 1 first."
+                    return out
+                vals = np.asarray(fr["contamination"][:], dtype=float)
+                label = "contamination score"
+            elif k == "n_peaks":
+                pk = h5.get("peaks")
+                if pk is None or "counts" not in pk:
+                    out["error"] = "No /peaks — run Step 2 first."
+                    return out
+                vals = np.asarray(pk["counts"][:], dtype=float)
+                label = "peaks per frame"
+            elif k in ("pressure", "temperature"):
+                arr = (_frame_pressure(h5) if k == "pressure"
+                       else _frame_temperature(h5))
+                if arr is None:
+                    out["error"] = (f"No frame {k} — populate it on the "
+                                    "Frame metadata tab.")
+                    return out
+                vals = arr
+                label = "pressure (GPa)" if k == "pressure" else "temperature (K)"
+            else:
+                out["error"] = (f"Unknown value {kind!r} "
+                                f"(choose from {FRAME_VALUES}).")
+                return out
+        out.update({"ok": True, "values": np.asarray(vals, dtype=float),
+                    "label": label, "n_frames": int(np.asarray(vals).size)})
+    except Exception as e:
+        out["error"] = f"Failed to read HDF5: {e!r}"
+    return out
+
+
 def _pressure_track(h5, phase_name: str) -> "Optional[np.ndarray]":
     gid = h5.get("identify")
     if gid is None:
@@ -125,12 +380,12 @@ def pattern_image(analysis_h5: "str | Path", *, source: str = "clean",
 
     Returns ``{ok, error, Z, radial, x, x_label, unit, source, n_frames}`` where
     ``Z`` has shape (n_bins, n_frames) — radial down the rows, frames across the
-    columns — ready for ``imshow``/``pcolormesh``. With ``x_axis="pressure"``,
-    ``x`` holds a per-frame pressure: the frame-metadata pressure
-    (``/frames/pressure``, from filenames or a CSV import) when no
-    ``pressure_phase`` is given, otherwise that phase's Step-3a inferred track.
-    Falls back to the frame index (with an explanatory ``x_label``) if neither
-    pressure source is available.
+    columns — ready for ``imshow``/``pcolormesh``. ``x_axis`` is any of
+    :data:`SERIES_AXES` ("frame", "pressure", "temperature", "time");
+    ``x`` then holds that per-frame variable. For "pressure", the frame
+    metadata (``/frames/pressure``) is used unless a ``pressure_phase`` with a
+    Step-3a track is given. An unavailable variable is an error, not a silent
+    fallback.
     """
     p = Path(analysis_h5).expanduser()
     out: Dict[str, Any] = {"ok": False, "error": "", "Z": None, "radial": None,
@@ -182,25 +437,11 @@ def pattern_image(analysis_h5: "str | Path", *, source: str = "clean",
             n = data.shape[0]
             radial = np.asarray(h5["radial"][:], dtype=float) if "radial" in h5 \
                 else np.arange(data.shape[1], dtype=float)
-            x = np.arange(n, dtype=float)
-            x_label = "frame index"
-            if x_axis == "pressure":
-                if pressure_phase:
-                    pr = _pressure_track(h5, pressure_phase)
-                    if pr is None:
-                        out["error"] = (f"No Step-3a pressure track for {pressure_phase!r} "
-                                        "— run Step 3a first.")
-                        return out
-                    x_label = f"pressure (GPa) — {pressure_phase}"
-                else:
-                    pr = _frame_pressure(h5)
-                    if pr is None:
-                        out["error"] = ("x_axis='pressure' needs a frame pressure: import "
-                                        "or extract one on the Frame metadata tab, or pass "
-                                        "a pressure_phase with a Step-3a track.")
-                        return out
-                    x_label = "pressure (GPa) — frame metadata"
-                x = pr
+            try:
+                x, x_label = _series_x(h5, x_axis, pressure_phase, n=n)
+            except ValueError as e:
+                out["error"] = str(e)
+                return out
             out.update({"ok": True, "Z": data.T, "radial": radial, "x": x,
                         "x_label": x_label, "n_frames": int(n)})
     except Exception as e:
@@ -307,8 +548,10 @@ def phase_layers(analysis_h5: "str | Path", phases: "Sequence[Phase]", *,
     phase, the filterable "layer" / false-color composite source.
 
     Returns ``{ok, error, unit, n_frames, layers}`` with ``layers`` a list of
-    ``{name, category, intensity, n_pred}`` (intensity length n_frames, max-
-    normalised). Requires pymatgen + a Step-3a ``/identify`` group.
+    ``{name, category, intensity, intensity_raw, n_pred}`` (both length
+    n_frames; ``intensity`` is max-normalised, ``intensity_raw`` is the raw
+    ROI-integrated counts for cross-phase comparison). Requires pymatgen + a
+    Step-3a ``/identify`` group.
     """
     p = Path(analysis_h5).expanduser()
     out: Dict[str, Any] = {"ok": False, "error": "", "unit": "", "n_frames": 0,
@@ -352,6 +595,7 @@ def phase_layers(analysis_h5: "str | Path", phases: "Sequence[Phase]", *,
             mx = inten.max()
             layers.append({"name": ph.name, "category": ph.category,
                            "intensity": inten / mx if mx > 0 else inten,
+                           "intensity_raw": inten.copy(),
                            "n_pred": len(tr["tracks"])})
         out.update({"ok": True, "unit": unit, "n_frames": n, "layers": layers})
     except Exception as e:

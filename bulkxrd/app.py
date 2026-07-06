@@ -1,8 +1,10 @@
 """Unified Bulk-XRD desktop application.
 
-A single window with a native menubar and one tab per pipeline stage:
-Calibration, Reduction, and (planned) Analysis. Each stage's existing App is
-embedded as a pane in a shared Tk root — the per-stage standalone entry points
+A single window with a native menubar and one tab per pipeline stage, in
+order: Calibration -> Reduction -> Analysis. Accepting a calibration hands its
+PONI + mask to the Reduction tab automatically; a finished reduction hands its
+output HDF5 to the Analysis tab automatically. Each stage's existing App is
+embedded as a pane in a shared Tk root; the per-stage standalone entry points
 (`bulkxrd-calib-gui`, `bulkxrd-reduce-gui`) keep working unchanged.
 
 All Tk imports are deferred into functions so this module imports headlessly
@@ -69,9 +71,9 @@ class BulkXRDApp:
         calib_tab = ttk.Frame(nb)
         reduce_tab = ttk.Frame(nb)
         analysis_tab = ttk.Frame(nb)
-        nb.add(calib_tab, text="Calibration")
-        nb.add(reduce_tab, text="Reduction")
-        nb.add(analysis_tab, text="Analysis")
+        nb.add(calib_tab, text="1 Calibration")
+        nb.add(reduce_tab, text="2 Reduction")
+        nb.add(analysis_tab, text="3 Analysis")
 
         # Embed the two stage panes.
         self.calib_pane = make_calib_pane(calib_tab, calib_cfg)

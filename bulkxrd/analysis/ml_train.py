@@ -25,7 +25,8 @@ information survives; cf. SimXRD-4M's no-pooling finding), a small multi-head
 self-attention encoder, mean+max pooled head → sigmoid. ~1 M parameters —
 minutes per epoch on a laptop CPU for small libraries, fast on a GPU.
 
-Run on WashU RIS (or any GPU box) — full guide in ``docs/ml-training-ris.md``::
+Run on any machine (WashU RIS or any other GPU box) — full guide in
+``docs/ml-training.md`` (WashU-RIS-specific addendum: ``docs/ml-training-ris.md``)::
 
     pip install -e .[phases,ml]          # pymatgen for reflections, torch for training
     bulkxrd-ml-train --workspace /path/to/workspace --out scorer.pt \

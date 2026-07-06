@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "bulkxrd"
 # Keep in sync with VERSION in bulkxrd/core/config.py.
 version = "0.2.0"
-description = "Notebook-controlled workflow for powder XRD: calibration review (pyFAI-based), dataset reduction, and analysis"
+description = "GUI + CLI workflow for powder XRD series: calibration (pyFAI-based), dataset reduction, and automated phase analysis"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
