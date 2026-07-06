@@ -21,10 +21,13 @@ def _gauss(x, c, a, w):
     return a * np.exp(-0.5 * ((x - c) / w) ** 2)
 
 
-def _make_reduced(path, n=8, nb=1000, excluded_idx=(3,)):
+def _make_reduced(path, n=8, nb=1000, excluded_idx=(3,), noise=0.0):
     """Synthetic reduced HDF5 with strong peaks, a diamond spike, a PONI
-    wavelength, and one excluded frame."""
+    wavelength, and one excluded frame. ``noise`` adds Gaussian counts noise
+    (noise-free data makes the MAD floor collapse and every fit flag
+    BAD_CHI2, which some tests rely on and others must avoid)."""
     import h5py
+    rng = np.random.default_rng(7)
     q = np.linspace(1.0, 7.0, nb)
     mean = np.zeros((n, nb), "f4")
     robust = np.zeros((n, nb), "f4")
@@ -34,6 +37,8 @@ def _make_reduced(path, n=8, nb=1000, excluded_idx=(3,)):
         peaks = (_gauss(q, 2.5 - shift, 600, 0.02) + _gauss(q, 3.6 - shift, 500, 0.02)
                  + _gauss(q, 5.1 - shift, 550, 0.02))
         robust[i] = bg + peaks
+        if noise:
+            robust[i] += rng.normal(0.0, noise, nb)
         mean[i] = robust[i] + _gauss(q, 4.2, 3000, 0.02)   # diamond spike (MEAN only)
     excl = np.zeros(n, bool)
     for j in excluded_idx:
@@ -151,11 +156,37 @@ def test_batch_cli():
                 assert "identify" in h
 
 
+def test_batch_cli_step2_knobs():
+    """The Step-2 detection knobs are honored from the CLI: a --fit-min/--fit-max
+    window excludes peaks outside it, and the other overrides parse cleanly."""
+    with tempfile.TemporaryDirectory() as td:
+        red = Path(td) / "reduced.h5"
+        _make_reduced(red, n=4, noise=2.0)      # peaks near q = 2.5, 3.6, 5.1
+        out = Path(td) / "out.h5"
+        rc = batch.main([
+            str(red), "-o", str(out), "--steps", "12", "--workers", "1",
+            "--fit-min", "3.0", "--fit-max", "4.5",
+            "--min-prominence-snr", "2", "--edge-bins", "5",
+            "--min-fwhm-bins", "2", "--detrend-bins", "0",
+        ])
+        assert rc == 0
+        import h5py
+        with h5py.File(str(out), "r") as h:
+            centers = h["peaks/center"][:]
+            flags = h["peaks/flag"][:]
+            good = centers[flags == 0]
+            assert good.size > 0
+            assert good.min() >= 3.0 and good.max() <= 4.5, (good.min(), good.max())
+            # only the 3.6 reflection sits inside the window
+            assert np.all(np.abs(good - good.mean()) < 0.2)
+
+
 def main() -> None:
     test_background_wavelength_excluded_and_parallel()
     test_peaks_excluded_atomic_and_parallel()
     test_identify_excluded_and_parallel()
     test_batch_cli()
+    test_batch_cli_step2_knobs()
     print("BATCH/PARALLEL TEST OK")
 
 

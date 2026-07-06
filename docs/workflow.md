@@ -174,9 +174,14 @@ Six tabs, in order:
    thumbnails, workers). See [§4.2](#42-reduction) for the ones that matter.
 4. **4 Run** — launch the crash-isolated worker subprocess, watch a progress
    bar and log.
-5. **5 Review** — read-only inspector for the reduced HDF5: structure
-   summary plus overlaid/separated plots of a few sample patterns and (if
-   saved) a cake.
+5. **5 Review** — inspector for the reduced HDF5: structure summary plus
+   overlaid/separated plots of a few sample patterns and (if saved) a cake.
+   Two cake-waviness tools live here (both need `save_cakes`):
+   "Diagnose waviness" fits the ring wobble r(φ) and reports the amplitude,
+   the 1D doublet splitting it causes, and the implied transverse sample
+   offset in mm; "Write straightened 1D" writes the rescue channel
+   `/patterns/intensity_straightened` for data you can't re-reduce (the
+   proper fix is re-refining the geometry on a sample ring).
 6. **6 Gallery** — a per-frame cake+1D thumbnail grid; click a frame to
    toggle its `excluded` flag (written straight to the `.h5`, no re-reduction
    needed). Needs `make_thumbnails=True` from the run.
@@ -251,12 +256,12 @@ the same config.
 
 `bulkxrd-analyze` has no such caveat — its argparse flags are the supported
 contract. Note it does **not** read `analysis_session_config.json`; it is a
-fully independent entry point with its own flag set. That flag set is a
-useful subset of what `run_peak_fitting()`/the GUI expose — it does **not**
-have flags for `detrend_bins`, `edge_bins`, `fit_min`/`fit_max`, or
-`min_fwhm_bins` (Step 2's edge/window/detrend knobs). Reach those either
-through the GUI or by calling `bulkxrd.analysis.peaks.run_peak_fitting(...)`
-/ `bulkxrd.analysis.worker.run_analysis(config_dict)` from your own script.
+fully independent entry point with its own flag set, covering every Step-2
+detection knob the GUI has (`--min-snr`, `--min-prominence-snr`,
+`--edge-bins`, `--fit-min`/`--fit-max`, `--min-fwhm-bins`,
+`--detrend-bins`). For anything beyond that, call
+`bulkxrd.analysis.peaks.run_peak_fitting(...)` /
+`bulkxrd.analysis.worker.run_analysis(config_dict)` from your own script.
 
 ## 4. Parameter tuning
 
@@ -283,7 +288,7 @@ table follows each stage's knobs.
 | `robust_1d` / `robust_quant_halfwidth` | on / `0.05` (45–55% azimuthal quantile band) | Keep on — Step 1 requires `intensity_robust`. Only touch the half-width if you understand the tradeoff: smaller keeps more spot-rejection power but pushes toward the pure-median quantization staircase; `0` explicitly requests the pure median (do this only if you've confirmed your pyFAI build actually honors the quantile-band kwargs — see the troubleshooting row below). |
 | `sigmaclip_1d` / `sigmaclip_thresh` / `sigmaclip_maxiter` | on / `3.0` / `5` | Keep on — it's the recommended Step-2 fit source (`source="sigmaclip"`/`"auto"`) for spotty/textured rings. Lower `sigmaclip_thresh` (more aggressive rejection) only if diamond spots are still leaking into it; raise `sigmaclip_maxiter` if convergence looks incomplete on very spotty data. |
 | `azimuth_range` | blank (full azimuth) | **Config-file only** — not exposed in the Reduction Settings tab. A `"min,max"` degree sector applied to all three 1D channels alike (mean/robust/sigmaclip must all see the same pixels, or `spot_residual = mean − robust` stops meaning anything). Stopgap for a wavy/tilted ring when re-calibration on a sample-position ring isn't possible; needs a pyFAI whose robust integrators accept `azimuth_range`. Cakes stay full-azimuth regardless (they're the waviness diagnostic). |
-| `save_cakes` / `cake_every` | off / `1` | Turn `save_cakes` on if you plan to run `reduce.straighten.diagnose_reduced()` (ring-waviness diagnosis) or want per-frame 2D cakes in Review/the Analysis Review tab. `cake_every > 1` samples every Nth frame to bound file size on a long series. |
+| `save_cakes` / `cake_every` | off / `1` | Turn `save_cakes` on if you plan to use the Review tab's "Diagnose waviness" / "Write straightened 1D" buttons (ring-waviness diagnosis + rescue) or want per-frame 2D cakes in Review/the Analysis Review tab. `cake_every > 1` samples every Nth frame to bound file size on a long series. |
 | `make_thumbnails` | on | Turn off for very large datasets to save time/disk — you lose the Gallery tab's per-frame previews (results are unaffected). |
 | `num_workers` | `0` (auto = CPU count − 1) | Set to `1` for deterministic serial runs (easier debugging) or lower than auto if the workstation is shared. |
 
@@ -292,7 +297,7 @@ table follows each stage's knobs.
 | Problem | Likely cause | Knob |
 |---|---|---|
 | Low-intensity patterns look like clean staircases | Robust channel fell back to a pure median (your pyFAI ignores the quantile-band kwargs — check the reduce log for "median(band_unsupported)") | Upgrade pyFAI, or fit downstream on `sigmaclip`/`mean` instead of the median-derived channels. |
-| Every peak in the pattern is a constant-splitting double-horned doublet | Ring waviness — sample measured off the calibrant's position (routine in a DAC where the calibrant sits outside the cell) | `save_cakes=True`, then `reduce.straighten.diagnose_reduced(reduced_h5)`; re-refine the PONI on a sample-position ring and re-reduce, or use `straighten_reduced()` as a rescue path on already-collected data. |
+| Every peak in the pattern is a constant-splitting double-horned doublet | Ring waviness — sample measured off the calibrant's position (routine in a DAC where the calibrant sits outside the cell) | `save_cakes=True`, then Review tab → "Diagnose waviness" (reports the amplitude, doublet splitting, and implied sample offset in mm); re-refine the PONI on a sample-position ring and re-reduce, or Review tab → "Write straightened 1D" as a rescue path on already-collected data. |
 | Analysis Step 1 refuses to run: "lacks patterns/intensity_robust" | `robust_1d` was off for this reduction | Re-run reduction with `robust_1d=True`. |
 | Step-2 log warns peaks are undersampled | `npt_1d` too low for the peak widths actually present | Re-reduce with the printed `npt_recommended` value (or leave `npt_1d` blank next time). |
 
@@ -310,7 +315,7 @@ table follows each stage's knobs.
 | `max_chi2` | `25.0` | Reduced χ² above which a fit is flagged `FLAG_BAD_CHI2`. Tighten (lower) for a cleaner peak map at the cost of more rejected fits; loosen if visibly good fits are being flagged bad. |
 | `auto_range` / `fit_min` / `fit_max` | on / blank / blank | Leave `auto_range` on and both bounds blank for the conservative automatic trim (skips the beamstop ramp and dead/noisy tail, capped at ~15% of the axis per end). Set `fit_min` above the beamstop onset explicitly if the low-angle ramp is still inflating the noise floor and hiding weak peaks; set `fit_max` below a noisy detector tail similarly. |
 | `hybrid_spike_bins` | `5` | Only matters with `peak_source=hybrid`. Radial width (bins) below which the azimuthal-mean excess is treated as a diamond spike and removed; above it, kept as real ring texture. Lower it if diamond spikes are still bleeding through into `hybrid`; raise it if it's clipping genuinely broad real texture. |
-| `detrend_bins` | `81` (GUI/session default; the bare `run_peak_fitting()`/`bulkxrd-analyze` default is `0`=off) | Detection-only local-baseline window: removes residual broad background SNIP left behind so weak peaks clear the noise threshold (fitting still uses the un-detrended signal). Size it to a few peak widths; `0` disables it. **Not exposed as a `bulkxrd-analyze` CLI flag** — GUI or `run_peak_fitting(local_baseline_bins=...)` only. |
+| `detrend_bins` | `81` (GUI and `bulkxrd-analyze --detrend-bins`; the bare `run_peak_fitting()` function default is `0`=off) | Detection-only local-baseline window: removes residual broad background SNIP left behind so weak peaks clear the noise threshold (fitting still uses the un-detrended signal). Size it to a few peak widths; `0` disables it. |
 | `propagate_seeds` | on | Keep on for series data — seeds each frame's detection with the previous frame's good peak centers so a reflection keeps its identity as the lattice compresses/expands. Turn off only if you suspect seed leakage is masking a genuine peak disappearance/transition. |
 
 **Troubleshooting — peak fitting**
