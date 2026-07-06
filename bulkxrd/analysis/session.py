@@ -84,12 +84,22 @@ _DEFAULTS = {
                                    # then reuse that as the prior for all other phases.
     "min_matched": "3",            # min one-to-one matched reflections to call a phase "present"
     "allow_sparse": False,         # permit marker/sparse phases below min_matched in the residual
+    "intensity_k": "0.3",          # weight of the intensity-agreement factor (0 = positions only)
+    "use_frame_temperature": True, # apply /frames/temperature to predicted d's (thermal seam)
     # Step 3b proposer: ML candidate ranking. Ranks the whole library against each
     # frame (deterministic cosine vs simulated pattern at the frame pressure) and
     # verifies only the top-K with Step 3a — "ML proposes, physics verifies".
     "run_ml_rank": False,
     "ml_rank_top_k": "5",
     "ml_rank_source": "auto",      # auto|residual|fit — what to rank against
+    "ml_scorer": "",               # ''/'cosine' = deterministic; 'torch:<model.pt>' = trained
+    # Grid map (view-only): scan geometry for mapping runs.
+    "map_value": "total",          # per-frame scalar shown on the grid
+    "map_line_len": "",            # frames per scan line (user's raster width/height)
+    "map_order": "horizontal",     # horizontal rows | vertical columns
+    "map_serpentine": True,        # boustrophedon vs unidirectional raster
+    "map_roi_min": "",
+    "map_roi_max": "",
     # Parallelism: 0 = auto (CPU count − 1), 1 = serial, N = N processes.
     "num_workers": "0",
 }
