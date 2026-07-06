@@ -30,7 +30,7 @@ overlaps — not a matching label set.
 
 **Default stays cosine.** `CosineScorer` is the default scorer everywhere in
 the pipeline. Train and validate a learned scorer before switching a real
-analysis run to it (see §5, Validation gates).
+analysis run to it (see §7, Validation gates).
 
 ---
 
