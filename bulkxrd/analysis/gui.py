@@ -2165,7 +2165,7 @@ class AnalysisApp:
         tree_frame = ttk.Frame(frame)
         tree_frame.pack(fill="x", padx=6, pady=(0, 4))
 
-        fm_cols = ("frame", "file", "pressure", "sigma", "temp")
+        fm_cols = ("frame", "file", "pressure", "sigma", "temp", "src")
         self._fm_table = ttk.Treeview(tree_frame, columns=fm_cols, show="headings",
                                       height=10, selectmode="extended")
         fm_vsb = ttk.Scrollbar(tree_frame, orient="vertical",
@@ -2180,9 +2180,11 @@ class AnalysisApp:
             ("pressure", "P (GPa)", 80, "center", False),
             ("sigma", "σ (GPa)", 80, "center", False),
             ("temp", "T (K)", 80, "center", False),
+            ("src", "Src", 50, "center", False),
         ):
             self._fm_table.heading(c, text=txt)
             self._fm_table.column(c, width=w, minwidth=40, anchor=anc, stretch=stretch)
+        self._fm_table.tag_configure("user", foreground=ACCENT)
 
         # Editor row
         editor = ttk.Frame(frame)
@@ -2204,7 +2206,8 @@ class AnalysisApp:
         ttk.Label(
             frame,
             text=("Select frame(s), enter values (blank = leave unchanged), Apply. "
-                  "Values write to /frames and feed the Step-3 pressure prior."),
+                  "Applied values are marked 'user' — filename re-parsing and "
+                  "Step-1 re-runs will not overwrite them."),
             foreground=MUTED,
         ).pack(anchor="w", padx=6, pady=(0, 4))
 
@@ -2344,6 +2347,7 @@ class AnalysisApp:
         pressure = meta.get("pressure")
         sigma = meta.get("pressure_sigma")
         temp = meta.get("temperature")
+        user = meta.get("user_edited")
         n = int(meta.get("n_frames", 0) or 0)
 
         def _fmt(arr, i):
@@ -2355,8 +2359,11 @@ class AnalysisApp:
         for i in range(n):
             fname = names[i] if i < len(names) else ""
             base = fname.rsplit("/", 1)[-1] if fname else ""
+            is_user = bool(user[i]) if user is not None and i < len(user) else False
             tbl.insert("", "end", iid=str(i), values=(
-                i, base, _fmt(pressure, i), _fmt(sigma, i), _fmt(temp, i)))
+                i, base, _fmt(pressure, i), _fmt(sigma, i), _fmt(temp, i),
+                "user" if is_user else "auto"),
+                tags=(("user",) if is_user else ()))
 
     def fm_apply_selected_clicked(self):
         from .frame_metadata import read_frame_metadata, apply_to_analysis
@@ -2422,10 +2429,11 @@ class AnalysisApp:
                 kwargs["temperature"] = temperature
                 parts.append("T")
 
-            apply_to_analysis(path, **kwargs)
+            apply_to_analysis(path, user_frames=indices, **kwargs)
             if hasattr(self, "_fm_status"):
                 self._fm_status.configure(
-                    text=f"Set {', '.join(parts)} on {len(sel)} frame(s).")
+                    text=f"Set {', '.join(parts)} on {len(sel)} frame(s) "
+                         "(marked as user edits — they survive re-runs).")
             self.fm_refresh_table_clicked()
             self._draw_pressure_preview(path)
         except Exception as e:

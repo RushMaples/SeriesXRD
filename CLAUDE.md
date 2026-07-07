@@ -113,6 +113,11 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
                                      (frame_metadata.py). NaN where unknown. Step-3 prior.
 /frames/pressure_sigma       (N,)   GPa per-frame uncertainty (only if a CSV supplied it)
 /frames/temperature, timestamp (N,) carried from reduced when present
+/frames/user_edited          (N,)   bool; P/σ/T a human set (GUI edit / CSV import).
+                                     Skipped by filename re-parse; carried (by filename)
+                                     through a Step-1 rebuild so a corrected metadata
+                                     outlier stays corrected. extract_to_analysis
+                                     (replace=True) is the explicit reset.
 /background/clean            (N, N_bins)  = robust − baseline
 /background/baseline         (N, N_bins)  SNIP estimate
 /background/spot_residual    (N, N_bins)  = mean − robust

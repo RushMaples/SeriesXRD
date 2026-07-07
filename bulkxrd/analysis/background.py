@@ -198,6 +198,41 @@ def separate_background(intensity, intensity_robust,
 SCHEMA_VERSION = "1"
 
 
+def _previous_user_metadata(out_path: Path) -> "Optional[Dict[str, Any]]":
+    """Harvest user-edited frame metadata from an existing analysis file at
+    ``out_path`` before it is rebuilt. Returns ``{by_name, by_index, n}`` where
+    each entry maps to ``(pressure, sigma, temperature)`` tuples, or None when
+    there is nothing to carry."""
+    import h5py  # type: ignore
+    if not out_path.is_file():
+        return None
+    try:
+        with h5py.File(str(out_path), "r") as h5:
+            fr = h5.get("frames")
+            if fr is None or "user_edited" not in fr:
+                return None
+            mask = np.asarray(fr["user_edited"][:], dtype=bool)
+            if not mask.any():
+                return None
+            def _f(key):
+                return (np.asarray(fr[key][:], dtype="f8")
+                        if key in fr else np.full(mask.size, np.nan))
+            pres, sig, temp = _f("pressure"), _f("pressure_sigma"), _f("temperature")
+            names = ([x.decode("utf-8", "replace") if isinstance(x, (bytes, bytearray))
+                      else str(x) for x in fr["filename"][:]]
+                     if "filename" in fr else [])
+            by_name: Dict[str, tuple] = {}
+            by_index: Dict[int, tuple] = {}
+            for j in np.nonzero(mask)[0]:
+                rec = (pres[j], sig[j], temp[j])
+                by_index[int(j)] = rec
+                if j < len(names):
+                    by_name[names[j]] = rec
+            return {"by_name": by_name, "by_index": by_index, "n": int(mask.size)}
+    except Exception:
+        return None   # unreadable/partial file — nothing to carry
+
+
 def _parse_wavelength(poni_text: str) -> float:
     """Extract the wavelength in Å from pyFAI PONI text (stored in metres)."""
     m = re.search(r"wavelength\s*:\s*([0-9eE.+-]+)", str(poni_text), re.IGNORECASE)
@@ -251,8 +286,16 @@ def run_background_separation(
         /frames/pressure             (N,)   GPa; carried from the reduced file, or
                                             parsed from the filenames when that is
                                             empty. NaN where unknown. (Step-3 prior.)
+        /frames/pressure_sigma       (N,)   GPa; only when carried from a previous
+                                            run's user-edited frames
         /frames/temperature          (N,)   K; carried from the reduced file (if any)
         /frames/timestamp            (N,)   str; carried from the reduced file (if any)
+        /frames/user_edited          (N,)   bool; frames whose P/σ/T a human set
+                                            (GUI edit or CSV import). Their values
+                                            are carried forward from the previous
+                                            analysis file (matched by filename) so
+                                            a re-run cannot resurrect the bad value
+                                            the user already corrected.
         /background/clean            (N, N_bins)
         /background/baseline         (N, N_bins)
         /background/spot_residual    (N, N_bins)
@@ -386,6 +429,49 @@ def run_background_separation(
     if pressure is not None:
         n_pressure_parsed = int(np.sum(np.isfinite(pressure)))
 
+    # Carry deliberate human corrections across the rebuild: re-running Step 1
+    # recreates this file, and without this the re-parsed filename pressure
+    # would silently resurrect exactly the value a user already fixed on the
+    # Frame metadata tab (e.g. a mistyped '50p7GPa' token). Matched by
+    # filename; index fallback when the frame count is unchanged.
+    temperature = (red_temperature
+                   if red_temperature is not None and red_temperature.size == n
+                   else None)
+    pressure_sigma = None
+    user_mask = None
+    prev = _previous_user_metadata(out)
+    if prev is not None:
+        user_mask = np.zeros(n, dtype=bool)
+        n_carried = 0
+        for i in range(n):
+            rec = None
+            if names is not None and i < len(names) and names[i] in prev["by_name"]:
+                rec = prev["by_name"][names[i]]
+            elif not prev["by_name"] and prev["n"] == n:
+                rec = prev["by_index"].get(i)
+            if rec is None:
+                continue
+            p_val, s_val, t_val = rec
+            if np.isfinite(p_val):
+                if pressure is None:
+                    pressure = np.full(n, np.nan, "f8")
+                pressure[i] = p_val
+            if np.isfinite(s_val):
+                if pressure_sigma is None:
+                    pressure_sigma = np.full(n, np.nan, "f8")
+                pressure_sigma[i] = s_val
+            if np.isfinite(t_val):
+                if temperature is None:
+                    temperature = np.full(n, np.nan, "f8")
+                temperature[i] = t_val
+            user_mask[i] = True
+            n_carried += 1
+        if n_carried:
+            print(f"[ANALYSIS] preserved {n_carried} user-edited frame metadata "
+                  f"value(s) from the previous analysis file", flush=True)
+        else:
+            user_mask = None
+
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
         with h5py.File(str(tmp), "w") as o:
@@ -416,8 +502,12 @@ def run_background_separation(
             gf.create_dataset("pressure",
                               data=(pressure if pressure is not None
                                     else np.full(n, np.nan, "f8")).astype("f8"))
-            if red_temperature is not None and red_temperature.size == n:
-                gf.create_dataset("temperature", data=red_temperature.astype("f8"))
+            if pressure_sigma is not None:
+                gf.create_dataset("pressure_sigma", data=pressure_sigma.astype("f8"))
+            if user_mask is not None:
+                gf.create_dataset("user_edited", data=user_mask)
+            if temperature is not None and temperature.size == n:
+                gf.create_dataset("temperature", data=temperature.astype("f8"))
             if red_timestamp is not None and len(red_timestamp) == n:
                 import h5py as _h5t
                 gf.create_dataset("timestamp",

@@ -410,6 +410,43 @@ def pressure_window_halfwidth(sigma: "Optional[float]", default_window: float,
     return max(w, _MIN_PRESSURE_WINDOW)
 
 
+def prior_range_offenders(prior_pressure, windows, p_min: float, p_max: float,
+                          names: "Optional[Sequence[str]]" = None,
+                          max_report: int = 5) -> "list[str]":
+    """Describe the frames whose metadata pressure (± window) forces the search
+    range beyond ``[p_min, p_max]`` — usually one bad value (a mistyped
+    filename token or CSV row), so name it instead of only reporting the
+    widened range. A frame far outside the spread of the other priors gets an
+    explicit likely-outlier hint. Returns printable lines (empty = no
+    offenders)."""
+    pr = np.asarray(prior_pressure, dtype=float)
+    w = np.asarray(windows, dtype=float)
+    fin = np.isfinite(pr)
+    # Mirror the widening logic: the low side is clamped at 0 GPa, so a small
+    # prior minus its window only offends when p_min itself is above 0.
+    idx = np.nonzero(fin & ((np.maximum(0.0, pr - w) < p_min)
+                            | (pr + w > p_max)))[0]
+    lines: "list[str]" = []
+    if idx.size == 0:
+        return lines
+    med = float(np.median(pr[fin]))
+    mad = float(np.median(np.abs(pr[fin] - med)))
+    outlier_bar = max(5.0, 8.0 * 1.4826 * mad)
+    for j in idx[:max_report]:
+        name = ""
+        if names is not None and j < len(names) and names[j]:
+            name = f" ({Path(str(names[j])).name})"
+        tag = ""
+        if abs(pr[j] - med) > outlier_bar:
+            tag = (f" — far from the series median ({med:g} GPa); likely a bad "
+                   "metadata value. Fix it on the Frame metadata tab (manual "
+                   "edits persist across re-runs) or in the pressure CSV.")
+        lines.append(f"  frame {int(j)}{name}: prior {pr[j]:g} GPa{tag}")
+    if idx.size > max_report:
+        lines.append(f"  ... and {int(idx.size) - max_report} more frame(s)")
+    return lines
+
+
 PRESSURE_ASSUMPTIONS = ("eos_based", "ambient_reference", "eos_missing", "ignore_prior")
 
 
@@ -797,6 +834,9 @@ def run_identification(
                       if frames is not None and "pressure_sigma" in frames else None)
         file_temperature = (np.asarray(frames["temperature"][:], dtype=float)
                             if frames is not None and "temperature" in frames else None)
+        file_names = ([x.decode("utf-8", "replace") if isinstance(x, (bytes, bytearray))
+                       else str(x) for x in frames["filename"][:]]
+                      if frames is not None and "filename" in frames else None)
     if excluded is None or excluded.size != n:
         excluded = np.zeros(n, dtype=bool)
 
@@ -920,7 +960,10 @@ def run_identification(
             new_lo, new_hi = min(p_min, need_lo), max(p_max, need_hi)
             print(f"[IDENTIFY] WARNING: widening pressure range "
                   f"[{p_min:g},{p_max:g}] -> [{new_lo:g},{new_hi:g}] GPa to cover the "
-                  f"frame-metadata pressures (+window).", flush=True)
+                  f"frame-metadata pressures (+window). Frames responsible:", flush=True)
+            for line in prior_range_offenders(prior_pressure, windows,
+                                              p_min, p_max, file_names):
+                print(f"[IDENTIFY] {line}", flush=True)
             p_min, p_max = new_lo, new_hi
     else:
         prior_pressure = None

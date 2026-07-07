@@ -183,6 +183,104 @@ def test_background_step1_carries_metadata():
         assert md["timestamp"] == ["t0", "t1", "t2"]
 
 
+def _wavy_reduced(path, names, nb=40):
+    import h5py
+    rng = np.random.default_rng(0)
+    n = len(names)
+    mean = rng.normal(10, 1, (n, nb)).astype("f4")
+    with h5py.File(str(path), "w") as h:
+        h.attrs["unit"] = "q_A^-1"
+        h.attrs["poni_text"] = "Wavelength: 4.0e-11"
+        gp = h.create_group("patterns")
+        gp.create_dataset("intensity", data=mean)
+        gp.create_dataset("intensity_robust", data=mean.copy())
+        gp.create_dataset("radial", data=np.linspace(1, 8, nb))
+        gf = h.create_group("frames")
+        gf.create_dataset("filename", data=np.array(names, dtype=object),
+                          dtype=h5py.string_dtype(encoding="utf-8"))
+        gf.create_dataset("excluded", data=np.zeros(n, "?"))
+        gf.create_dataset("pressure", data=np.full(n, np.nan))
+
+
+def test_user_edits_survive_reparse_and_step1():
+    """The bug from the field: a mistyped filename token (50p7GPa for what
+    should have been 5.27 GPa) was re-parsed on every Step-1 re-run,
+    resurrecting the outlier a user had already corrected by hand. Manual
+    edits are now marked user_edited, skipped by re-parsing, and carried
+    forward through a Step-1 rebuild."""
+    from bulkxrd.analysis.background import run_background_separation
+    names = ["UOTe-1GPa-001.tif", "UOTe-50p7GPa-002.tif", "UOTe-3GPa-003.tif"]
+    with tempfile.TemporaryDirectory() as td:
+        red = Path(td) / "red.h5"
+        _wavy_reduced(red, names)
+        out = Path(td) / "an.h5"
+        run_background_separation(red, out)
+        md = fm.read_frame_metadata(out)
+        assert np.allclose(md["pressure"], [1.0, 50.7, 3.0])
+
+        # Fix the outlier by hand, as the GUI's "Apply to selected" does.
+        pr = md["pressure"].copy()
+        pr[1] = 5.27
+        fm.apply_to_analysis(out, pressure=pr, user_frames=[1])
+        md = fm.read_frame_metadata(out)
+        assert md["user_edited"].tolist() == [False, True, False]
+
+        # A filename re-parse must not clobber the fix (other frames still parse).
+        fm.extract_to_analysis(out)
+        md = fm.read_frame_metadata(out)
+        assert np.allclose(md["pressure"], [1.0, 5.27, 3.0])
+
+        # A full Step-1 re-run rebuilds the file — the fix must be carried.
+        run_background_separation(red, out)
+        md = fm.read_frame_metadata(out)
+        assert np.allclose(md["pressure"], [1.0, 5.27, 3.0]), md["pressure"]
+        assert md["user_edited"].tolist() == [False, True, False]
+
+        # replace=True is the explicit reset: re-parse everything, clear marks.
+        fm.extract_to_analysis(out, replace=True)
+        md = fm.read_frame_metadata(out)
+        assert np.allclose(md["pressure"], [1.0, 50.7, 3.0])
+        assert not md["user_edited"].any()
+
+
+def test_csv_import_marks_user_frames():
+    """CSV rows are deliberate human input: mapped frames get the user mark, so
+    a later filename re-parse cannot overwrite them."""
+    names = ["a-1GPa.tif", "b-2GPa.tif", "c-3GPa.tif"]
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "an.h5"
+        _make_analysis(p, names)
+        fm.extract_to_analysis(p)
+        csv = Path(td) / "fix.csv"
+        csv.write_text("frame,pressure_gpa\n1,9.9\n")
+        fm.import_csv_to_analysis(p, csv)
+        md = fm.read_frame_metadata(p)
+        assert md["user_edited"].tolist() == [False, True, False]
+        fm.extract_to_analysis(p)                    # re-parse: keeps the CSV value
+        assert np.allclose(fm.read_frame_metadata(p)["pressure"], [1.0, 9.9, 3.0])
+
+
+def test_prior_range_offenders_names_the_outlier():
+    """The identify range-widening warning names the frame(s) responsible and
+    flags a value far off the series median as a likely metadata error."""
+    from bulkxrd.analysis.identify import prior_range_offenders
+    pr = np.array([1.0, 2.0, 50.7, 3.0, np.nan])
+    w = np.full(5, 2.0)
+    names = ["a.tif", "b.tif", "UOTe-50p7GPa-002.tif", "c.tif", "d.tif"]
+    lines = prior_range_offenders(pr, w, 0.0, 15.0, names=names)
+    assert len(lines) == 1, lines
+    assert "frame 2" in lines[0] and "50p7GPa" in lines[0] and "50.7" in lines[0]
+    assert "median" in lines[0]                       # the outlier hint fired
+    # Low priors near 0 must NOT be flagged when p_min is 0 (the search's low
+    # side clamps at 0, so they never actually widen the range).
+    assert prior_range_offenders(np.array([1.0, 2.0]), np.full(2, 2.0),
+                                 0.0, 15.0) == []
+    # A genuinely out-of-range value without outlier character gets no hint.
+    tight = prior_range_offenders(np.array([14.0, 15.5, 16.0]), np.full(3, 2.0),
+                                  0.0, 15.0)
+    assert tight and all("median" not in s for s in tight)
+
+
 def main() -> None:
     test_parse_pressure_units()
     test_extract_and_summary()
@@ -190,6 +288,9 @@ def main() -> None:
     test_apply_roundtrip_and_partial_overwrite()
     test_partial_csv_merges_not_erases()
     test_background_step1_carries_metadata()
+    test_user_edits_survive_reparse_and_step1()
+    test_csv_import_marks_user_frames()
+    test_prior_range_offenders_names_the_outlier()
     print("FRAME METADATA TEST OK")
 
 

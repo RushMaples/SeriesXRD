@@ -26,6 +26,14 @@ This module is the *source* of that pressure channel. It has one job — populat
 Downstream, ``identify.py`` reads ``/frames/pressure`` + ``/frames/pressure_sigma``
 and scores each phase only within that window (see its ``pressure_by_frame`` arg).
 
+**User-edit provenance** (``/frames/user_edited``, bool per frame): values a
+human set deliberately — the GUI table editor or a CSV import — are marked so
+that (a) a filename re-parse never overwrites them (a mistyped filename token
+is exactly what the manual edit fixed) and (b) a Step-1 re-run carries them
+forward into the rebuilt analysis file (``background.py`` matches by
+filename). ``extract_to_analysis(replace=True)`` is the explicit reset: it
+wipes the pressures AND the marks.
+
 Pure stdlib + numpy + h5py (h5py lazy). HDF5 writes are atomic (``.tmp`` +
 ``os.replace``), matching the rest of the analysis stage.
 """
@@ -296,15 +304,16 @@ def read_frame_metadata(analysis_h5: "str | Path") -> Dict[str, Any]:
     """Read ``/frames`` metadata from an analysis (or reduced) HDF5.
 
     Returns ``{ok, error, n_frames, filename, pressure, pressure_sigma,
-    temperature, timestamp}``. Missing numeric channels come back as all-NaN
-    arrays (length n_frames) so callers can use them unconditionally.
+    temperature, timestamp, user_edited}``. Missing numeric channels come back
+    as all-NaN arrays (length n_frames) so callers can use them
+    unconditionally; ``user_edited`` is an all-False bool array when absent.
     """
     import h5py  # type: ignore
 
     p = Path(analysis_h5).expanduser()
     out: Dict[str, Any] = {"ok": False, "error": "", "n_frames": 0,
                            "filename": [], "pressure": None, "pressure_sigma": None,
-                           "temperature": None, "timestamp": []}
+                           "temperature": None, "timestamp": [], "user_edited": None}
     if not p.is_file():
         out["error"] = f"File not found: {p}"
         return out
@@ -332,6 +341,9 @@ def read_frame_metadata(analysis_h5: "str | Path") -> Dict[str, Any]:
             if fr is not None and "timestamp" in fr:
                 out["timestamp"] = [x.decode("utf-8", "replace") if isinstance(x, (bytes, bytearray))
                                     else str(x) for x in fr["timestamp"][:]]
+            out["user_edited"] = (np.asarray(fr["user_edited"][:], dtype=bool)
+                                  if fr is not None and "user_edited" in fr
+                                  else np.zeros(n, dtype=bool))
             out["ok"] = True
     except Exception as e:  # pragma: no cover - defensive
         out["error"] = f"Failed to read metadata: {e!r}"
@@ -353,12 +365,18 @@ def apply_to_analysis(analysis_h5: "str | Path", *,
                       pressure_sigma: "Optional[Sequence[float]]" = None,
                       temperature: "Optional[Sequence[float]]" = None,
                       timestamp: "Optional[Sequence[str]]" = None,
+                      user_frames: "Optional[Sequence[int]]" = None,
+                      clear_user_marks: bool = False,
                       ) -> Dict[str, Any]:
     """Atomically write the supplied metadata channels into ``/frames``.
 
     Only the channels passed are touched (others on disk are preserved). Length
-    is validated against the existing frame count. Returns a small manifest with
-    the per-channel parsed counts. Atomic via ``.tmp`` + ``os.replace``.
+    is validated against the existing frame count. ``user_frames`` marks those
+    frame indices in ``/frames/user_edited`` — deliberate human values that a
+    filename re-parse must not overwrite and a Step-1 re-run must carry
+    forward. ``clear_user_marks`` resets the whole mask first (the explicit
+    "start over" path). Returns a small manifest with the per-channel parsed
+    counts. Atomic via ``.tmp`` + ``os.replace``.
     """
     import h5py  # type: ignore
 
@@ -389,6 +407,13 @@ def apply_to_analysis(analysis_h5: "str | Path", *,
         if len(ts) != n:
             raise ValueError(f"timestamp has {len(ts)} values but the file has {n} frames.")
 
+    marks = None
+    if user_frames is not None:
+        marks = [int(i) for i in user_frames]
+        bad = [i for i in marks if i < 0 or i >= n]
+        if bad:
+            raise ValueError(f"user_frames out of range 0..{n - 1}: {bad}")
+
     tmp = src.with_name(src.name + ".tmp")
     import shutil
     shutil.copy2(src, tmp)
@@ -404,6 +429,17 @@ def apply_to_analysis(analysis_h5: "str | Path", *,
             if ts is not None:
                 _write_frames_dataset(gf, "timestamp", ts,
                                       str_dtype=h5py.string_dtype(encoding="utf-8"))
+            if clear_user_marks or marks is not None:
+                mask = (np.asarray(gf["user_edited"][:], dtype=bool)
+                        if "user_edited" in gf and not clear_user_marks
+                        else np.zeros(n, dtype=bool))
+                if mask.size != n:
+                    mask = np.zeros(n, dtype=bool)
+                if marks is not None:
+                    mask[marks] = True
+                if "user_edited" in gf:
+                    del gf["user_edited"]
+                gf.create_dataset("user_edited", data=mask)
         os.replace(tmp, src)
     except Exception:
         if tmp.exists():
@@ -434,9 +470,11 @@ def extract_to_analysis(analysis_h5: "str | Path", *, replace: bool = False
 
     ``replace=False`` (default) **merges**: only frames whose filename actually
     carries a pressure are overwritten, so a value already imported for a frame
-    whose filename has no pressure token is preserved. ``replace=True`` wipes the
-    whole channel (frames without a parsed pressure become NaN). Returns the apply
-    manifest plus a ``summary`` of the resulting pressures.
+    whose filename has no pressure token is preserved — and frames marked
+    ``user_edited`` are never overwritten (a mistyped filename token is exactly
+    what the manual edit fixed). ``replace=True`` wipes the whole channel AND
+    the user-edit marks (frames without a parsed pressure become NaN). Returns
+    the apply manifest plus a ``summary`` of the resulting pressures.
     """
     meta = read_frame_metadata(analysis_h5)
     if not meta["ok"]:
@@ -444,8 +482,16 @@ def extract_to_analysis(analysis_h5: "str | Path", *, replace: bool = False
     if not meta["filename"]:
         raise ValueError("Analysis file has no /frames/filename to parse pressures from.")
     parsed = extract_pressures(meta["filename"])
-    pressures = parsed if replace else _merge(parsed, meta["pressure"])
-    man = apply_to_analysis(analysis_h5, pressure=pressures)
+    if replace:
+        pressures = parsed
+        man = apply_to_analysis(analysis_h5, pressure=pressures,
+                                clear_user_marks=True)
+    else:
+        locked = meta.get("user_edited")
+        if locked is not None and locked.size == parsed.size and locked.any():
+            parsed = np.where(locked, np.nan, parsed)   # keep the human's values
+        pressures = _merge(parsed, meta["pressure"])
+        man = apply_to_analysis(analysis_h5, pressure=pressures)
     man["summary"] = summarize_pressures(pressures)
     man["n_parsed_from_names"] = int(np.sum(np.isfinite(parsed)))
     return man
@@ -459,8 +505,11 @@ def import_csv_to_analysis(analysis_h5: "str | Path", csv_path: "str | Path", *,
     ``replace=False`` (default) **merges**: only frames the CSV actually provides
     are overwritten — a partial correction sheet for a few frames will not erase
     the pressures of every other frame. ``replace=True`` writes the mapped array
-    verbatim (frames absent from the CSV become NaN). Returns the apply manifest
-    plus the CSV parse result under ``csv``.
+    verbatim (frames absent from the CSV become NaN). Either way the mapped
+    frames are marked ``user_edited``: a CSV is deliberate human input, so a
+    later filename re-parse must not overwrite it (an explicit CSV import DOES
+    override earlier manual edits — it is the same kind of input, newer).
+    Returns the apply manifest plus the CSV parse result under ``csv``.
     """
     meta = read_frame_metadata(analysis_h5)
     if not meta["ok"]:
@@ -473,6 +522,7 @@ def import_csv_to_analysis(analysis_h5: "str | Path", csv_path: "str | Path", *,
     # Only write sigma/temperature if the CSV actually carried them.
     psig = mapped["pressure_sigma"] if np.any(np.isfinite(mapped["pressure_sigma"])) else None
     temp = mapped["temperature"] if np.any(np.isfinite(mapped["temperature"])) else None
+    mapped_idx = np.nonzero(np.isfinite(mapped["pressure"]))[0]
     if not replace:
         pressure = _merge(pressure, meta["pressure"])
         if psig is not None:
@@ -480,7 +530,8 @@ def import_csv_to_analysis(analysis_h5: "str | Path", csv_path: "str | Path", *,
         if temp is not None:
             temp = _merge(temp, meta["temperature"])
     man = apply_to_analysis(analysis_h5, pressure=pressure,
-                            pressure_sigma=psig, temperature=temp)
+                            pressure_sigma=psig, temperature=temp,
+                            user_frames=mapped_idx.tolist())
     man["csv"] = {"columns": parsed["columns"], "n_rows": len(parsed["rows"])}
     man["n_mapped"] = int(np.sum(np.isfinite(mapped["pressure"])))
     man["summary"] = summarize_pressures(pressure)

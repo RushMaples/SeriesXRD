@@ -407,6 +407,18 @@ select one or more rows and type a P/σ/T value into the editor row above
 membrane-gauge reading corrected by hand. Blank fields in the editor are left
 unchanged on the selected frames.
 
+**Edits persist.** Values you set by hand (and frames a CSV provided) are
+marked `user` in the table's Src column (`/frames/user_edited` on disk).
+Marked frames are skipped by "Extract from filenames", and a Step-1 re-run
+carries them into the rebuilt analysis file (matched by filename) — so a
+correction to a mistyped filename pressure (e.g. `50p7GPa` that should have
+been 5.27) stays fixed no matter how often you re-run. The explicit reset is
+`extract_to_analysis(..., replace=True)` (Python API), which re-parses every
+frame and clears the marks. If identification ever widens its pressure range
+to cover the metadata (the `[IDENTIFY] WARNING: widening pressure range`
+log line), the frames responsible are now listed by name right below it,
+with an outlier hint when one value sits far off the series median.
+
 **How it feeds downstream.** `pressure`/`pressure_sigma` drive the Step-3a
 pressure prior (§4.4); `temperature` drives the thermal-expansion seam
 (`use_frame_temperature`); any of `frame`/`pressure`/`temperature`/`time` can
