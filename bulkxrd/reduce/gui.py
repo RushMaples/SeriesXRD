@@ -92,6 +92,9 @@ class ReductionApp:
         # Thread-safe logging: worker threads push lines onto this queue; a poller
         # on the Tk thread drains them into the text widget.
         self._log_queue: "queue.Queue[str]" = queue.Queue()
+        # Watch-mode control events (live_file/total/done) from the watcher's
+        # stdout-reader thread, drained by the same main-thread poller.
+        self._watch_queue: "queue.Queue[tuple]" = queue.Queue()
         # History buffer so no lines are lost before the console window is opened.
         self._log_history: "list[str]" = []
         # Handoff and dataset state for status bar
@@ -291,6 +294,25 @@ class ReductionApp:
             while True:
                 line = self._log_queue.get_nowait()
                 self._insert_log_line(line)
+        except queue.Empty:
+            pass
+        # Watch-mode events pushed by the watcher's reader thread (Tk is not
+        # thread-safe, so the thread must never touch widgets or root.after).
+        try:
+            while True:
+                evt = self._watch_queue.get_nowait()
+                try:
+                    kind, payload = evt
+                    if kind == "live_file":
+                        self._watch_live_file(payload)
+                    elif kind == "total":
+                        self._watch_status.configure(
+                            text=f"watching — {payload} frame(s) so far",
+                            foreground=MUTED)
+                    elif kind == "done":
+                        self._watch_done(*payload)
+                except Exception as e:
+                    self.log(f"watch-event handler failed: {e!r}", "WARN")
         except queue.Empty:
             pass
         self.root.after(100, self._drain_log_queue)
@@ -542,6 +564,45 @@ class ReductionApp:
         self.run_btn.pack(side="left", padx=4, pady=4)
         self.cancel_btn = ttk.Button(top, text="Cancel", command=self.cancel_reduction, state="disabled")
         self.cancel_btn.pack(side="left", padx=4, pady=4)
+
+        # Live watch mode: append frames as they land during a beamtime.
+        watch_row = ttk.Frame(frame)
+        watch_row.pack(fill="x")
+        self.watch_btn = ttk.Button(watch_row, text="Start watching (live)",
+                                    command=self.start_watch)
+        self.watch_btn.pack(side="left", padx=4, pady=4)
+        _ToolTip(self.watch_btn, (
+            "Poll the dataset folder and append new frames to a growing "
+            "*_live.h5 as they arrive, re-running the chosen analysis steps "
+            "each batch. The live file skips cakes/thumbnails and is not "
+            "written atomically — run a normal reduction afterwards for the "
+            "archival file. CLI equivalent: bulkxrd-watch (which also has "
+            "--resume for continuing an interrupted watch)."))
+        self.watch_stop_btn = ttk.Button(watch_row, text="Stop watching",
+                                         command=self.stop_watch, state="disabled")
+        self.watch_stop_btn.pack(side="left", padx=4, pady=4)
+        ttk.Label(watch_row, text="Analysis:", foreground=MUTED).pack(
+            side="left", padx=(12, 2))
+        self.vars["watch_steps"] = tk.StringVar(
+            value=str(self.config.get("watch_steps", "12")))
+        _wsteps = ttk.Combobox(watch_row, textvariable=self.vars["watch_steps"],
+                               values=["off", "12", "123"], state="readonly",
+                               width=5)
+        _wsteps.pack(side="left", padx=2)
+        _ToolTip(_wsteps, "Analysis steps re-run as frames arrive: 12 = "
+                          "background + peaks (default), 123 adds phase ID "
+                          "(uses the workspace's configured candidates), "
+                          "off = only reduce.")
+        ttk.Label(watch_row, text="Poll (s):", foreground=MUTED).pack(
+            side="left", padx=(10, 2))
+        self.vars["watch_poll"] = tk.StringVar(
+            value=str(self.config.get("watch_poll", "5")))
+        ttk.Entry(watch_row, textvariable=self.vars["watch_poll"],
+                  width=5).pack(side="left", padx=2)
+        self._watch_status = ttk.Label(watch_row, text="", foreground=MUTED)
+        self._watch_status.pack(side="left", padx=12)
+        self._watch_proc = None
+
         self.progress = ttk.Progressbar(frame, mode="determinate", maximum=100)
         self.progress.pack(fill="x", padx=4, pady=6)
         self.progress_label = ttk.Label(frame, text="Idle", foreground=MUTED)
@@ -554,6 +615,11 @@ class ReductionApp:
     def run_reduction(self):
         if self._run_proc is not None:
             self.messagebox.showinfo("Busy", "A reduction is already running.")
+            return
+        if getattr(self, "_watch_proc", None) is not None:
+            self.messagebox.showinfo(
+                "Busy", "Live watch is running — stop it before a batch "
+                        "reduction (both would write to the same session).")
             return
         self.save_config(silent=True)
         handoff = self.verify_handoff()
@@ -662,6 +728,113 @@ class ReductionApp:
         if proc is not None and proc.poll() is None:
             proc.terminate()
             self.log("Cancel requested — terminating worker", "WARN")
+
+    # ------------------------------------------------------------------
+    # Live watch mode (bulkxrd-watch as a supervised subprocess)
+    # ------------------------------------------------------------------
+
+    def start_watch(self):
+        if self._watch_proc is not None:
+            self.messagebox.showinfo("Busy", "Already watching.")
+            return
+        if self._run_proc is not None:
+            self._watch_status.configure(
+                text="A batch reduction is running — wait or cancel it first.",
+                foreground=WARN)
+            return
+        self.save_config(silent=True)
+        handoff = load_handoff(self.config.get("handoff_file", ""))
+        if not handoff.ok:
+            msg = "No valid calibration handoff: " + "; ".join(handoff.problems)
+            self._watch_status.configure(text=msg, foreground=WARN)
+            self.log(msg, "WARN")
+            return
+        backend_dir = self.config.get(
+            "backend_dir", str(Path(__file__).resolve().parents[1]))
+        python_exe = Path(self.config.get("python_exe", sys.executable))
+        watch_script = Path(backend_dir) / "reduce" / "watch.py"
+        if not watch_script.is_file():
+            self._watch_status.configure(
+                text=f"watch.py not found under {backend_dir}", foreground=WARN)
+            return
+        steps = str(self.vars["watch_steps"].get() or "12")
+        steps = "" if steps == "off" else steps
+        poll = str(self.vars["watch_poll"].get() or "5").strip() or "5"
+        cmd = [str(python_exe), str(watch_script),
+               "--config", str(self.config_path),
+               "--steps", steps, "--poll", poll]
+        self.log("Watch command: " + " ".join(cmd))
+        self.watch_btn.configure(state="disabled")
+        self.watch_stop_btn.configure(state="normal")
+        self.run_btn.configure(state="disabled")
+        self._watch_status.configure(text="watching — waiting for frames …",
+                                     foreground=MUTED)
+        self._worker_status = "watching"
+        self._update_status_bar()
+
+        def _watch_thread():
+            try:
+                proc = subprocess.Popen(cmd, cwd=backend_dir,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT,
+                                        text=True, bufsize=1)
+                self._watch_proc = proc
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    self.log(line)                      # queue-based, thread-safe
+                    if "[WATCH] live file: " in line:
+                        path = line.split("live file: ", 1)[1]
+                        path = path.split(" (npt_1d=", 1)[0].strip()
+                        self._watch_queue.put(("live_file", path))
+                    elif "frame(s) -> " in line and line.endswith("total"):
+                        try:
+                            total = int(line.rsplit("-> ", 1)[1].split()[0])
+                            self._watch_queue.put(("total", total))
+                        except (ValueError, IndexError):
+                            pass
+                rc = int(proc.wait())
+                self._watch_queue.put(("done", (rc, "")))
+            except Exception as e:
+                self._watch_queue.put(("done", (-1, repr(e))))
+        threading.Thread(target=_watch_thread, daemon=True).start()
+
+    def _watch_live_file(self, path: str):
+        """The watcher announced its live output — hand it to Review/analysis
+        listeners right away so downstream views can follow the growing file."""
+        self.config["reduced_h5_file"] = path
+        if "reduced_h5_file" in self.vars:
+            self.vars["reduced_h5_file"].set(path)
+        self.save_config(silent=True)
+        for fn in self._reduced_listeners:
+            try:
+                fn(path)
+            except Exception as e:
+                self.log(f"Reduced-output listener failed: {e!r}", "WARN")
+
+    def _watch_done(self, returncode: int, err: str = ""):
+        self._watch_proc = None
+        self.watch_btn.configure(state="normal")
+        self.watch_stop_btn.configure(state="disabled")
+        self.run_btn.configure(state="normal")
+        self._worker_status = "idle"
+        self._update_status_bar()
+        if returncode not in (0, None):
+            self._watch_status.configure(
+                text=f"watch ended (rc={returncode})" + (f": {err}" if err else "")
+                     + " — see the log", foreground=WARN)
+        else:
+            self._watch_status.configure(text="watch stopped", foreground=MUTED)
+            self.log("Watch stopped. The live file is a working view — run a "
+                     "full reduction for the archival file.")
+
+    def stop_watch(self):
+        proc = self._watch_proc
+        if proc is not None and proc.poll() is None:
+            self._watch_status.configure(text="stopping — finishing the "
+                                               "current batch …",
+                                          foreground=MUTED)
+            proc.terminate()   # SIGTERM → the watcher flushes a final analysis
 
     # ------------------------------------------------------------------
     # Tab 5 — Review (read-only HDF5 checkpoint before analysis)
@@ -1282,6 +1455,12 @@ class ReductionApp:
                     "Reduction running", "A reduction is still running. Terminate it and exit?"):
                 return False
             self._run_proc.terminate()
+        wp = getattr(self, "_watch_proc", None)
+        if wp is not None and wp.poll() is None:
+            if confirm and not self.messagebox.askyesno(
+                    "Watch running", "Live watch is still running. Stop it and exit?"):
+                return False
+            wp.terminate()   # SIGTERM → the watcher flushes and exits
         self._closing = True  # stop the log-drain poller from rescheduling
         self.save_config(silent=True)
         return True

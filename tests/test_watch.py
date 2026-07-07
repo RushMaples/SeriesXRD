@@ -162,12 +162,102 @@ def test_run_watch_loop_and_own_output_excluded():
             assert names == ["a.tif"]
 
 
+def test_resume_skips_stored_frames_and_appends_new():
+    """An interrupted watch resumes into its live file: stored frames are
+    skipped (matched by stored name), new frames append, and shapes/channels
+    come from the file, not the config."""
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        cfg = _cfg(td)
+        out = td / "proc" / "live.h5"
+        out.parent.mkdir(parents=True)
+        ws1 = WatchSession(cfg, integrate=_fake_integrate, steps="",
+                           out_path=out)
+        _settled_touch(ws1, td / "a.tif")
+        assert ws1.cycle() == 1
+        _settled_touch(ws1, td / "b.tif")
+        assert ws1.cycle() == 1
+        ws1.finish()
+
+        # a fresh session on the same output must refuse without resume
+        try:
+            WatchSession(cfg, integrate=_fake_integrate, steps="",
+                         out_path=out)
+            assert False, "expected ValueError on existing --out"
+        except ValueError as e:
+            assert "resume" in str(e)
+
+        # resume: a.tif/b.tif are skipped, only the new frame lands
+        (td / "c.tif").write_bytes(b"x")
+        ws2 = WatchSession(cfg, integrate=_fake_integrate, steps="",
+                           out_path=out, resume=True)
+        assert ws2.writer.n == 2 and "a.tif" in ws2.seen and "b.tif" in ws2.seen
+        assert ws2.cycle() == 0                    # settle arm for c.tif
+        assert ws2.cycle() == 1
+        assert ws2.cycle() == 0                    # nothing re-processed
+        man = ws2.finish()
+        assert man["n_frames"] == 1                # THIS session appended one
+        with h5py.File(str(out), "r") as h:
+            names = [x.decode() for x in h["frames/filename"][:]]
+            assert names == ["a.tif", "b.tif", "c.tif"]
+            assert h["patterns/intensity"].shape == (3, NPT)
+            assert np.allclose(h["patterns/radial"][:], X)   # not rewritten
+            assert list(h["frames/frame_index"][:]) == [0, 1, 2]
+
+        # resume of a missing file errors cleanly
+        try:
+            WatchSession(cfg, integrate=_fake_integrate, steps="",
+                         out_path=td / "nope.h5", resume=True)
+            assert False, "expected FileNotFoundError"
+        except FileNotFoundError:
+            pass
+        # resume refuses a non-live reduced file
+        plain = td / "proc" / "plain.h5"
+        with h5py.File(str(plain), "w") as h:
+            h.create_group("patterns").create_dataset(
+                "intensity", data=np.zeros((1, 4), "f4"))
+        try:
+            WatchSession(cfg, integrate=_fake_integrate, steps="",
+                         out_path=plain, resume=True)
+            assert False, "expected ValueError for a non-live file"
+        except ValueError as e:
+            assert "live-mode" in str(e)
+
+
+def test_resume_channel_flags_follow_file():
+    """A live file written without the sigmaclip channel keeps its shape on
+    resume even if the config would now enable that channel."""
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        cfg = _cfg(td)
+        cfg["sigmaclip_1d"] = False
+        out = td / "live.h5"
+        ws1 = WatchSession(cfg, integrate=_fake_integrate, steps="",
+                           out_path=out)
+        _settled_touch(ws1, td / "a.tif")
+        assert ws1.cycle() == 1
+        with h5py.File(str(out), "r") as h:
+            assert "intensity_sigmaclip" not in h["patterns"]
+
+        cfg2 = dict(cfg)
+        cfg2["sigmaclip_1d"] = True                # config changed mid-run
+        (td / "b.tif").write_bytes(b"x")
+        ws2 = WatchSession(cfg2, integrate=_fake_integrate, steps="",
+                           out_path=out, resume=True)
+        ws2.cycle(); ws2.cycle()
+        with h5py.File(str(out), "r") as h:
+            assert "intensity_sigmaclip" not in h["patterns"]   # file wins
+            assert h["patterns/intensity"].shape[0] == 2
+
+
 def main() -> None:
     test_settle_append_and_analysis_trigger()
     test_failed_frame_retries_then_gives_up()
     test_growing_stack_holds_back_newest_frame()
     test_analyze_every_and_finish_flush()
     test_run_watch_loop_and_own_output_excluded()
+    test_resume_skips_stored_frames_and_appends_new()
+    test_resume_channel_flags_follow_file()
     print("WATCH TEST OK")
 
 

@@ -284,6 +284,17 @@ chosen steps against the live file, so opening the analysis GUI on it shows
 current Review/Peak map/Pattern map views mid-run. Ctrl-C (or `--idle-exit
 30` minutes without a new frame) ends the watch with a final analysis pass.
 
+The same mode is available in the GUI: the Reduction tab's **4 Run** tab has
+"Start watching (live)" / "Stop watching" with the analysis-steps and poll
+controls; the live file is handed to the Review tab and the Analysis stage
+as soon as it is created, and Stop finishes the current batch gracefully.
+
+An interrupted watch resumes with `--resume path/to/reduced_..._live.h5`:
+frames already in the file are skipped (matched by their stored names) and
+new ones append; the file's bin count and channel set win over the config
+if they differ. A plain `--out` pointing at an existing file is refused so
+a finished live file can't be truncated by accident.
+
 What it handles: plain image files (processed only after their size/mtime
 is stable across two polls), growing HDF5 stacks (new frames picked up per
 poll; the newest frame of a still-growing stack waits one poll so a

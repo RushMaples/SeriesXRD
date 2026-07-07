@@ -41,7 +41,6 @@ seams exist so tests (and exotic deployments) can inject replacements.
 """
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 import time
@@ -50,13 +49,30 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ..core.config import (ensure_dir, now_iso, now_timestamp, output_base,
-                           read_json, safe_stem, write_json)
-from ..core.handoff import load_handoff
-from ..core.io import (expand_frame_sources, frame_display_name,
-                       harvest_stack_metadata, is_h5_frame_spec,
-                       parse_h5_frame_spec)
-from . import processing as _proc
+# Works both as a package module (python -m bulkxrd.reduce.watch) and as a
+# directly-launched script (the GUI runs this file by path in a subprocess),
+# mirroring reduce/worker.py.
+if __package__ in (None, ""):
+    _pkg_parent = str(Path(__file__).resolve().parents[2])
+    if _pkg_parent not in sys.path:
+        sys.path.insert(0, _pkg_parent)
+    from bulkxrd.core.config import (ensure_dir, make_stdio_robust, now_iso,
+                                     now_timestamp, output_base, read_json,
+                                     safe_stem, write_json)
+    from bulkxrd.core.handoff import load_handoff
+    from bulkxrd.core.io import (expand_frame_sources, frame_display_name,
+                                 harvest_stack_metadata, is_h5_frame_spec,
+                                 parse_h5_frame_spec)
+    from bulkxrd.reduce import processing as _proc
+else:
+    from ..core.config import (ensure_dir, make_stdio_robust, now_iso,
+                               now_timestamp, output_base, read_json,
+                               safe_stem, write_json)
+    from ..core.handoff import load_handoff
+    from ..core.io import (expand_frame_sources, frame_display_name,
+                           harvest_stack_metadata, is_h5_frame_spec,
+                           parse_h5_frame_spec)
+    from . import processing as _proc
 
 _MAX_RETRIES = 3
 
@@ -116,6 +132,37 @@ class _LiveWriter:
             _fr("pos_x", "f8", np.nan)
             _fr("pos_y", "f8", np.nan)
         self.n = 0
+
+    @classmethod
+    def resume(cls, h5_path: "str | Path") -> "_LiveWriter":
+        """Reopen an existing live file for appending. Shape/channel facts
+        come from the FILE (they must match what append writes), not from the
+        session config."""
+        import h5py  # type: ignore
+        self = object.__new__(cls)
+        self.path = Path(h5_path)
+        with h5py.File(str(self.path), "r") as h5:
+            if not h5.attrs.get("live_mode"):
+                raise ValueError(f"{self.path} is not a live-mode reduced file "
+                                 "(only *_live.h5 outputs of bulkxrd-watch can "
+                                 "be resumed).")
+            pat = h5["patterns"]
+            self.npt = int(pat["intensity"].shape[1])
+            self.n = int(pat["intensity"].shape[0])
+            self.has_robust = "intensity_robust" in pat
+            self.has_sigmaclip = "intensity_sigmaclip" in pat
+            radial = np.asarray(pat["radial"][:], dtype=float)
+            self._radial_written = bool(np.any(np.isfinite(radial))
+                                        and np.any(radial != 0))
+        return self
+
+    def stored_names(self) -> "List[str]":
+        """Display names of already-appended frames (the resume seen-set)."""
+        import h5py  # type: ignore
+        with h5py.File(str(self.path), "r") as h5:
+            return [x.decode("utf-8", "replace")
+                    if isinstance(x, (bytes, bytearray)) else str(x)
+                    for x in h5["frames/filename"][:]]
 
     def append_batch(self, rows: "List[Dict[str, Any]]") -> None:
         """Append integrated results (with display name + metadata already
@@ -199,7 +246,7 @@ class WatchSession:
 
     def __init__(self, config: Dict[str, Any], *,
                  steps: str = "12", analyze_every: int = 1,
-                 out_path: "str | Path" = "",
+                 out_path: "str | Path" = "", resume: bool = False,
                  integrate: "Optional[Callable]" = None,
                  pool_init: "Optional[Callable]" = None,
                  analyze: "Optional[Callable[[str], None]]" = None):
@@ -211,6 +258,9 @@ class WatchSession:
         self._analyze = analyze
         self._initialized = False
         self.writer: "Optional[_LiveWriter]" = None
+        # seen/failed/retries are keyed by DISPLAY name (what the live file
+        # stores in /frames/filename) so a resumed session and the original
+        # one agree on identity regardless of absolute vs relative paths.
         self.seen: "set[str]" = set()
         self.retries: Dict[str, int] = {}
         self.failed: Dict[str, str] = {}
@@ -219,6 +269,7 @@ class WatchSession:
         self._batches_since_analysis = 0
         self.n_appended_total = 0
         self.cycles = 0
+        self.dataset_root = Path(self.config.get("dataset_dir", "") or ".")
 
         self.handoff = load_handoff(self.config.get("handoff_file", ""))
         if self._integrate is None and not self.handoff.ok:
@@ -230,12 +281,26 @@ class WatchSession:
             Path(self.config.get("processed_root")
                  or output_base(self.config) / "data" / "processed")
             / f"reduction_{session}")
-        self.h5_path = (Path(out_path) if out_path
+        self.h5_path = (Path(out_path).expanduser() if out_path
                         else out_root / f"reduced_{session}_{now_timestamp()}_live.h5")
         self.logs_root = ensure_dir(
             Path(self.config.get("logs_root", "")
                  or output_base(self.config) / "logs"))
         self.workspace_root = self.config.get("workspace_root") or None
+
+        if resume:
+            if not self.h5_path.is_file():
+                raise FileNotFoundError(
+                    f"resume: live file not found: {self.h5_path}")
+            self.writer = _LiveWriter.resume(self.h5_path)
+            self.seen.update(self.writer.stored_names())
+            self.n_appended_total = 0     # counts THIS session's appends
+            print(f"[WATCH] resuming {self.h5_path.name}: "
+                  f"{self.writer.n} frame(s) already present", flush=True)
+        elif out_path and self.h5_path.is_file():
+            raise ValueError(
+                f"{self.h5_path} already exists — pass resume/--resume to "
+                f"continue it, or choose a different output path.")
 
     # -- source discovery -------------------------------------------------
 
@@ -264,7 +329,8 @@ class WatchSession:
                    if n > self._stack_counts.get(k, 0)}
         ready: "List[str]" = []
         for s in sources:
-            if s in self.seen or s in self.failed:
+            disp = frame_display_name(s, self.dataset_root)
+            if disp in self.seen or disp in self.failed:
                 continue
             if is_h5_frame_spec(s):
                 f, d, i = parse_h5_frame_spec(s)
@@ -289,7 +355,16 @@ class WatchSession:
 
     def _initialize(self, first_source: str) -> None:
         npt_raw = self.config.get("npt_1d", "")
-        if self._integrate is None:
+        cfg = dict(self.config)
+        cfg["save_cakes"] = False          # live mode: no cakes/thumbnails
+        cfg["make_thumbnails"] = False
+        if self.writer is not None:
+            # Resuming: shapes and channels are dictated by the existing file.
+            npt, suggested, mode = self.writer.npt, None, "resume"
+            cfg["robust_1d"] = self.writer.has_robust
+            cfg["sigmaclip_1d"] = self.writer.has_sigmaclip
+            poni_text = ""
+        elif self._integrate is None:
             npt, suggested, mode = _proc._resolve_npt_1d(
                 npt_raw, self.handoff.accepted_poni, first_source)
             poni_text = Path(self.handoff.accepted_poni).read_text(
@@ -298,9 +373,6 @@ class WatchSession:
             npt = int(npt_raw or 0) or 100
             suggested, mode = None, "explicit"
             poni_text = ""
-        cfg = dict(self.config)
-        cfg["save_cakes"] = False          # live mode: no cakes/thumbnails
-        cfg["make_thumbnails"] = False
         self.settings = _proc.build_settings(cfg, npt)
         self.settings.pop("previews_dir", None)
         if self._pool_init is not None:
@@ -311,8 +383,9 @@ class WatchSession:
             _proc._pool_init(str(self.handoff.accepted_poni),
                              str(self.handoff.accepted_mask_npz or ""),
                              self.settings)
-        self.writer = _LiveWriter(self.h5_path, npt, self.settings,
-                                  poni_text, suggested, mode)
+        if self.writer is None:
+            self.writer = _LiveWriter(self.h5_path, npt, self.settings,
+                                      poni_text, suggested, mode)
         if self._analyze is None and self.steps:
             self._analyze = _default_analyze(self.workspace_root,
                                              self.logs_root, self.steps)
@@ -339,7 +412,6 @@ class WatchSession:
                       flush=True)
                 return 0
         integrate = self._integrate or _proc._integrate_one
-        dataset_root = Path(self.config.get("dataset_dir", "") or ".")
 
         # Per-frame metadata for the batch's stack frames (one container read).
         meta = harvest_stack_metadata(
@@ -352,25 +424,25 @@ class WatchSession:
 
         rows: "List[Dict[str, Any]]" = []
         for k, src in enumerate(ready):
+            disp = frame_display_name(src, self.dataset_root)
             r = integrate((self.writer.n + len(rows), src, False))
             if not r.get("ok"):
-                self.retries[src] = self.retries.get(src, 0) + 1
-                if self.retries[src] >= _MAX_RETRIES:
-                    self.failed[src] = str(r.get("error", "integration failed"))
+                self.retries[disp] = self.retries.get(disp, 0) + 1
+                if self.retries[disp] >= _MAX_RETRIES:
+                    self.failed[disp] = str(r.get("error", "integration failed"))
                     print(f"[WATCH] FAILED (gave up after {_MAX_RETRIES} tries) "
-                          f"{frame_display_name(src, dataset_root)}: "
-                          f"{self.failed[src]}", flush=True)
+                          f"{disp}: {self.failed[disp]}", flush=True)
                 continue
-            r["display"] = frame_display_name(src, dataset_root)
+            r["display"] = disp
             if meta is not None:
                 r["timestamp"] = meta["timestamp"][k]
                 r["pos_x"] = meta["pos_x"][k]
                 r["pos_y"] = meta["pos_y"][k]
                 r["temperature"] = meta["temperature"][k]
             rows.append(r)
-            self.seen.add(src)
+            self.seen.add(disp)
             self._settle.pop(src, None)
-            self.retries.pop(src, None)
+            self.retries.pop(disp, None)
         if rows:
             self.writer.append_batch(rows)
             self.n_appended_total += len(rows)
@@ -405,15 +477,16 @@ class WatchSession:
 
 def run_watch(config: Dict[str, Any], *, poll: float = 5.0, steps: str = "12",
               analyze_every: int = 1, idle_exit_min: float = 0.0,
-              out_path: "str | Path" = "", max_cycles: "Optional[int]" = None,
+              out_path: "str | Path" = "", resume: bool = False,
+              max_cycles: "Optional[int]" = None,
               integrate: "Optional[Callable]" = None,
               pool_init: "Optional[Callable]" = None,
               analyze: "Optional[Callable[[str], None]]" = None
               ) -> Dict[str, Any]:
-    """Run the watch loop until Ctrl-C, ``idle_exit_min`` minutes without a
-    new frame (0 = run forever), or ``max_cycles`` polls (tests)."""
+    """Run the watch loop until Ctrl-C/SIGTERM, ``idle_exit_min`` minutes
+    without a new frame (0 = run forever), or ``max_cycles`` polls (tests)."""
     ws = WatchSession(config, steps=steps, analyze_every=analyze_every,
-                      out_path=out_path, integrate=integrate,
+                      out_path=out_path, resume=resume, integrate=integrate,
                       pool_init=pool_init, analyze=analyze)
     last_new = time.time()
     try:
@@ -435,7 +508,6 @@ def run_watch(config: Dict[str, Any], *, poll: float = 5.0, steps: str = "12",
 def main(argv: "list[str] | None" = None) -> int:
     """CLI: ``bulkxrd-watch --workspace DIR [options]``."""
     import argparse
-    from ..core.config import make_stdio_robust
     make_stdio_robust()
     p = argparse.ArgumentParser(
         prog="bulkxrd-watch",
@@ -465,8 +537,26 @@ def main(argv: "list[str] | None" = None) -> int:
                         "Default 0 = run until Ctrl-C.")
     p.add_argument("--out", default="",
                    help="Live reduced HDF5 path (default: "
-                        "<processed>/reduction_<session>/reduced_<session>_<ts>_live.h5).")
+                        "<processed>/reduction_<session>/reduced_<session>_<ts>_live.h5). "
+                        "Refuses an existing file — use --resume for that.")
+    p.add_argument("--resume", default="",
+                   help="Continue an interrupted watch into this existing "
+                        "*_live.h5: already-appended frames are skipped "
+                        "(matched by stored name) and new ones append. "
+                        "Overrides --out.")
     args = p.parse_args(argv)
+
+    # A supervisor's terminate() (the GUI's Stop button, a scheduler kill)
+    # should finish the current batch and flush a final analysis pass, same
+    # as Ctrl-C.
+    import signal
+
+    def _graceful(signum, frame):
+        raise KeyboardInterrupt
+    try:
+        signal.signal(signal.SIGTERM, _graceful)
+    except (ValueError, OSError):   # non-main thread / exotic platform
+        pass
     if args.config:
         cfg_path = Path(args.config).expanduser()
     elif args.workspace:
@@ -484,7 +574,9 @@ def main(argv: "list[str] | None" = None) -> int:
     try:
         run_watch(config, poll=args.poll, steps=args.steps,
                   analyze_every=args.analyze_every,
-                  idle_exit_min=args.idle_exit, out_path=args.out)
+                  idle_exit_min=args.idle_exit,
+                  out_path=(args.resume or args.out),
+                  resume=bool(args.resume))
     except (ValueError, FileNotFoundError) as e:
         print(f"[ERROR] {e}", flush=True)
         return 1

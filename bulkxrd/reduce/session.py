@@ -30,6 +30,10 @@ _DEFAULTS = {
     "h5_pos_x_path": "",
     "h5_pos_y_path": "",
     "h5_temperature_path": "",
+    # Live watch mode (Run tab / bulkxrd-watch).
+    "watch_steps": "12",         # analysis steps re-run as frames arrive
+                                 # (off | 12 | 123)
+    "watch_poll": "5",           # seconds between folder polls
     "npt_1d": "",                # blank = auto: ~1 bin per pixel of radial extent
                                  # (pyFAI rule of thumb, from the accepted PONI +
                                  # first frame). A fixed low value under-samples

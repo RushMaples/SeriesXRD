@@ -124,7 +124,14 @@ tradeoff is explicit: the live file trades the tmp+replace atomicity for
 append speed (a hard kill can corrupt at most the live file, never an
 archival one), skips cakes/thumbnails, and a normal full reduction remains
 the archival path when the run ends. Ctrl-C or `--idle-exit N` minutes ends
-the watch with a final analysis flush.
+the watch with a final analysis flush. The Reduction GUI's Run tab exposes
+the same mode ("Start watching (live)" / "Stop watching", with the
+analysis-steps and poll controls; the live file is handed to the analysis
+stage as soon as it exists, and Stop terminates gracefully). An interrupted
+watch continues with `--resume <live.h5>`: already-appended frames are
+skipped by their stored names, the file's shapes/channels win over the
+config, and a bare `--out` at an existing file is refused to prevent
+accidental truncation.
 
 **Geometry health check on reduction completion (new in this release).**
 When cakes were saved, the reduction fits ring waviness on the first few
@@ -178,19 +185,13 @@ collects.
 
 ## Planned
 
-**1. Live-mode resume + GUI integration.** `bulkxrd-watch` starts a fresh
-live file per invocation; resuming an interrupted watch into an existing
-live file (re-reading its processed-source list as the seen-set) and a
-"Watch folder" toggle on the Reduction tab are the natural next steps once
-the CLI mechanics have seen real beamtime.
-
-**2. Rietveld-quality phase fractions.** The intensity-share/RIR fractions
+**1. Rietveld-quality phase fractions.** The intensity-share/RIR fractions
 above are implemented; publication-grade weight fractions come from refining
 the exported bundle in GSAS-II (or similar) and, if wanted later, importing
 the refined scale factors back into `/fractions` — an import bridge, not an
 in-house Rietveld engine.
 
-**3. Open-set structure search for unknowns.** Take a Step 3c cluster's
+**2. Open-set structure search for unknowns.** Take a Step 3c cluster's
 d-fingerprint and search it against a COD-derived candidate set using the
 same `ml_scorer` seam Step 3b already defines, instead of stopping at "here
 is an unidentified cluster of coherent peaks." The design need is a
@@ -199,7 +200,7 @@ subset per query is too slow to be interactive, so this needs the corpus
 tooling (`analysis/corpus.py`) plus a precomputed/cached simulation layer
 searched by approximate d-fingerprint match before any scorer runs.
 
-**4. Multi-detector / multi-geometry sessions.** Support one series measured
+**3. Multi-detector / multi-geometry sessions.** Support one series measured
 across two (or more) detector positions or geometries within a single
 analysis — e.g. a wide-angle and a high-angle detector, or a mid-run
 detector-distance change. Design: needs a per-frame PONI association (today
@@ -208,7 +209,7 @@ reduce and into the analysis HDF5's frame metadata, so azimuthal integration
 and downstream d-spacing conversion pick the right geometry per frame rather
 than assuming one geometry for the whole series.
 
-**5. Automatic calibrant detection.** The geometry health check on
+**4. Automatic calibrant detection.** The geometry health check on
 reduction completion is implemented (see above); the remaining half is
 detecting the calibrant from the accepted calibration's fit residuals or the
 image itself, and flagging a stale calibration reused from a different
