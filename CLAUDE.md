@@ -110,7 +110,15 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
                                             NeXus locations at reduce time (core/io.
                                             harvest_stack_metadata; h5_*_path config
                                             keys pin unusual layouts)
+/texture/frame, ring_r0, texture_index, po_amplitude, po_phase_deg, spotty_frac,
+         coverage              (C cakes × R rings)  optional; written by
+                               reduce/texture.py (bulkxrd-texture)
 ```
+
+Live-mode variant (`bulkxrd-watch` → `*_live.h5`): same schema with attrs
+`live_mode=True`, resizable datasets appended in ARRIVAL order, no /cakes or
+thumbnails, and (deliberately) no tmp+replace atomicity — the archival file
+comes from a normal full reduction afterwards. `--resume` continues one.
 
 ### Analysis HDF5 (output of `analysis/background.py` Step 1)
 
@@ -278,7 +286,21 @@ truncation, noise) on the same grid.
   `docs/ml-training.md` (cluster-agnostic; `docs/ml-training-ris.md` is a short
   WashU-RIS-specific addendum).
 
-All HDF5 writes are atomic: `.tmp` file + `os.replace`.
+### Later analysis groups (appended by their modules)
+
+```
+/unknowns        Step 3c (unknowns.py): obs/, tracks/, clusters/, fingerprint/
+                 — residual peaks linked into gap-tolerant tracks, Jaccard
+                 co-occurrence clusters, per-cluster d-fingerprints
+/fractions       fractions.py (bulkxrd-analyze --fractions): names (P,),
+                 fractions (N, P) intensity shares; attrs method
+                 (intensity_share|rir). Semi-quantitative by design.
+/microstructure  microstructure.py williamson_hall(): size_A, strain, r2 per
+                 frame (flagged uncorrected without an instrument profile)
+```
+
+All HDF5 writes are atomic: `.tmp` file + `os.replace` (one deliberate
+exception: the live watch file, see the reduced-schema note above).
 
 ---
 
@@ -392,9 +414,16 @@ Per substance (known phase label or "unknown cluster N"):
 ## Active branch
 
 `main` carries Steps 1–3a and the Step-3b scaffolding (all earlier `claude/*` work
-merged). Current work: `claude/ml-training-readiness-review-136udm` — ML-training
-readiness review fixes (q-constant simulation widths, shared mixture pressure, EOS
-validity ceilings, CIF training corpus, RIS guide).
+merged). Current work: `claude/ml-training-readiness-review-136udm` (PR #30) —
+started as the ML-training readiness review (q-constant simulation widths, shared
+mixture pressure, EOS validity ceilings, CIF training corpus, benchmark harness)
+and grew into the full hardening/feature series: pipeline fixes from real DAC
+data (pyFAI quantile fallback, cake straightening, spotty-sample seam), Step 3c
+unknowns + Williamson-Hall, GUI polish (tab overflow, grid map, series axes,
+coordinate maps), user-edit provenance, HDF5/NeXus stack ingestion + metadata
+harvesting, live watch mode (bulkxrd-watch + GUI toggle + --resume), fractions /
+texture / refinement-export tooling, and the docs set (workflow, ML guide,
+roadmap).
 
 Notable earlier branches (not merged, potentially useful):
 - `claude/reduce-gallery` / `claude/reduce-gallery2` — cake matrix viewer (click-to-flag thumbnails). Backend verified, not merged. Adds ~350 lines to reduce stage (gui.py +209, processing.py +63, review.py +75, __init__.py +4).
