@@ -1,0 +1,194 @@
+"""Step 3 refinement hand-off bundle export tests (analysis/refine_export.py)."""
+import math
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import h5py
+
+from bulkxrd.analysis.refine_export import export_refinement_bundle
+from bulkxrd.analysis.phases import Phase, save_user_phases
+
+WAVELENGTH = 0.4066  # Angstrom
+N_FRAMES = 5
+N_BINS = 40
+
+
+def _analysis_file(path) -> "tuple[np.ndarray, np.ndarray]":
+    """Synthetic analysis HDF5: q axis, wavelength attr, background channels,
+    frame filenames/excluded, and a minimal /identify group naming one phase."""
+    q = np.linspace(0.5, 8.0, N_BINS)
+    rng = np.random.default_rng(0)
+    clean = np.zeros((N_FRAMES, N_BINS))
+    baseline = np.zeros((N_FRAMES, N_BINS))
+    spot_residual = np.zeros((N_FRAMES, N_BINS))
+    for i in range(N_FRAMES):
+        clean[i] = 100.0 * np.exp(-0.5 * ((q - 3.0) / 0.05) ** 2) + rng.normal(0, 0.5, N_BINS)
+        baseline[i] = 2.0 + 0.1 * q
+        spot_residual[i] = rng.normal(0, 0.2, N_BINS)
+
+    excluded = np.zeros(N_FRAMES, dtype=bool)
+    excluded[2] = True
+    filenames = [f"frame_{i:04d}.tif" for i in range(N_FRAMES)]
+
+    with h5py.File(str(path), "w") as h:
+        h.attrs["unit"] = "q_A^-1"
+        h.attrs["wavelength"] = WAVELENGTH
+        h.create_dataset("radial", data=q)
+        gb = h.create_group("background")
+        gb.create_dataset("clean", data=clean)
+        gb.create_dataset("baseline", data=baseline)
+        gb.create_dataset("spot_residual", data=spot_residual)
+        gf = h.create_group("frames")
+        gf.create_dataset("filename", data=np.array(filenames, dtype=object),
+                          dtype=h5py.string_dtype(encoding="utf-8"))
+        gf.create_dataset("excluded", data=excluded)
+        gid = h.create_group("identify")
+        gph = gid.create_group("Fe")
+        gph.attrs["name"] = "Fe"
+    return q, clean
+
+
+def _fe_phase() -> Phase:
+    """Bcc iron: a=2.866 A cubic, space group Im-3m, one atom in the
+    asymmetric unit (pymatgen's from_spacegroup expands the second bcc site).
+    atoms format per phases.Phase: [{element,x,y,z,occ}]."""
+    return Phase(
+        name="Fe", space_group="Im-3m",
+        lattice={"a": 2.866, "b": 2.866, "c": 2.866,
+                "alpha": 90.0, "beta": 90.0, "gamma": 90.0},
+        atoms=[{"element": "Fe", "x": 0.0, "y": 0.0, "z": 0.0, "occ": 1.0}],
+    )
+
+
+def test_export_patterns_and_instprm():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        h5_path = td / "an.h5"
+        q, clean = _analysis_file(h5_path)
+        out_dir = td / "bundle"
+
+        man = export_refinement_bundle(h5_path, out_dir)
+
+        assert man["n_frames"] == N_FRAMES - 1, man["n_frames"]   # frame 2 excluded
+        assert man["unit"] == "q_A^-1"
+        assert man["wavelength"] == WAVELENGTH
+
+        patterns_dir = out_dir / "patterns"
+        for i in (0, 1, 3, 4):
+            assert (patterns_dir / f"frame_{i:04d}_q.xy").is_file()
+            assert (patterns_dir / f"frame_{i:04d}.xy").is_file()
+        # excluded frame 2 is skipped by the default frame set
+        assert not (patterns_dir / "frame_0002_q.xy").is_file()
+        assert not (patterns_dir / "frame_0002.xy").is_file()
+        assert str(patterns_dir / "frame_0000_q.xy") in man["files_written"]
+        assert str(patterns_dir / "frame_0000.xy") in man["files_written"]
+
+        # headers: '#'-prefixed, record unit/wavelength/source/filename
+        header_text = (patterns_dir / "frame_0000_q.xy").read_text()
+        header_lines = [ln for ln in header_text.splitlines() if ln.startswith("#")]
+        assert len(header_lines) >= 5
+        assert "native_unit: q_A^-1" in header_text
+        assert f"wavelength_A: {WAVELENGTH:.6f}" in header_text
+        assert "source_channel:" in header_text
+        assert "original_filename: frame_0000.tif" in header_text
+
+        # values: native file carries q as-is; fit source falls back to
+        # 'clean' (no /peaks group in this synthetic file -> resolved 'clean')
+        data_q = np.loadtxt(patterns_dir / "frame_0000_q.xy")
+        assert np.allclose(data_q[:, 0], q, atol=1e-6)
+        assert np.allclose(data_q[:, 1], clean[0], atol=1e-4)
+
+        # check one point by hand: 2theta = 2*asin(lambda*q/(4*pi)), degrees
+        data_tth = np.loadtxt(patterns_dir / "frame_0000.xy")
+        idx = 10
+        expected_tth = math.degrees(2.0 * math.asin(WAVELENGTH * q[idx] / (4.0 * math.pi)))
+        assert abs(data_tth[idx, 0] - expected_tth) < 1e-5, (data_tth[idx, 0], expected_tth)
+        assert np.allclose(data_tth[:, 1], clean[0], atol=1e-4)
+
+        # instrument parameter file
+        instprm_path = out_dir / "instrument.instprm"
+        assert instprm_path.is_file()
+        lines = instprm_path.read_text().splitlines()
+        assert lines[0] == "#GSAS-II instrument parameter file; do not add/delete items!"
+        lam_line = next(ln for ln in lines if ln.startswith("Lam:"))
+        assert abs(float(lam_line.split(":", 1)[1]) - WAVELENGTH) < 1e-9
+        assert "Type:PXC" in lines
+        assert "Zero:0.0" in lines
+
+        # README
+        readme_path = out_dir / "README.md"
+        assert readme_path.is_file()
+        readme_text = readme_path.read_text()
+        assert "GSASIIscriptable" in readme_text
+        assert "U/V/W" in readme_text or "placeholder Caglioti" in readme_text
+
+
+def test_export_explicit_frames_bypass_excluded():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        h5_path = td / "an.h5"
+        _analysis_file(h5_path)
+        out_dir = td / "bundle"
+
+        man = export_refinement_bundle(h5_path, out_dir, frames=[0, 2])
+        assert man["n_frames"] == 2
+        assert (out_dir / "patterns" / "frame_0002_q.xy").is_file()   # explicit -> not filtered
+
+
+def test_export_phases_written_and_skipped():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        h5_path = td / "an.h5"
+        _analysis_file(h5_path)
+        out_dir = td / "bundle"
+
+        fe = _fe_phase()
+        unknown = Phase(name="Unknown1")   # no cif_path, no lattice/atoms -> must be skipped
+        save_user_phases(td, [fe, unknown])
+
+        man = export_refinement_bundle(h5_path, out_dir, phases=["Fe", "Unknown1"], workspace=td)
+
+        written = {d["name"]: d["path"] for d in man["phases_written"]}
+        skipped = {d["name"] for d in man["phases_skipped"]}
+        assert "Fe" in written, man
+        assert "Unknown1" in skipped, man
+
+        fe_cif = Path(written["Fe"])
+        assert fe_cif.is_file()
+        assert fe_cif == out_dir / "phases" / "Fe.cif"
+
+        # pymatgen can re-read the generated CIF (parseable, right composition/cell)
+        from pymatgen.core import Structure
+        struct = Structure.from_file(str(fe_cif))
+        assert struct.composition.reduced_formula == "Fe"
+        assert abs(struct.lattice.a - 2.866) < 1e-3
+        assert abs(struct.lattice.alpha - 90.0) < 1e-3
+
+
+def test_default_phases_from_identify_group():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        h5_path = td / "an.h5"
+        _analysis_file(h5_path)     # /identify/Fe present
+        out_dir = td / "bundle"
+
+        save_user_phases(td, [_fe_phase()])
+        man = export_refinement_bundle(h5_path, out_dir)   # phases=None
+        names = {d["name"] for d in man["phases_written"]}
+        assert names == {"Fe"}, man
+
+
+def main() -> None:
+    test_export_patterns_and_instprm()
+    test_export_explicit_frames_bypass_excluded()
+    test_export_phases_written_and_skipped()
+    test_default_phases_from_identify_group()
+    print("REFINE EXPORT TEST OK")
+
+
+if __name__ == "__main__":
+    main()

@@ -24,7 +24,7 @@ from ..core.config import (
     output_base,
 )
 from ..core.handoff import load_handoff
-from ..core.io import read_detector_image
+from ..core.io import read_detector_image, expand_frame_sources, frame_display_name
 from ..core.masks import load_mask_npz
 
 DEFAULT_PATTERNS = "*.tif;*.tiff;*.edf;*.cbf;*.mar3450;*.h5"
@@ -347,6 +347,18 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
             f"No frames found in {config.get('dataset_dir')!r} "
             f"matching {config.get('file_patterns', DEFAULT_PATTERNS)!r}"
         )
+    # HDF5/NeXus stack containers (Eiger-style master files) expand into one
+    # source per stored frame; plain image files pass through unchanged.
+    files, n_stacks = expand_frame_sources(
+        files, str(config.get("h5_data_path", "") or ""))
+    if n_stacks:
+        print(f"[REDUCE] expanded {n_stacks} HDF5 stack container(s) -> "
+              f"{len(files)} frames total", flush=True)
+    if not files:
+        raise FileNotFoundError(
+            "The matched files contained no readable frames (HDF5 containers "
+            "were skipped — see the log; pass h5_data_path if the stack "
+            "layout was not recognized).")
 
     npt_1d, npt_suggested, npt_mode = _resolve_npt_1d(
         config.get("npt_1d", ""), handoff.accepted_poni, files[0])
@@ -482,10 +494,7 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
             g_frames.create_dataset("temperature", shape=(total,), dtype="f8", fillvalue=np.nan)
             g_frames.create_dataset("timestamp",   shape=(total,), dtype=str_dt)
             for i, f in enumerate(files):
-                try:
-                    ds_files[i] = str(f.relative_to(dataset_root))
-                except ValueError:
-                    ds_files[i] = f.name
+                ds_files[i] = frame_display_name(f, dataset_root)
             
             g_cake = h5.create_group("cakes") if save_cakes else None
             # ds_cake / ds_cake_idx created lazily once the cake shape is known;
@@ -634,6 +643,42 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
     if sigmaclip_errors:
         manifest["sigmaclip_warnings"] = sigmaclip_errors[:10]
         print(f"[REDUCE] WARNING: sigma-clip pattern unavailable: {sigmaclip_errors[0]}", flush=True)
+
+    # Geometry health check: when cakes were saved, fit the ring waviness on a
+    # few of them right away. A large first harmonic means the sample sat off
+    # the calibrant position — every 1D peak becomes a doublet, and it is far
+    # cheaper to learn that now than after a full analysis run.
+    if save_cakes and n_cakes:
+        try:
+            from .straighten import diagnose_reduced
+            rep = diagnose_reduced(h5_path, max_cakes=3)
+            summ = rep.get("summary") or {}
+            if rep.get("ok") and summ:
+                manifest["geometry_check"] = summ
+                bin_w = 0.0
+                try:
+                    import h5py as _h5c
+                    with _h5c.File(str(h5_path), "r") as _f:
+                        r = np.asarray(_f["patterns/radial"][:], dtype=float)
+                        bin_w = float((r.max() - r.min()) / max(r.size - 1, 1))
+                except Exception:
+                    pass
+                split = float(summ.get("doublet_splitting", 0.0))
+                if bin_w > 0 and split > 3.0 * bin_w:
+                    off = summ.get("offset_mm")
+                    off_txt = f" (implied sample offset ~{off:.3f} mm)" if off else ""
+                    print(f"[REDUCE] WARNING: geometry check — ring waviness "
+                          f"implies a 1D doublet splitting of {split:.4g} "
+                          f"({split / bin_w:.1f} bins){off_txt}. Re-refine the "
+                          f"geometry on a sample-position ring and re-reduce, "
+                          f"or use the Review tab's straightening tools.",
+                          flush=True)
+                else:
+                    print(f"[REDUCE] geometry check OK (waviness A1 = "
+                          f"{summ.get('A1_median', float('nan')):.4g})", flush=True)
+        except Exception as e:  # a diagnostic must never fail the reduction
+            print(f"[REDUCE] geometry check skipped: {e!r}", flush=True)
+
     write_json(manifest_path, manifest)
     manifest["manifest_file"] = str(manifest_path)
     print(f"[REDUCE] done: {total - len(failures)}/{total} frames in {elapsed:.1f}s -> {h5_path}", flush=True)

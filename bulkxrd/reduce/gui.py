@@ -48,6 +48,10 @@ HELP = {
                        "per pixel of radial extent from the detector geometry (pyFAI's rule of thumb). "
                        "Too few bins under-samples sharp peaks, so patterns look stepped and peak "
                        "fitting degrades."),
+    "h5_data_path":   ("HDF5/NeXus stack containers only: the dataset path holding the frame "
+                       "stack (e.g. entry/data/data). Blank = auto-detect (NeXus convention "
+                       "first, else the largest 3D image dataset). Plain image files ignore "
+                       "this."),
     "method":         "pyFAI 1D integration method. csr is fast after the first frame.",
     "robust_1d":      ("Also computes a spot-suppressed pattern: the mean of a narrow azimuthal "
                        "quantile band around the median. Rejects diamond spots like a median does, "
@@ -449,6 +453,7 @@ class ReductionApp:
         ttk = self.ttk
         self.field(frame, "dataset_dir", "Dataset folder", browse="dir", row=0)
         self.field(frame, "file_patterns", "File patterns", row=2, width=40)
+        self.field(frame, "h5_data_path", "HDF5 data path (blank=auto)", row=3, width=40)
         self.checkbox(frame, "recursive", "Search subfolders recursively", row=4)
         ttk.Button(frame, text="Scan dataset", command=self.scan_dataset_clicked).grid(row=6, column=0, sticky="w", padx=4, pady=8)
         self.dataset_text = self.tk.Text(frame, height=14, bg=BG2, fg=FG, insertbackground=FG,
@@ -461,16 +466,27 @@ class ReductionApp:
         files = scan_dataset(self.config.get("dataset_dir", ""),
                              self.config.get("file_patterns", DEFAULT_PATTERNS),
                              bool(self.vars["recursive"].get()))
-        self._frame_count = len(files)
         total_bytes = sum(f.stat().st_size for f in files[:5000])
-        lines = [f"{len(files)} frames found"]
+        size_note = (f"~{total_bytes/1e6:.0f} MB"
+                     + (" (first 5000 files)" if len(files) > 5000 else ""))
+        # HDF5 stack containers count as one file but many frames — expand so
+        # the preview shows what the reduction will actually process.
+        from ..core.io import expand_frame_sources, frame_display_name
+        sources, n_stacks = expand_frame_sources(
+            files, str(self.config.get("h5_data_path", "") or ""))
+        self._frame_count = len(sources)
+        lines = [f"{len(sources)} frames found"
+                 + (f" ({n_stacks} HDF5 stack container(s) expanded)"
+                    if n_stacks else "")]
+        files = sources
         if files:
-            lines.append(f"~{total_bytes/1e6:.0f} MB" + (" (first 5000 files)" if len(files) > 5000 else ""))
+            lines.append(size_note)
             lines.append("")
-            lines += [f"  {f.name}" for f in files[:15]]
+            _nm = frame_display_name
+            lines += [f"  {_nm(f)}" for f in files[:15]]
             if len(files) > 30:
                 lines.append(f"  ... {len(files) - 30} more ...")
-            lines += [f"  {f.name}" for f in files[-15:]] if len(files) > 15 else []
+            lines += [f"  {_nm(f)}" for f in files[-15:]] if len(files) > 15 else []
         self.dataset_text.configure(state="normal")
         self.dataset_text.delete("1.0", "end")
         self.dataset_text.insert("end", "\n".join(lines) + "\n")

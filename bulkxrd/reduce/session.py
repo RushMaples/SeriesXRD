@@ -20,6 +20,10 @@ _DEFAULTS = {
     "session_name": "reduction",
     "file_patterns": "*.tif;*.tiff;*.edf;*.cbf;*.mar3450;*.h5",
     "recursive": False,
+    "h5_data_path": "",          # HDF5 stack containers: dataset path holding the
+                                 # frame stack. Blank = auto (NeXus entry/data/data
+                                 # and common layouts, else the largest 3D image
+                                 # dataset in the file).
     "npt_1d": "",                # blank = auto: ~1 bin per pixel of radial extent
                                  # (pyFAI rule of thumb, from the accepted PONI +
                                  # first frame). A fixed low value under-samples

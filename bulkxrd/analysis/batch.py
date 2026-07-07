@@ -146,6 +146,16 @@ def _run(args) -> int:
             from .unknowns import run_unknowns
             run_unknowns(analysis_path)
 
+        # Optional semi-quantitative phase fractions from the attribution.
+        if args.fractions:
+            from .fractions import run_fractions
+            mfrac = run_fractions(analysis_path)
+            if mfrac.get("ok"):
+                print(f"[ANALYZE] fractions -> /fractions "
+                      f"({len(mfrac.get('phases', []))} phase(s))", flush=True)
+            else:
+                print(f"[WARN] fractions skipped: {mfrac.get('error')}", flush=True)
+
     if args.ml_export:
         from .mldata import export_ml_dataset
         chans = tuple(c.strip() for c in args.ml_channels.split(",") if c.strip())
@@ -241,6 +251,10 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="Permit phases below --min-matched to be subtracted in the residual.")
     p.add_argument("--no-unknowns", action="store_true",
                    help="Skip Step 3c (co-occurrence clustering of residual peaks).")
+    p.add_argument("--fractions", action="store_true",
+                   help="After the residual, write /fractions: per-frame "
+                        "semi-quantitative intensity-share phase fractions "
+                        "(see analysis/fractions.py for the caveats).")
     # Step 3b proposer
     p.add_argument("--ml-rank", action="store_true",
                    help="Rank the whole library per frame (deterministic cosine vs simulated "

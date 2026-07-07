@@ -169,7 +169,12 @@ Six tabs, in order:
    to pull one from an earlier session).
 2. **2 Dataset** — the folder of sample frames, file-glob patterns
    (default `*.tif;*.tiff;*.edf;*.cbf;*.mar3450;*.h5`), recursive search
-   toggle, "Scan dataset" to preview the file list and count.
+   toggle, "Scan dataset" to preview the file list and count. HDF5/NeXus
+   stack containers (Eiger-style master files holding many frames in one
+   `.h5`) are expanded automatically — the scan preview shows the true frame
+   count, and "HDF5 data path" pins the frame dataset when the auto-detection
+   (NeXus `entry/data/data` first, else the largest 3D image dataset) doesn't
+   match an unusual layout.
 3. **3 Settings** — integration parameters (binning, unit, channels, cakes,
    thumbnails, workers). See [§4.2](#42-reduction) for the ones that matter.
 4. **4 Run** — launch the crash-isolated worker subprocess, watch a progress
@@ -262,6 +267,16 @@ detection knob the GUI has (`--min-snr`, `--min-prominence-snr`,
 `--detrend-bins`). For anything beyond that, call
 `bulkxrd.analysis.peaks.run_peak_fitting(...)` /
 `bulkxrd.analysis.worker.run_analysis(config_dict)` from your own script.
+
+**Other command-line tools.** `bulkxrd-texture reduced.h5` writes per-ring
+azimuthal texture metrics (`/texture`: texture index, spot fraction,
+preferred-orientation harmonic) from a cakes-enabled reduction.
+`bulkxrd-export-refinement analysis.h5 out_dir` writes a Rietveld hand-off
+bundle (patterns as `.xy`, phase CIFs, GSAS-II `instrument.instprm`, README
+with a GSASIIscriptable snippet). `bulkxrd-analyze --fractions` adds
+semi-quantitative intensity-share phase fractions (`/fractions`) after the
+residual step — see `analysis/fractions.py`'s docstring for what those
+fractions do and do not correct.
 
 ## 4. Parameter tuning
 

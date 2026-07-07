@@ -84,6 +84,52 @@ because an unvalidated learned model in an identification pipeline is a
 silent-failure risk, and the benchmark harness is what makes "does this
 model actually help" a measurable question instead of a guess.
 
+**HDF5/NeXus stack ingestion for the reduce stage (new in this release).**
+APS/ESRF Eiger-style detectors write one HDF5 stack (a master file plus
+linked data files) rather than file-per-frame images. `core/io.py` now
+expands any matched `.h5`/`.hdf5`/`.nxs` container into per-frame sources
+(`"file.h5::entry/data/data#000123"`), auto-detecting the frame dataset
+(NeXus convention first, else the largest 3D image dataset; `h5_data_path`
+in the reduction config pins an unusual layout), and `read_detector_image`
+reads either kind of source — so the whole downstream pipeline is unchanged.
+bulkxrd's own output files are refused as frame sources, `hdf5plugin` is
+loaded when present (Eiger bitshuffle/LZ4 compression), and the Dataset
+tab's scan preview shows the true expanded frame count.
+
+**Geometry health check on reduction completion (new in this release).**
+When cakes were saved, the reduction fits ring waviness on the first few
+cakes as it finishes and warns — with the implied 1D doublet splitting in
+bins and the transverse sample offset in mm — when the geometry error is
+large enough to corrupt peak fitting. Catching this at reduce time is far
+cheaper than discovering doubled peaks after a full analysis run. (The
+calibrant auto-detection half of the original roadmap item remains planned
+below.)
+
+**Semi-quantitative phase fractions (new in this release).**
+`analysis/fractions.py` (`bulkxrd-analyze --fractions`) apportions each
+frame's attributed peak areas (`/peaks/phase`, from the Step-3a removal)
+into per-phase intensity shares, with optional per-phase RIR (I/Icor)
+weighting, written to `/fractions`. The module says plainly what it is:
+texture, absorption, and structure-factor differences are not corrected —
+Rietveld refinement (the export below) is the quantitative path.
+
+**Refinement hand-off bundle (new in this release).**
+`analysis/refine_export.py` (`bulkxrd-export-refinement`) writes a
+Rietveld-ready bundle: per-frame patterns as two-column `.xy` (native q axis
+always, 2θ additionally when the wavelength is known), phase CIFs (copied
+from the library entry, or synthesized via pymatgen from lattice+atoms), a
+minimal GSAS-II `instrument.instprm`, and a README with a runnable
+GSASIIscriptable snippet. An export/bridge, deliberately not a Rietveld
+reimplementation.
+
+**Azimuthal texture analysis (new in this release).**
+`reduce/texture.py` (`bulkxrd-texture`) measures each saved cake's strongest
+rings: intensity vs azimuth per ring, with a texture index (std/mean), a
+spot fraction (coarse-grain indicator), and a preferred-orientation second
+harmonic (amplitude + phase), written to `/texture` in the reduced file.
+Interpreting the 2-fold modulation as texture vs differential stress needs
+the experiment geometry, which stays with the user.
+
 **Step 3c unknown-phase clustering and Williamson-Hall microstructure.**
 `analysis/unknowns.py` links residual (unexplained) peaks into coherent
 tracks across the series and clusters tracks that appear/disappear/drift
@@ -102,16 +148,12 @@ collects.
 
 ## Planned
 
-**1. HDF5/NeXus master-file ingestion for the reduce stage.** APS/ESRF
-Eiger-style detectors write one HDF5 stack (a NeXus master file plus linked
-data files) rather than file-per-frame images, and `reduce/processing.py`
-currently reads frames one file at a time via `core/io.py`
-(fabio/tifffile/PIL). Design: add an input-adapter seam in `core/io` that
-yields `(frame, header)` pairs from either a file glob (today's path) or an
-HDF5 dataset path/group, so the reduction loop itself doesn't need to know
-which kind of source it's iterating. The main design question is how much of
-the per-frame header (exposure time, timestamp, motor positions) NeXus
-exposes for free versus what still has to come from a sidecar CSV.
+**1. NeXus per-frame metadata harvesting.** The stack ingestion above reads
+the frame images; a NeXus master file often ALSO carries per-frame exposure
+times, timestamps, and motor positions that today still need a sidecar CSV
+or header keys. Design: a metadata sibling to the image auto-detection that
+maps common NeXus locations onto `/frames/timestamp` and `pos_x`/`pos_y`
+during reduction.
 
 **2. Live watch-folder / during-beamtime mode.** Reduce and analyze frames as
 they land during an active beamtime, appending to the HDF5 and refreshing the
@@ -124,36 +166,13 @@ duration of a run) or a cheap way to re-run the atomic rebuild often enough
 that it feels live on a growing but still-modest frame count. The tradeoff
 between these two is the crux of the design.
 
-**3. Quantitative phase fractions.** Start with RIR (reference intensity
-ratio) / normalized-intensity fractions using the per-phase intensity layers
-that already exist (`analysis/heatmap.py` phase layers, Step 3a matched
-reflections); Rietveld-quality quantification comes later, likely via the
-refinement export below rather than an in-house Rietveld engine. This
-matters because "which phases are present" (today's output) is a different
-and often less useful question than "how much of each phase," which is what
-most published DAC/phase-transition work actually needs to report.
+**3. Rietveld-quality phase fractions.** The intensity-share/RIR fractions
+above are implemented; publication-grade weight fractions come from refining
+the exported bundle in GSAS-II (or similar) and, if wanted later, importing
+the refined scale factors back into `/fractions` — an import bridge, not an
+in-house Rietveld engine.
 
-**4. Refinement hand-off.** Export identified phases plus their patterns as a
-GSAS-II project or a `.cif` + `.xy` bundle, so a user can continue with
-Rietveld refinement in a dedicated tool rather than trying to get
-publication-quality lattice parameters out of bulkxrd's own deterministic
-fit. The design consideration is scope discipline: this is an export/bridge
-feature, not a Rietveld reimplementation — the bundle needs to carry enough
-(phase, space group, approximate lattice parameters, the actual measured
-pattern) that GSAS-II or similar can pick up refinement cleanly, without
-bulkxrd trying to own that step itself.
-
-**5. Azimuthal texture analysis.** The `/cakes` data (2D intensity vs.
-radial × azimuthal angle) already exists whenever `save_cakes=True`; per-ring
-intensity vs. azimuth would give texture/preferred-orientation and
-differential-stress indicators, building on the same ring-fitting machinery
-`reduce/straighten.py` already uses for waviness. This matters because DAC
-samples routinely develop texture under compression (which is also why
-Step 3a's intensity-agreement weight is deliberately soft — see
-`intensity_k` in CLAUDE.md) and texture itself is diagnostic information the
-pipeline currently discards rather than surfaces.
-
-**6. Open-set structure search for unknowns.** Take a Step 3c cluster's
+**4. Open-set structure search for unknowns.** Take a Step 3c cluster's
 d-fingerprint and search it against a COD-derived candidate set using the
 same `ml_scorer` seam Step 3b already defines, instead of stopping at "here
 is an unidentified cluster of coherent peaks." The design need is a
@@ -162,7 +181,7 @@ subset per query is too slow to be interactive, so this needs the corpus
 tooling (`analysis/corpus.py`) plus a precomputed/cached simulation layer
 searched by approximate d-fingerprint match before any scorer runs.
 
-**7. Multi-detector / multi-geometry sessions.** Support one series measured
+**5. Multi-detector / multi-geometry sessions.** Support one series measured
 across two (or more) detector positions or geometries within a single
 analysis — e.g. a wide-angle and a high-angle detector, or a mid-run
 detector-distance change. Design: needs a per-frame PONI association (today
@@ -171,14 +190,13 @@ reduce and into the analysis HDF5's frame metadata, so azimuthal integration
 and downstream d-spacing conversion pick the right geometry per frame rather
 than assuming one geometry for the whole series.
 
-**8. Automatic calibrant detection + geometry health check on reduction
-start.** Detect the calibrant from the accepted calibration's fit residuals
-or the image itself, and flag likely geometry problems (poor fit, stale
-calibration reused from a different session, detector-distance drift)
-automatically when a reduction run starts, rather than relying on the user to
-notice a bad PONI downstream in ring waviness or peak quality. The design
-consideration is keeping this a warning/health-check layer, not a gate — a
-false positive here shouldn't block a run the user knows is fine.
+**6. Automatic calibrant detection.** The geometry health check on
+reduction completion is implemented (see above); the remaining half is
+detecting the calibrant from the accepted calibration's fit residuals or the
+image itself, and flagging a stale calibration reused from a different
+session BEFORE the run rather than after it. Same design constraint: a
+warning layer, never a gate — a false positive must not block a run the
+user knows is fine.
 
 ---
 

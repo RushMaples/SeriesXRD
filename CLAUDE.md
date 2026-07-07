@@ -26,6 +26,8 @@ bulkxrd/
     straighten.py   cake-waviness diagnosis (sample-off-calibrant offset →
                     double-horned 1D peaks) + straightened-1D rescue channel
                     (straighten_reduced → /patterns/intensity_straightened)
+    texture.py      azimuthal texture metrics per saved cake (bulkxrd-texture):
+                    texture index, spot fraction, PO 2nd harmonic -> /texture
   analysis/      analysis stage (THIS IS THE ACTIVE WORK)
     background.py   Step 1 — DONE (also carries /frames pressure/temp/timestamp)
     peaks.py        Step 2 — DONE
@@ -48,6 +50,10 @@ bulkxrd/
     unknowns.py     Step 3c — DONE: residual peaks -> coherent tracks (gap-tolerant
                     one-to-one linking) -> co-occurrence clusters (/unknowns) with
                     per-cluster d-fingerprints + transition-candidate frames
+    fractions.py    semi-quantitative intensity-share phase fractions from the
+                    /peaks/phase attribution (optional RIR weighting) -> /fractions
+    refine_export.py  Rietveld hand-off bundle (bulkxrd-export-refinement):
+                    .xy patterns + phase CIFs + GSAS-II instprm + README
     microstructure.py  Williamson-Hall size/strain per frame (esd-weighted,
                     dq = 2piK/D + 2*eps*q; instrument profile optional and the
                     output is flagged uncorrected without one)
