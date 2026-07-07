@@ -63,12 +63,15 @@ raw detector frames + a calibrant image
 | Stage | Reads | Writes | GUI | CLI |
 |---|---|---|---|---|
 | Calibrate | calibrant image + PONI | `handoff_for_next_notebook.json` (PONI + mask) | `bulkxrd-calib-gui` | none (worker only) |
-| Reduce | handoff JSON + dataset folder | `reduced_<session>_<ts>.h5` | `bulkxrd-reduce-gui` | none (worker only) |
+| Reduce | handoff JSON + dataset folder | `reduced_<session>_<ts>.h5` | `bulkxrd-reduce-gui` | none for a batch run (worker only); `bulkxrd-watch` for live mode |
 | Analyze | reduced `.h5` | `<stem>_analysis.h5` | `bulkxrd-analysis-gui` | `bulkxrd-analyze` |
 
-Calibration and reduction have no polished argument-per-flag CLI the way
-analysis does — see [§3.4](#34-headless-driving-of-calibrationreduction) for
-what running them without the GUI actually looks like.
+Calibration has no polished argument-per-flag CLI the way analysis does. A
+batch reduction likewise has none — see
+[§3.4](#34-headless-driving-of-calibrationreduction) for what running either
+stage without the GUI actually looks like. Reduction's live-mode counterpart
+is the exception: `bulkxrd-watch` (see [§3.5](#35-live-mode-during-a-beamtime-bulkxrd-watch))
+is a fully-flagged, documented CLI in its own right.
 
 The unified launcher `bulkxrd` embeds all three stages as tabs in one window
 and wires the handoffs automatically: accepting a calibration fills in the
@@ -178,7 +181,14 @@ Six tabs, in order:
 3. **3 Settings** — integration parameters (binning, unit, channels, cakes,
    thumbnails, workers). See [§4.2](#42-reduction) for the ones that matter.
 4. **4 Run** — launch the crash-isolated worker subprocess, watch a progress
-   bar and log.
+   bar and log. Also hosts the live-watch controls: "Start watching (live)" /
+   "Stop watching", an analysis-steps selector (`off`/`12`/`123`), and a poll
+   interval in seconds. The live file is handed to the Review tab and the
+   Analysis stage as soon as it is created, and Stop finishes the current
+   batch gracefully rather than killing it mid-append. See
+   [§3.5](#35-live-mode-during-a-beamtime-bulkxrd-watch) for the equivalent
+   CLI (`bulkxrd-watch`) and the full behavior — this tab is a thin front end
+   over the same worker.
 5. **5 Review** — inspector for the reduced HDF5: structure summary plus
    overlaid/separated plots of a few sample patterns and (if saved) a cake.
    Two cake-waviness tools live here (both need `save_cakes`):
@@ -289,11 +299,15 @@ The same mode is available in the GUI: the Reduction tab's **4 Run** tab has
 controls; the live file is handed to the Review tab and the Analysis stage
 as soon as it is created, and Stop finishes the current batch gracefully.
 
-An interrupted watch resumes with `--resume path/to/reduced_..._live.h5`:
-frames already in the file are skipped (matched by their stored names) and
-new ones append; the file's bin count and channel set win over the config
-if they differ. A plain `--out` pointing at an existing file is refused so
-a finished live file can't be truncated by accident.
+An interrupted watch resumes with `--resume path/to/reduced_..._live.h5`
+(this overrides `--out` if both are passed): frames already in the file are
+skipped (matched by their stored names) and new ones append; the file's bin
+count and channel set win over the config if they differ. `--resume` refuses
+a target that isn't a live-mode file — only a `*_live.h5` written by
+`bulkxrd-watch` (i.e. one carrying the `live_mode` attribute) can be resumed.
+Separately, a plain `--out` pointing at an already-existing file, with no
+`--resume`, is refused so a finished live file can't be truncated by
+accident.
 
 What it handles: plain image files (processed only after their size/mtime
 is stable across two polls), growing HDF5 stacks (new frames picked up per
@@ -595,6 +609,10 @@ once you've run all three stages once:
       reduced_<session>_<ts>.h5
       reduced_<session>_<ts>.manifest.json
       reduced_<session>_<ts>_previews/       (per-frame gallery thumbnails, if enabled)
+      reduced_<session>_<ts>_live.h5          (bulkxrd-watch output, same folder as a
+                                              normal reduction; a working view — appended
+                                              in place, no cakes/thumbnails; run a full
+                                              reduction for the archival file)
       <reduced_stem>_analysis.h5             (default analysis output, beside the reduced file)
   figures/                            calibration QA figures (per generation)
   metadata/
@@ -617,6 +635,8 @@ once you've run all three stages once:
     reduce_<ts>.json                  reduction worker manifest
     analysis_<ts>.json                analysis worker manifest
     worker_preview_<ts>.json          cake-orientation preview output
+    watch_analysis_cfg_<ts>.json      bulkxrd-watch's per-batch analysis config snapshot
+    watch_analysis_<ts>.json          bulkxrd-watch's per-batch analysis worker manifest
 ```
 
 The session config JSONs *are* your saved parameter tuning — every field you
@@ -633,6 +653,7 @@ Re-opening the same workspace restores every knob exactly where you left it.
 | `metadata/<workflow>/genNNN/...` (calibration QA generations you haven't accepted) | Yes, once you've accepted the generation you want | Costs pyFAI compute time to regenerate if you need to go back to an earlier trial. |
 | `*.tmp` files | Yes, if any are ever left behind | Every HDF5/JSON write in this pipeline is atomic (`.tmp` file + `os.replace`) — a `.tmp` should never persist after a normal run or a caught exception. A stray one can only survive a hard kill mid-write (e.g. `kill -9`); it's an incomplete write and safe to remove. |
 | `reduced_*.h5` | No — this is the reduction stage's entire output | Re-generating it re-runs the full integration over every frame. Keep it; it's the input every analysis run starts from. |
+| `reduced_*_live.h5` (`bulkxrd-watch` output) | Yes, once you've run a normal full reduction over the same dataset | It's a working view, not the archival file — no cakes/thumbnails, appended in place rather than atomically. Regenerable only by re-watching (`--resume` continues an interrupted one) or by a full reduction, which is the archival path anyway. |
 | `<stem>_analysis.h5` | Regenerable from the reduced file, but keep it if you've spent time tuning Step 2/3 parameters or have run Step 3a/ML export | Re-running the analysis worker rebuilds it from scratch (each step is not free — Step 3a in particular can be slow with many candidate phases). |
 | `accepted_calibrations/.../handoff_for_next_notebook.json` + its `accepted_calibration/` folder | No | This is the calibration stage's entire deliverable and the reduction stage's only input. Small (a PONI + a mask + a couple of PNGs); back it up with your data. |
 | `reference_phases/user_phases.json` + imported CIFs | No | Your hand-entered/imported phase library. Not regenerable without re-entering every phase. |

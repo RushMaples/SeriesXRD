@@ -22,13 +22,21 @@ on disk plus a shared workspace folder:
    the Reduction tab — not a user-facing step).
 2. **`bulkxrd.reduce`** — dataset reduction (implemented): apply the accepted
    geometry/mask to a sample dataset, parallel batch azimuthal integration →
-   1D patterns (mean + azimuthal-median "robust") and optional 2D cakes in
-   one HDF5 file + JSON manifest.
+   1D patterns (mean, azimuthal-quantile-band "robust", and optional
+   sigma-clipped trimmed mean) and optional 2D cakes in one HDF5 file + JSON
+   manifest. Frame sources include plain images and HDF5/NeXus stack
+   containers (Eiger-style master files), with per-frame metadata (timestamp,
+   stage position, temperature) harvested automatically. `bulkxrd-watch`
+   adds a live mode that reduces and periodically re-analyzes a dataset
+   folder while frames are still being collected.
 3. **`bulkxrd.analysis`** — pattern analysis: SNIP background + diamond-spot
    separation (Step 1), pseudo-Voigt peak fitting (Step 2), pressure-aware
-   EOS phase identification + residual removal (Step 3a), and the ML
+   EOS phase identification + residual removal (Step 3a), the ML
    candidate-ranking seam (Step 3b: deterministic cosine ranker by default,
-   optional learned scorer — see `docs/ml-training.md`).
+   optional learned scorer — see `docs/ml-training.md`), and unknown-phase
+   clustering of the leftover residual (Step 3c). Semi-quantitative phase
+   fractions, azimuthal texture metrics, and a Rietveld hand-off export round
+   out the tooling.
 
 The calib→reduce handoff JSON is an internal artifact written to the workspace
 and automatically loaded by the Reduction tab — users do not need to manage it
@@ -42,7 +50,8 @@ manually.
 │   │   ├── config.py        SessionConfig, JSON/hash/file helpers
 │   │   ├── env.py           dependency / conda environment checks
 │   │   ├── naming.py        output folder/file naming conventions
-│   │   ├── io.py            detector image readers (fabio/tifffile/PIL)
+│   │   ├── io.py            detector image readers (fabio/tifffile/PIL) and
+│   │   │                    HDF5/NeXus frame-stack ingestion (Eiger master files)
 │   │   ├── masks.py         automatic + polygon detector masks
 │   │   ├── handoff.py       the calib→reduce handoff contract (load/validate)
 │   │   └── inspect.py       detector-image diagnostic CLI (bulkxrd-inspect)
@@ -61,14 +70,19 @@ manually.
 │   │   ├── worker.py        crash-isolated worker subprocess
 │   │   ├── session.py       workspace config seeding (seed_reduction_config)
 │   │   ├── review.py        read-only HDF5 checkpoint review
+│   │   ├── straighten.py    cake-waviness diagnosis + straightened-1D rescue channel
+│   │   ├── texture.py       azimuthal texture metrics per saved cake (bulkxrd-texture)
+│   │   ├── watch.py         live (during-beamtime) reduction + rolling analysis (bulkxrd-watch)
 │   │   ├── gui.py           tabbed Tkinter GUI (embeddable pane)
 │   │   └── run_gui.py       CLI entry point (bulkxrd-reduce-gui)
 │   ├── app.py           unified application (bulkxrd entry point)
 │   └── analysis/        analysis stage (background, peaks, identify, residual,
 │                        heatmap, ML ranking/training — see CLAUDE.md for the
 │                        full module map and HDF5 schemas)
-├── tests/               import test + headless smoke test
-├── examples/            example calibration_session_config.json (schema reference)
+├── tests/               25 standalone test modules (each runnable directly, see "Tests")
+├── examples/            calibration_session_config.example.json (schema reference),
+│                        fetch_benchmark_example.sh (downloads a real-data
+│                        bulkxrd-benchmark example set — see docs/ml-training.md)
 ├── environment.yml      conda environment (recommended install route)
 └── pyproject.toml       package metadata + pip dependencies
 ```
@@ -106,21 +120,26 @@ bulkxrd --workspace <dir>          # after pip install -e .
 python -m bulkxrd.app --workspace <dir>
 ```
 
-Opens one window with **Calibration** and **Reduction** tabs (Analysis
-planned). The workspace folder holds the stage configs and all outputs. On
-first launch the configs are auto-created with sensible defaults.
+Opens one window with **1 Calibration**, **2 Reduction**, and **3 Analysis**
+tabs. Accepting a calibration hands its PONI + mask to the Reduction tab
+automatically; a finished reduction hands its output HDF5 to the Analysis
+tab automatically — the handoffs are automatic in both directions, not a
+manual file-picking step. The workspace folder holds the stage configs and
+all outputs. On first launch the configs are auto-created with sensible
+defaults.
 
-The GUI embeds both stage panes in one process; heavy pyFAI work still runs in
-`worker.py` subprocesses (one per stage) so a worker crash never affects the
-host window or the other stage.
+The GUI embeds all three stage panes in one process; heavy pyFAI work still
+runs in `worker.py` subprocesses (one per stage) so a worker crash never
+affects the host window or another stage.
 
 ### Per-stage standalone GUIs
 
 Each stage also has a standalone entry point for advanced use:
 
 ```bash
-bulkxrd-calib-gui  --config <path/to/calibration_session_config.json>
-bulkxrd-reduce-gui --config <path/to/reduction_session_config.json>
+bulkxrd-calib-gui    --config <path/to/calibration_session_config.json>
+bulkxrd-reduce-gui   --config <path/to/reduction_session_config.json>
+bulkxrd-analysis-gui --config <path/to/analysis_session_config.json>   # optional; auto-found if omitted
 ```
 
 ### Detector-image diagnostic
@@ -143,12 +162,46 @@ Training the Step-3b learned scorer (data collection, environment setup,
 corpus building, validation gates, deployment) is documented in
 [`docs/ml-training.md`](docs/ml-training.md).
 
+### All console scripts
+
+| Command | Purpose |
+|---|---|
+| `bulkxrd` | Unified GUI: Calibration + Reduction + Analysis tabs in one window. |
+| `bulkxrd-calib-gui` | Calibration stage standalone GUI. |
+| `bulkxrd-reduce-gui` | Reduction stage standalone GUI (includes live watch-mode controls). |
+| `bulkxrd-analysis-gui` | Analysis stage standalone GUI. |
+| `bulkxrd-analyze` | Headless analysis CLI (Steps 1-3, ML ranking, exports). |
+| `bulkxrd-watch` | Live reduction + rolling analysis while frames are still being collected. |
+| `bulkxrd-ml-train` | Train the Step-3b learned candidate scorer. |
+| `bulkxrd-benchmark` | Score a scorer against labelled XY patterns (RRUFF/opXRD-style known-truth harness). |
+| `bulkxrd-corpus` | Fetch/screen a training-only CIF corpus for `bulkxrd-ml-train --cif-dir`. |
+| `bulkxrd-texture` | Azimuthal texture metrics (`/texture`) from a cakes-enabled reduction. |
+| `bulkxrd-export-refinement` | Rietveld hand-off bundle (`.xy` patterns + phase CIFs + GSAS-II instprm) from an analysis HDF5. |
+| `bulkxrd-inspect` | Detector-image diagnostic: true format from magic bytes, per-reader interpretation, intensity statistics, and a verdict. |
+
+See [`docs/workflow.md`](docs/workflow.md) for how each of these fits into
+the end-to-end pipeline and [`docs/ml-training.md`](docs/ml-training.md) for
+the ML-specific ones.
+
 ## Tests
+
+25 test modules under `tests/`. Most run standalone with plain `python`
+(top-level script execution or an `if __name__ == "__main__":` guard — no
+`pytest` needed, and it isn't a dependency of this project today, see the
+Roadmap):
 
 ```bash
 python tests/test_imports.py   # all modules import cleanly
 python tests/smoke_test.py     # headless config round-trip (no pyFAI/display needed)
+# and similarly for the other 23: test_background.py, test_peaks.py,
+# test_identify.py, test_residual.py, test_watch.py, test_ml.py, ...
 ```
+
+One module, `test_worker_script_bootstrap.py`, uses a `pytest` fixture
+(`monkeypatch`) and needs `pytest` installed to actually exercise its test —
+running it with plain `python` does nothing silently. This is one of the
+reasons the "move tests to pytest" roadmap item exists: standardizing the
+suite would also fix this one file's plain-`python` no-op.
 
 ## Documentation
 
@@ -165,16 +218,11 @@ python tests/smoke_test.py     # headless config round-trip (no pyFAI/display ne
 
 ## Roadmap
 
-- [x] Implement `bulkxrd.reduce`: batch integration of sample datasets using
-      the accepted calibration handoff.
-- [x] Unified `bulkxrd` application: single window hosting Calibration and
-      Reduction panes; calib→reduce handoff wired automatically between tabs.
-- [ ] Implement `bulkxrd.analysis`: signal attribution on reduced data
-      (diamond-spot rejection via robust-vs-mean pattern difference, known
-      phase / pressure-marker d-spacing tracking, residual = unknown
-      signatures), then peak fitting, pressure markers, EOS.
-- [ ] Remove remaining machine-specific default paths (`C:\Research\...`)
-      from the config defaults.
+Feature status (implemented vs. planned, and what a new facility needs to
+provide to adopt bulkxrd) lives in [`docs/roadmap.md`](docs/roadmap.md), kept
+current against the code — this section is only the open engineering chores,
+not a feature list:
+
 - [ ] Move tests to `pytest` so they can run in CI (GitHub Actions).
 - [ ] Choose a license (check university/group policy) and add `LICENSE`.
 - [ ] Add a `CITATION.cff` so the software can be cited.
