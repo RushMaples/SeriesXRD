@@ -15,7 +15,7 @@ Representation choices follow the literature gathered for this pipeline:
     multi-hot, and per-frame quality.
   * Weak multi-labels from the deterministic Step-3a match (confidence ≥ thr).
 
-Exports a portable ``.npz`` (load anywhere, e.g. the WashU RIS GPU cluster).
+Exports a portable ``.npz`` (load anywhere, e.g. a GPU cluster).
 Pure numpy (+ h5py lazy). Simulation reuses ``identify``/``phases`` (pymatgen).
 """
 from __future__ import annotations

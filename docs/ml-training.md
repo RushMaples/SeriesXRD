@@ -2,10 +2,12 @@
 
 This is the end-to-end guide for training, validating, and deploying the
 RADAR-PD-style learned pair scorer (`bulkxrd-ml-train` → `scorer.pt` →
-`TorchScorer`). It applies to any cluster or workstation. If you run on WashU
-RIS specifically, read this document first, then
-[`docs/ml-training-ris.md`](ml-training-ris.md) for the RIS-only parts (LSF
-job syntax, storage paths).
+`TorchScorer`). It applies to any cluster or workstation — read this document
+first regardless of where you run. If your cluster benefits from a short
+site-specific addendum (scheduler syntax, storage layout), see
+[`docs/ml-training-ris.md`](ml-training-ris.md) for a worked example (WashU
+RIS: LSF job syntax, storage paths) you can adapt for your own site; it is an
+example addendum, not a prerequisite.
 
 The pipeline analyzes pressure series, temperature series, and other in-situ
 series. Examples below use diamond-anvil-cell (DAC) pressure series because

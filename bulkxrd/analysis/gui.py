@@ -221,9 +221,17 @@ HELP: Dict[str, str] = {
         "the fit source (optionally within the ROI below), contamination "
         "score, peak count, P, T, or one phase's matched-reflection intensity."
     ),
+    "map_layout": (
+        "How frames are placed on the grid. 'scan lines' uses the collection "
+        "order plus the controls to the right (frames per line, direction, "
+        "serpentine). 'coordinates' places each frame by its stage position "
+        "(/frames/pos_x, pos_y — import them on the Frame meta tab via CSV "
+        "or the frame headers); no other input needed."
+    ),
     "map_line_len": (
         "Frames per scan line — how many frames the stage collected before "
-        "turning (horizontal) or how many rows tall a column is (vertical)."
+        "turning (horizontal) or how many rows tall a column is (vertical). "
+        "Not needed with the 'coordinates' layout."
     ),
     "map_order": (
         "horizontal = scan lines are rows of the map; vertical = scan lines "
@@ -378,15 +386,19 @@ class AnalysisApp:
 
     # -- shared small widgets -----------------------------------------------
 
-    def field(self, parent, key, label, browse=None, row=None, width=80):
-        """Entry field bound to a config key, with optional Browse button."""
+    def field(self, parent, key, label, browse=None, row=None, width=80, col=0):
+        """Entry field bound to a config key, with optional Browse button.
+
+        ``col`` places the pair in a second (third, ...) column group so dense
+        tabs can lay parameters out side by side instead of one tall stack."""
         tk, ttk = self.tk, self.ttk
         var = tk.StringVar(value=str(self.config.get(key, "")))
         self.vars[key] = var
+        base = int(col) * 3
         lbl = ttk.Label(parent, text=label)
-        lbl.grid(row=row, column=0, sticky="w", padx=4, pady=3)
+        lbl.grid(row=row, column=base, sticky="w", padx=4, pady=3)
         entry = ttk.Entry(parent, textvariable=var, width=width)
-        entry.grid(row=row, column=1, sticky="we", padx=4, pady=3)
+        entry.grid(row=row, column=base + 1, sticky="we", padx=4, pady=3)
         if not hasattr(self, "entry_widgets"):
             self.entry_widgets: Dict[str, Any] = {}
         self.entry_widgets[key] = entry
@@ -394,20 +406,32 @@ class AnalysisApp:
             ttk.Button(
                 parent, text="Browse",
                 command=lambda: self.browse_into(key, browse),
-            ).grid(row=row, column=2, padx=4)
+            ).grid(row=row, column=base + 2, padx=4)
         txt = HELP.get(key, "")
         if txt:
             _ToolTip(lbl, txt)
             _ToolTip(entry, txt)
-        parent.columnconfigure(1, weight=1)
+        parent.columnconfigure(base + 1, weight=1)
 
-    def checkbox(self, parent, key, label, row=None):
-        """Checkbox bound to a boolean config key."""
+    def autowrap(self, label, pad=28):
+        """Keep a long explanatory label's wraplength tracking its parent's
+        width, so text reflows instead of running off the tab on narrow
+        windows (fixed wraplengths clipped on small screens)."""
+        def _fit(event, lbl=label):
+            try:
+                w = max(240, int(event.width) - pad)
+                lbl.configure(wraplength=w)
+            except Exception:
+                pass
+        label.master.bind("<Configure>", _fit, add="+")
+
+    def checkbox(self, parent, key, label, row=None, col=0):
+        """Checkbox bound to a boolean config key (``col`` = column group)."""
         tk, ttk = self.tk, self.ttk
         var = tk.BooleanVar(value=bool(self.config.get(key, False)))
         self.vars[key] = var
         cb = ttk.Checkbutton(parent, text=label, variable=var)
-        cb.grid(row=row, column=0, columnspan=2, sticky="w", padx=4, pady=3)
+        cb.grid(row=row, column=int(col) * 3, columnspan=2, sticky="w", padx=4, pady=3)
         txt = HELP.get(key, "")
         if txt:
             _ToolTip(cb, txt)
@@ -593,8 +617,9 @@ class AnalysisApp:
 
     def _tab_input(self, frame):
         tk, ttk = self.tk, self.ttk
-        self.field(frame, "reduced_h5_file", "Reduced HDF5", browse="file", row=0)
-        self.field(frame, "analysis_h5_file", "Analysis HDF5 (output)", browse="file", row=1)
+        self.field(frame, "reduced_h5_file", "Reduced HDF5", browse="file", row=0, width=64)
+        self.field(frame, "analysis_h5_file", "Analysis HDF5 (output)", browse="file",
+                   row=1, width=64)
         # Auto-derive the output path whenever the reduced input changes (typed,
         # browsed, or handed off from the reduction stage).
         self.vars["reduced_h5_file"].trace_add("write", self._autofill_analysis_output)
@@ -705,7 +730,7 @@ class AnalysisApp:
         self.checkbox(frame, "use_lls", "Use LLS transform (Log-Log-Sqrt compression)", row=4)
         self.field(frame, "contamination_threshold",
                    "Contamination threshold (blank = off)", row=6, width=14)
-        ttk.Label(
+        _bg_help = ttk.Label(
             frame,
             text=(
                 "Step 1 splits each pattern into background, sample signal, and\n"
@@ -718,7 +743,9 @@ class AnalysisApp:
                 "step rebuild its own fit source, so nothing is lost."
             ),
             foreground=MUTED, justify="left", wraplength=640,
-        ).grid(row=8, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        )
+        _bg_help.grid(row=8, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        self.autowrap(_bg_help)
 
     # ------------------------------------------------------------------
     # Tab 3 — Peaks
@@ -734,37 +761,38 @@ class AnalysisApp:
                    ["conservative", "normal", "sensitive"], row=2, default="normal")
         self.checkbox(frame, "auto_range", "Auto valid q/2θ range (blank Fit min/max)", row=3)
         ttk.Label(frame, text="Advanced (blank = follow the Sensitivity preset):",
-                  foreground=MUTED).grid(row=4, column=0, columnspan=3, sticky="w",
+                  foreground=MUTED).grid(row=4, column=0, columnspan=6, sticky="w",
                                          padx=4, pady=(10, 0))
-        self.field(frame, "min_snr", "Min SNR (height)", row=5, width=14)
-        self.field(frame, "min_prominence_snr", "Min prominence SNR", row=6, width=14)
-        self.field(frame, "window_factor", "Window factor (× FWHM)", row=7, width=14)
-        self.field(frame, "max_chi2", "Max reduced χ²", row=8, width=14)
-        self.field(frame, "fit_min", "Fit 2θ/q min (blank=auto)", row=9, width=14)
-        self.field(frame, "fit_max", "Fit 2θ/q max (blank=auto)", row=10, width=14)
-        self.field(frame, "edge_bins", "Edge guard (bins)", row=11, width=14)
-        self.field(frame, "min_fwhm_bins", "Min FWHM (bins)", row=12, width=14)
-        self.field(frame, "hybrid_spike_bins", "Hybrid spike width (bins)", row=13, width=14)
-        self.field(frame, "detrend_bins", "Detrend window (bins, 0=off)", row=14, width=14)
+        # Two column-groups so the tab fits on ~700px-tall screens.
+        self.field(frame, "min_snr", "Min SNR (height)", row=5, width=12)
+        self.field(frame, "min_prominence_snr", "Min prominence SNR", row=6, width=12)
+        self.field(frame, "window_factor", "Window factor (× FWHM)", row=7, width=12)
+        self.field(frame, "max_chi2", "Max reduced χ²", row=8, width=12)
+        self.field(frame, "fit_min", "Fit 2θ/q min (blank=auto)", row=9, width=12)
+        self.field(frame, "fit_max", "Fit 2θ/q max (blank=auto)", row=5, width=12, col=1)
+        self.field(frame, "edge_bins", "Edge guard (bins)", row=6, width=12, col=1)
+        self.field(frame, "min_fwhm_bins", "Min FWHM (bins)", row=7, width=12, col=1)
+        self.field(frame, "hybrid_spike_bins", "Hybrid spike width (bins)", row=8, width=12, col=1)
+        self.field(frame, "detrend_bins", "Detrend window (bins, 0=off)", row=9, width=12, col=1)
         self.checkbox(frame, "propagate_seeds",
-                      "Propagate peak seeds frame-to-frame", row=15)
-        ttk.Label(
+                      "Propagate peak seeds frame-to-frame", row=10)
+        _pk_help = ttk.Label(
             frame,
             text=(
-                "Step 2 fits pseudo-Voigt profiles A·(η·Lorentzian + (1−η)·Gaussian)\n"
-                "to the selected source.\n\n"
-                "Start with Peak source, Sensitivity, and Auto range; leave the advanced\n"
-                "fields blank unless a specific problem points at one (each field's\n"
-                "tooltip says which problem that is). Common cases:\n"
-                "  Visible peaks missing from the fit → source 'hybrid' or 'mean'.\n"
-                "  Weak shoulders not detected → Sensitivity 'sensitive'.\n"
-                "  Noise fitted as peaks → Sensitivity 'conservative'.\n"
-                "  Stepped/blocky patterns → too few bins; re-reduce (see run log).\n\n"
-                "Rejection flags: LOW_AMP=1, BAD_CHI2=2, CENTER_DRIFT=4,\n"
-                "WIDTH_BOUND=8, NO_CONVERGE=16."
+                "Step 2 fits pseudo-Voigt profiles A·(η·Lorentzian + (1−η)·Gaussian) "
+                "to the selected source. Start with Peak source, Sensitivity, and "
+                "Auto range; leave the advanced fields blank unless a specific "
+                "problem points at one (each tooltip says which). Common cases: "
+                "visible peaks missing from the fit → source 'hybrid' or 'mean'; "
+                "weak shoulders not detected → Sensitivity 'sensitive'; noise fitted "
+                "as peaks → 'conservative'; stepped/blocky patterns → too few bins, "
+                "re-reduce (see run log). Rejection flags: LOW_AMP=1, BAD_CHI2=2, "
+                "CENTER_DRIFT=4, WIDTH_BOUND=8, NO_CONVERGE=16."
             ),
             foreground=MUTED, justify="left", wraplength=640,
-        ).grid(row=16, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
+        )
+        _pk_help.grid(row=11, column=0, columnspan=6, sticky="w", padx=6, pady=(12, 4))
+        self.autowrap(_pk_help)
 
     # ------------------------------------------------------------------
     # Tab 4 — Run
@@ -1040,6 +1068,11 @@ class AnalysisApp:
                        getattr(self, "_review_fig", None), "Review")
                    ).pack(side="left", padx=4)
 
+        # Trace toggles live on their own row: one long row of controls used
+        # to run wider than the window and clip on the right.
+        togglerow = ttk.Frame(frame)
+        togglerow.pack(fill="x", pady=(0, 4))
+
         ttk.Label(ctrl, text="Frame:", foreground=MUTED).pack(side="left", padx=(12, 2))
         self._review_idx_var = tk.IntVar(value=0)
         # NOTE: the Scale is deliberately NOT linked to _review_idx_var. When the
@@ -1077,7 +1110,7 @@ class AnalysisApp:
             (self._show_peaks, "fitted peaks"),
             (self._show_cake, "cake (2D)"),
         ]:
-            ttk.Checkbutton(ctrl, text=label, variable=var,
+            ttk.Checkbutton(togglerow, text=label, variable=var,
                             command=self._schedule_review_render).pack(
                 side="left", padx=2)
         self._review_source_reduced = ""
@@ -2139,14 +2172,16 @@ class AnalysisApp:
             frame, text="Frame metadata — series conditions (P, T)",
             font=("TkDefaultFont", 12, "bold"),
         ).pack(anchor="w", padx=6, pady=(4, 0))
-        ttk.Label(
+        _fm_sub = ttk.Label(
             frame,
             text=(
                 "Per-frame pressure and temperature feed the Step-3 prior and "
                 "the series plots. Populate them here (filenames, CSV, or by hand)."
             ),
-            foreground=MUTED, justify="left",
-        ).pack(anchor="w", padx=6, pady=(0, 6))
+            foreground=MUTED, justify="left", wraplength=760,
+        )
+        _fm_sub.pack(anchor="w", padx=6, pady=(0, 6))
+        self.autowrap(_fm_sub)
 
         # Controls row
         ctrl = ttk.Frame(frame)
@@ -2155,6 +2190,14 @@ class AnalysisApp:
                    command=self.extract_pressures_clicked).pack(side="left", padx=4)
         ttk.Button(ctrl, text="Import CSV…",
                    command=self.import_pressure_csv_clicked).pack(side="left", padx=4)
+        _hdr_btn = ttk.Button(ctrl, text="Read X/Y from headers…",
+                              command=self.import_positions_clicked)
+        _hdr_btn.pack(side="left", padx=4)
+        _ToolTip(_hdr_btn, (
+            "Mapping scans: read per-frame stage positions from the raw frame "
+            "files' headers (EDF/CBF motor entries) into /frames/pos_x, pos_y — "
+            "the Grid map's 'coordinates' layout then places frames "
+            "automatically."))
         ttk.Button(ctrl, text="Preview pressure vs frame",
                    command=self.preview_pressure_clicked).pack(side="left", padx=4)
 
@@ -2203,13 +2246,15 @@ class AnalysisApp:
         ttk.Button(editor, text="Refresh table",
                    command=self.fm_refresh_table_clicked).pack(side="left", padx=4)
 
-        ttk.Label(
+        _fm_hint = ttk.Label(
             frame,
             text=("Select frame(s), enter values (blank = leave unchanged), Apply. "
                   "Applied values are marked 'user' — filename re-parsing and "
                   "Step-1 re-runs will not overwrite them."),
-            foreground=MUTED,
-        ).pack(anchor="w", padx=6, pady=(0, 4))
+            foreground=MUTED, wraplength=760, justify="left",
+        )
+        _fm_hint.pack(anchor="w", padx=6, pady=(0, 4))
+        self.autowrap(_fm_hint)
 
         self.fm_plot_frame = ttk.Frame(frame)
         self.fm_plot_frame.pack(fill="both", expand=True)
@@ -2219,17 +2264,19 @@ class AnalysisApp:
             foreground=MUTED,
         ).pack(anchor="center", expand=True)
 
-        ttk.Label(
+        _fm_csv = ttk.Label(
             frame,
             text=(
-                "CSV columns: `frame` (0-based) or `filename`, plus `pressure_gpa`; "
-                "optional `pressure_sigma_gpa`, `temperature_K`. Step 1 also "
-                "auto-parses pressures from filenames (e.g. sample-1p5GPa → 1.5). "
-                "Use this tab to override those or to enter gauge readings "
-                "(ruby, membrane, thermocouple)."
+                "CSV columns: `frame` (0-based) or `filename`, plus any of "
+                "`pressure_gpa`, `pressure_sigma_gpa`, `temperature_K`, "
+                "`pos_x_mm`, `pos_y_mm`. Step 1 also auto-parses pressures from "
+                "filenames (e.g. sample-1p5GPa → 1.5). Use this tab to override "
+                "those or to enter gauge readings (ruby, membrane, thermocouple)."
             ),
             foreground=MUTED, justify="left", wraplength=700,
-        ).pack(anchor="w", padx=6, pady=(4, 4))
+        )
+        _fm_csv.pack(anchor="w", padx=6, pady=(4, 4))
+        self.autowrap(_fm_csv)
 
     def extract_pressures_clicked(self):
         from .frame_metadata import extract_to_analysis, import_csv_to_analysis, read_frame_metadata
@@ -2314,6 +2361,92 @@ class AnalysisApp:
             self.log(f"import_csv_to_analysis failed: {e!r}", "WARN")
             if hasattr(self, "_fm_status"):
                 self._fm_status.configure(text=str(e))
+
+    def import_positions_clicked(self):
+        """Dialog: read per-frame stage positions from the raw frames' headers."""
+        self.pull_vars()
+        path = self.config.get("analysis_h5_file", "")
+        if not path or not Path(path).is_file():
+            self._fm_status.configure(text="Run Step 1 first (no analysis file yet).")
+            return
+        tk, ttk = self.tk, self.ttk
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Read X/Y from frame headers")
+        dlg.configure(bg=BG)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        content = ttk.Frame(dlg, padding=10)
+        content.pack(fill="both", expand=True)
+        ttk.Label(content, text=(
+            "Reads each frame's raw image header (via fabio) and stores the "
+            "two motor values as /frames/pos_x and pos_y. Key names are "
+            "case-insensitive; the motor_mne/motor_pos pair convention is "
+            "understood. 'List keys' shows what the first frame's header "
+            "offers."), foreground=MUTED, wraplength=460, justify="left").grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        v_kx = tk.StringVar(value=str(self.config.get("pos_header_x", "")))
+        v_ky = tk.StringVar(value=str(self.config.get("pos_header_y", "")))
+        v_dir = tk.StringVar(value=str(self.config.get("pos_header_dir", "")))
+        ttk.Label(content, text="X header key").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Entry(content, textvariable=v_kx, width=20).grid(row=1, column=1, sticky="w")
+        ttk.Label(content, text="Y header key").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Entry(content, textvariable=v_ky, width=20).grid(row=2, column=1, sticky="w")
+        ttk.Label(content, text="Frames folder").grid(row=3, column=0, sticky="w", pady=2)
+        ttk.Entry(content, textvariable=v_dir, width=36).grid(row=3, column=1, sticky="we")
+
+        def _browse():
+            d = self.filedialog.askdirectory(title="Folder holding the raw frames")
+            if d:
+                v_dir.set(d)
+        ttk.Button(content, text="Browse", command=_browse).grid(row=3, column=2, padx=4)
+        ttk.Label(content, text=(
+            "Folder is only needed when /frames/filename holds bare names "
+            "instead of full paths."), foreground=MUTED, wraplength=460,
+            justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 8))
+
+        def _list_keys():
+            from .frame_metadata import frame_header_keys
+            probe = frame_header_keys(path, search_dir=v_dir.get().strip() or None)
+            if probe.get("ok"):
+                self.messagebox.showinfo(
+                    "Header keys",
+                    f"{Path(probe['path']).name}:\n\n" + ", ".join(probe["keys"]),
+                    parent=dlg)
+            else:
+                self.messagebox.showerror("Header keys", probe.get("error", "?"),
+                                          parent=dlg)
+
+        def _go():
+            kx, ky = v_kx.get().strip(), v_ky.get().strip()
+            if not kx or not ky:
+                self.messagebox.showerror("Read positions",
+                                          "Enter both header keys.", parent=dlg)
+                return
+            from .frame_metadata import import_positions_from_headers
+            try:
+                man = import_positions_from_headers(
+                    path, kx, ky, search_dir=v_dir.get().strip() or None)
+            except Exception as e:
+                self.messagebox.showerror("Read positions failed", str(e), parent=dlg)
+                return
+            self.config["pos_header_x"] = kx
+            self.config["pos_header_y"] = ky
+            self.config["pos_header_dir"] = v_dir.get().strip()
+            self.save_config(silent=True)
+            dlg.destroy()
+            msg = f"Positions read for {man['n_mapped']} frame(s)."
+            if man.get("n_missing_file"):
+                msg += f" {man['n_missing_file']} frame file(s) not found."
+            self._fm_status.configure(text=msg)
+            self.log(msg)
+            self.fm_refresh_table_clicked()
+
+        btns = ttk.Frame(content)
+        btns.grid(row=5, column=0, columnspan=3, sticky="e", pady=(8, 0))
+        ttk.Button(btns, text="List keys", command=_list_keys).pack(side="left", padx=4)
+        ttk.Button(btns, text="Read positions", command=_go).pack(side="left", padx=4)
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="left", padx=4)
+        content.columnconfigure(1, weight=1)
 
     def preview_pressure_clicked(self):
         self.pull_vars()
@@ -2525,7 +2658,7 @@ class AnalysisApp:
 
         # -- params area --------------------------------------------------
         title_row = ttk.Frame(frame)
-        title_row.grid(row=0, column=0, columnspan=3, sticky="we", padx=6, pady=(0, 2))
+        title_row.grid(row=0, column=0, columnspan=6, sticky="we", padx=6, pady=(0, 2))
         ttk.Label(
             title_row, text="Phase identification (EOS matching)",
             font=("TkDefaultFont", 12, "bold"),
@@ -2540,37 +2673,37 @@ class AnalysisApp:
         self.checkbox(frame, "identify_all_phases",
                       "Search entire library (identify without pre-selecting candidates)",
                       row=2)
-        self.field(frame, "p_min", "Pressure min (GPa)", row=3, width=12)
-        self.field(frame, "p_max", "Pressure max (GPa)", row=4, width=12)
-        self.field(frame, "rel_tol", "Match tolerance (Δd/d)", row=5, width=12)
-        self.field(frame, "seen_conf", "Present-in-frame confidence", row=6, width=12)
+        # Two column-groups keep the tab short enough that the results area
+        # below stays fully visible on ~700px-tall screens.
+        self.field(frame, "p_min", "Pressure min (GPa)", row=3, width=10)
+        self.field(frame, "p_max", "Pressure max (GPa)", row=4, width=10)
+        self.field(frame, "rel_tol", "Match tolerance (Δd/d)", row=5, width=10)
+        self.field(frame, "seen_conf", "Present-in-frame confidence", row=6, width=10)
         self.field(frame, "identify_wavelength",
-                   "Wavelength (Å, blank=auto)", row=7, width=12)
-
-        # -- metadata-prior + evidence knobs --------------------------------
+                   "Wavelength (Å, blank=auto)", row=7, width=10)
+        self.field(frame, "pressure_window",
+                   "Pressure window ± (GPa)", row=3, width=10, col=1)
+        self.field(frame, "pressure_sigma_k",
+                   "Window = k·σ (when σ known)", row=4, width=10, col=1)
+        self.field(frame, "min_matched",
+                   "Min matched reflections", row=5, width=10, col=1)
+        self.field(frame, "intensity_k",
+                   "Intensity weight (0 = positions only)", row=6, width=10, col=1)
         self.checkbox(frame, "use_pressure_prior",
                       "Use frame-pressure prior (confine fit to ±window)", row=8)
-        self.field(frame, "pressure_window",
-                   "Pressure window ± (GPa)", row=9, width=12)
-        self.field(frame, "pressure_sigma_k",
-                   "Window = k·σ (when σ known)", row=10, width=12)
         self.checkbox(frame, "marker_prior",
-                      "Estimate pressure from marker phases first", row=11)
-        self.field(frame, "min_matched",
-                   "Min matched reflections", row=12, width=12)
+                      "Estimate pressure from marker phases first", row=8, col=1)
         self.checkbox(frame, "allow_sparse",
-                      "Allow sparse/marker-only matches in residual", row=13)
-        self.field(frame, "intensity_k",
-                   "Intensity weight (0 = positions only)", row=14, width=12)
+                      "Allow sparse/marker-only matches in residual", row=9)
         self.checkbox(frame, "use_frame_temperature",
-                      "Apply frame temperatures (thermal expansion)", row=15)
+                      "Apply frame temperatures (thermal expansion)", row=9, col=1)
 
         # -- Step 3b proposer: ML candidate ranking -----------------------
         mlrow = ttk.Frame(frame)
-        mlrow.grid(row=16, column=0, columnspan=3, sticky="w", pady=(6, 2))
+        mlrow.grid(row=10, column=0, columnspan=6, sticky="w", pady=(6, 2))
         self.vars["run_ml_rank"] = tk.BooleanVar(value=bool(self.config.get("run_ml_rank", False)))
         _mlcb = ttk.Checkbutton(
-            mlrow, text="ML candidate ranking (propose top-K from library, verify with Step 3a)",
+            mlrow, text="ML candidate ranking (top-K from library → Step 3a verifies)",
             variable=self.vars["run_ml_rank"])
         _mlcb.pack(side="left")
         _ToolTip(_mlcb, (
@@ -2612,13 +2745,14 @@ class AnalysisApp:
             ),
             foreground=MUTED, justify="left", wraplength=640,
         )
-        self._identify_help.grid(row=18, column=0, columnspan=3, sticky="w",
+        self._identify_help.grid(row=12, column=0, columnspan=6, sticky="w",
                                  padx=6, pady=(8, 4))
         self._identify_help.grid_remove()   # hidden until the checkbox reveals it
+        self.autowrap(self._identify_help)
 
         # -- controls row -------------------------------------------------
         ctrl = ttk.Frame(frame)
-        ctrl.grid(row=17, column=0, columnspan=3, sticky="w", pady=(4, 2))
+        ctrl.grid(row=11, column=0, columnspan=6, sticky="w", pady=(4, 2))
 
         ttk.Button(ctrl, text="Load identification",
                    command=self.load_identify).pack(side="left", padx=4)
@@ -2642,18 +2776,28 @@ class AnalysisApp:
 
         # -- body: per-frame phase table (left) + plot (right) ------------
         # NOTE: the body has its own row. The help label above shares no cell
-        # with it — sharing row 16 was the bug that made the 'Show
+        # with it — sharing a row was the bug that made the 'Show
         # instructions' checkbox appear to do nothing (the label toggled
         # underneath the body frame).
         body = ttk.Frame(frame)
-        body.grid(row=19, column=0, columnspan=3, sticky="nsew")
-        frame.rowconfigure(19, weight=1)
+        body.grid(row=13, column=0, columnspan=6, sticky="nsew")
+        frame.rowconfigure(13, weight=1)
         frame.columnconfigure(0, weight=1)
 
-        # Left: a frame selector and a ranked table of phases for that frame.
+        # Left: two browse modes in a sub-notebook. Stacking the per-frame
+        # table, the materials summary, AND the frames list vertically used to
+        # need ~470px and pushed the tab bottom off short screens.
         left = ttk.Frame(body)
         left.pack(side="left", fill="y", padx=(0, 6))
-        sel = ttk.Frame(left)
+        lnb = ttk.Notebook(left)
+        lnb.pack(fill="both", expand=True)
+        page_frame = ttk.Frame(lnb, padding=4)
+        page_mat = ttk.Frame(lnb, padding=4)
+        lnb.add(page_frame, text="This frame")
+        lnb.add(page_mat, text="Materials")
+
+        # Page 1 — a frame selector and the ranked phase table for that frame.
+        sel = ttk.Frame(page_frame)
         sel.pack(fill="x", pady=(0, 4))
         ttk.Label(sel, text="Frame", foreground=MUTED).pack(side="left", padx=(0, 4))
         ttk.Button(sel, text="◀", width=2,
@@ -2667,9 +2811,13 @@ class AnalysisApp:
         ttk.Button(sel, text="▶", width=2,
                    command=lambda: self._step_identify_frame(1)).pack(side="left")
 
+        tbl_frame = ttk.Frame(page_frame)
+        tbl_frame.pack(fill="both", expand=True)
         cols = ("phase", "model", "conf", "recall", "prec", "pressure", "lines")
-        tbl = ttk.Treeview(left, columns=cols, show="headings", height=12,
+        tbl = ttk.Treeview(tbl_frame, columns=cols, show="headings", height=6,
                            selectmode="browse")
+        tbl_vsb = ttk.Scrollbar(tbl_frame, orient="vertical", command=tbl.yview)
+        tbl.configure(yscrollcommand=tbl_vsb.set)
         for c, txt, w, anc in (("phase", "Phase", 140, "w"), ("model", "P-model", 78, "center"),
                                ("conf", "Conf", 52, "center"),
                                ("recall", "Recall", 52, "center"), ("prec", "Prec", 52, "center"),
@@ -2678,15 +2826,16 @@ class AnalysisApp:
             tbl.column(c, width=w, minwidth=34, anchor=anc, stretch=(c == "phase"))
         tbl.tag_configure("present", foreground=ACCENT2)
         tbl.tag_configure("absent", foreground=MUTED)
-        tbl.pack(fill="y", expand=False)
+        tbl_vsb.pack(side="right", fill="y")
+        tbl.pack(side="left", fill="both", expand=True)
         self._identify_table = tbl
 
-        # Materials-found summary + frames-by-material browser.
-        ttk.Label(left, text="Materials found (click → frames containing it):",
-                 foreground=MUTED).pack(anchor="w", pady=(6, 2))
+        # Page 2 — materials-found summary + frames-by-material browser.
+        ttk.Label(page_mat, text="Materials found (click → frames containing it):",
+                 foreground=MUTED).pack(anchor="w", pady=(0, 2))
 
         summary_cols = ("phase", "frames", "medP")
-        summary = ttk.Treeview(left, columns=summary_cols, show="headings", height=6,
+        summary = ttk.Treeview(page_mat, columns=summary_cols, show="headings", height=5,
                                selectmode="browse")
         for c, txt, w in (("phase", "Material", 140), ("frames", "Frames", 60),
                           ("medP", "med P", 70)):
@@ -2697,20 +2846,20 @@ class AnalysisApp:
         summary.bind("<<TreeviewSelect>>", self._on_phase_summary_select)
         self._identify_phase_summary = summary
 
-        ttk.Label(left, text="Frames with selected material (double-click to view):",
+        ttk.Label(page_mat, text="Frames with selected material (double-click to view):",
                  foreground=MUTED).pack(anchor="w", pady=(6, 2))
 
-        frames_list_frame = ttk.Frame(left)
-        frames_list_frame.pack(fill="x", expand=False)
+        frames_list_frame = ttk.Frame(page_mat)
+        frames_list_frame.pack(fill="both", expand=True)
         frames_vsb = ttk.Scrollbar(frames_list_frame, orient="vertical")
         listbox = tk.Listbox(
-            frames_list_frame, height=6, bg=BG2, fg=FG,
+            frames_list_frame, height=5, bg=BG2, fg=FG,
             selectbackground=ACCENT2, yscrollcommand=frames_vsb.set,
             exportselection=False,
         )
         frames_vsb.configure(command=listbox.yview)
         frames_vsb.pack(side="right", fill="y")
-        listbox.pack(side="left", fill="x", expand=True)
+        listbox.pack(side="left", fill="both", expand=True)
         listbox.bind("<Double-Button-1>", self._on_phase_frame_activate)
         self._identify_frames_list = listbox
         self._phase_frames: Dict[str, Any] = {}
@@ -2725,7 +2874,7 @@ class AnalysisApp:
             text="Enable phase identification and Run, or click \"Load "
                  "identification\" to view per-frame phases + confidence. "
                  "Tick \"Show instructions\" (top) for the step-by-step workflow.",
-            foreground=MUTED,
+            foreground=MUTED, wraplength=380, justify="left",
         ).pack(anchor="center", expand=True)
 
     def load_identify(self):
@@ -3124,7 +3273,7 @@ class AnalysisApp:
 
         self._pm_tracks = tk.BooleanVar(value=True)
         _trk_cb = ttk.Checkbutton(
-            row1, text="Overlay reflection tracks",
+            row1, text="Reflection tracks",
             variable=self._pm_tracks, command=self.load_pattern_map,
         )
         _trk_cb.pack(side="left", padx=8)
@@ -3132,10 +3281,13 @@ class AnalysisApp:
                           "Drawn on the frame axis only.")
 
         self._pm_layers = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            row1, text="Show phase layers",
+        _lay_cb = ttk.Checkbutton(
+            row1, text="Phase layers",
             variable=self._pm_layers, command=self.load_pattern_map,
-        ).pack(side="left", padx=4)
+        )
+        _lay_cb.pack(side="left", padx=4)
+        _ToolTip(_lay_cb, "Second panel: per-phase matched-reflection intensity "
+                          "vs the chosen x variable.")
 
         self._pm_status = ttk.Label(row1, text="", foreground=MUTED)
         self._pm_status.pack(side="right", padx=8)
@@ -3353,14 +3505,16 @@ class AnalysisApp:
     def _tab_gridmap(self, frame):
         tk, ttk = self.tk, self.ttk
 
-        ttk.Label(
+        _gm_intro = ttk.Label(
             frame,
             text=("For mapping runs: frames collected as a raster over the sample "
                   "are refolded onto their 2D scan grid and coloured by a "
                   "per-frame value (total/ROI intensity, contamination, peak "
                   "count, P, T, or one phase's matched intensity)."),
             foreground=MUTED, justify="left", wraplength=760,
-        ).pack(anchor="w", padx=4, pady=(0, 6))
+        )
+        _gm_intro.pack(anchor="w", padx=4, pady=(0, 6))
+        self.autowrap(_gm_intro)
 
         row1 = ttk.Frame(frame)
         row1.pack(fill="x", pady=(0, 2))
@@ -3400,8 +3554,17 @@ class AnalysisApp:
 
         row2 = ttk.Frame(frame)
         row2.pack(fill="x", pady=(0, 4))
+        ttk.Label(row2, text="Layout:", foreground=MUTED).pack(side="left", padx=(4, 2))
+        self.vars["map_layout"] = tk.StringVar(
+            value=str(self.config.get("map_layout", "scan lines")))
+        _lay_c = ttk.Combobox(row2, textvariable=self.vars["map_layout"],
+                              values=["scan lines", "coordinates"],
+                              state="readonly", width=11)
+        _lay_c.pack(side="left", padx=2)
+        _ToolTip(_lay_c, HELP["map_layout"])
+
         ttk.Label(row2, text="Frames per line:", foreground=MUTED).pack(
-            side="left", padx=(4, 2))
+            side="left", padx=(12, 2))
         self.vars["map_line_len"] = tk.StringVar(
             value=str(self.config.get("map_line_len", "")))
         _len_e = ttk.Entry(row2, textvariable=self.vars["map_line_len"], width=8)
@@ -3454,17 +3617,23 @@ class AnalysisApp:
             w.destroy()
 
         def _fail(msg):
-            self.ttk.Label(self.gridmap_plot_frame, text=msg,
-                           foreground=WARN).pack(anchor="center", expand=True)
+            self.ttk.Label(self.gridmap_plot_frame, text=msg, wraplength=520,
+                           justify="left", foreground=WARN).pack(
+                anchor="center", expand=True)
             self._gm_status.configure(text=msg)
 
-        try:
-            line_len = int(str(self.config.get("map_line_len", "")).strip())
-            if line_len <= 0:
-                raise ValueError
-        except (ValueError, TypeError):
-            _fail("Enter the frames-per-line of your scan (a positive integer).")
-            return
+        layout = str(self.config.get("map_layout", "scan lines") or "scan lines")
+        line_len = 0
+        if not layout.startswith("coord"):
+            try:
+                line_len = int(str(self.config.get("map_line_len", "")).strip())
+                if line_len <= 0:
+                    raise ValueError
+            except (ValueError, TypeError):
+                _fail("Enter the frames-per-line of your scan (a positive "
+                      "integer), or switch Layout to 'coordinates' if your "
+                      "frames carry stage positions.")
+                return
 
         def _opt(key):
             raw = str(self.config.get(key, "")).strip()
@@ -3506,46 +3675,92 @@ class AnalysisApp:
             values = fv["values"]
             label = fv["label"]
 
-        order = str(self.config.get("map_order", "horizontal") or "horizontal")
-        serp = bool(self.config.get("map_serpentine", True))
-        kwargs = ({"n_cols": line_len} if order == "horizontal"
-                  else {"n_rows": line_len})
-        try:
-            grid = grid_map(values, order=order, serpentine=serp, **kwargs)
-            gidx = frame_grid(values.size, order=order, serpentine=serp, **kwargs)
-        except ValueError as e:
-            _fail(str(e))
-            return
+        if layout.startswith("coord"):
+            # Automatic placement from per-frame stage coordinates.
+            from .frame_metadata import read_frame_metadata
+            from .heatmap import coordinate_grid
+            meta = read_frame_metadata(path)
+            if not meta.get("ok"):
+                _fail(meta.get("error") or "Could not read frame metadata.")
+                return
+            cg = coordinate_grid(meta["pos_x"], meta["pos_y"])
+            if not cg["ok"]:
+                _fail(cg["error"] + " (Frame meta tab: Import CSV with "
+                      "pos_x/pos_y columns, or Read X/Y from headers.)")
+                return
+            gidx = cg["grid"]
+            grid = np.full(gidx.shape, np.nan)
+            m = gidx >= 0
+            grid[m] = values[gidx[m]]
+            xc = np.asarray(cg["x_centers"], dtype=float)
+            yc = np.asarray(cg["y_centers"], dtype=float)
+
+            def _half(c):
+                return float(np.median(np.diff(c))) / 2.0 if c.size > 1 else 0.5
+            hx, hy = _half(xc), _half(yc)
+            extent = [xc[0] - hx, xc[-1] + hx, yc[0] - hy, yc[-1] + hy]
+            origin = "lower"
+            xlab, ylab = "stage x", "stage y"
+            title = f"{label} — from frame coordinates"
+            base_txt = (f"{cg['n_placed']} frames on a "
+                        f"{grid.shape[0]}×{grid.shape[1]} coordinate grid")
+            if cg["n_collisions"]:
+                base_txt += f" ({cg['n_collisions']} collision(s))"
+
+            def _cell(event):
+                c = int(np.argmin(np.abs(xc - event.xdata)))
+                r = int(np.argmin(np.abs(yc - event.ydata)))
+                return r, c
+        else:
+            order = str(self.config.get("map_order", "horizontal") or "horizontal")
+            serp = bool(self.config.get("map_serpentine", True))
+            kwargs = ({"n_cols": line_len} if order == "horizontal"
+                      else {"n_rows": line_len})
+            try:
+                grid = grid_map(values, order=order, serpentine=serp, **kwargs)
+                gidx = frame_grid(values.size, order=order, serpentine=serp,
+                                  **kwargs)
+            except ValueError as e:
+                _fail(str(e))
+                return
+            extent = None
+            origin = "upper"
+            xlab, ylab = "scan column", "scan row"
+            path_txt = "boustrophedon" if serp else "unidirectional"
+            title = f"{label} — {order} lines, {path_txt}"
+            n_pad = int(np.sum(gidx < 0))
+            base_txt = (f"{values.size} frames on a {grid.shape[0]}×"
+                        f"{grid.shape[1]} grid"
+                        + (f" ({n_pad} empty cells)" if n_pad else ""))
+
+            def _cell(event):
+                return int(round(event.ydata)), int(round(event.xdata))
 
         fig = Figure(figsize=(7, 6), dpi=100, layout="constrained")
         self._gridmap_fig = fig
         fig.patch.set_facecolor(BG)
         ax = fig.add_subplot(1, 1, 1)
-        im = ax.imshow(grid, origin="upper", cmap="viridis",
-                       interpolation="nearest", aspect="equal")
+        im = ax.imshow(grid, origin=origin, cmap="viridis",
+                       interpolation="nearest", aspect="equal", extent=extent)
         try:
             cb = fig.colorbar(im, ax=ax, label=label)
             self._style_colorbar(cb)
         except Exception:
             pass
-        ax.set_xlabel("scan column")
-        ax.set_ylabel("scan row")
-        path_txt = "boustrophedon" if serp else "unidirectional"
-        ax.set_title(f"{label} — {order} lines, {path_txt}", color=FG)
+        ax.set_xlabel(xlab)
+        ax.set_ylabel(ylab)
+        ax.set_title(title, color=FG)
         self._style_ax(ax)
 
         canvas = self._embed_figure(self.gridmap_plot_frame, fig)
         self._gridmap_canvas = canvas
-        n_pad = int(np.sum(gidx < 0))
-        base_txt = (f"{values.size} frames on a {grid.shape[0]}×{grid.shape[1]} "
-                    f"grid" + (f" ({n_pad} empty cells)" if n_pad else ""))
         self._gm_status.configure(text=base_txt)
 
-        # Hover: resolve (row, col) back to the frame index via the scan path.
+        # Hover: resolve the cursor's grid cell back to the frame index.
         def _move(event):
             if event.inaxes is None or event.xdata is None or event.ydata is None:
                 return
-            r, c = int(round(event.ydata)), int(round(event.xdata))
+            r, c = _cell(event)
             if 0 <= r < gidx.shape[0] and 0 <= c < gidx.shape[1]:
                 fi = int(gidx[r, c])
                 if fi >= 0:

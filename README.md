@@ -1,10 +1,15 @@
 # bulkxrd
 
 GUI-driven workflow for powder X-ray diffraction: detector calibration review,
-dataset reduction, and pattern analysis. A single unified desktop application
-(`bulkxrd`) hosts all pipeline stages in one window. Heavy pyFAI work still
-runs in crash-isolated `worker.py` subprocesses so a pyFAI or matplotlib crash
-never takes down the GUI.
+dataset reduction, and pattern analysis. Facility-neutral by design — it works
+the same way for a synchrotron beamline or a lab (in-house) diffractometer,
+any calibrant, any detector pyFAI supports, and any beamline-specific frame
+naming or metadata convention (see "Site adoption" in
+[`docs/roadmap.md`](docs/roadmap.md) for exactly what a new site needs to
+supply). A single unified desktop application (`bulkxrd`) hosts all pipeline
+stages in one window. Heavy pyFAI work still runs in crash-isolated
+`worker.py` subprocesses so a pyFAI or matplotlib crash never takes down the
+GUI.
 
 ## Pipeline
 
@@ -149,9 +154,14 @@ python tests/smoke_test.py     # headless config round-trip (no pyFAI/display ne
 
 - [`docs/workflow.md`](docs/workflow.md) — end-to-end analysis workflow.
 - [`docs/ml-training.md`](docs/ml-training.md) — training, validating, and
-  deploying the Step-3b learned scorer (cluster-agnostic).
-- [`docs/ml-training-ris.md`](docs/ml-training-ris.md) — WashU RIS-specific
-  addendum (LSF jobs, storage paths).
+  deploying the Step-3b learned scorer (cluster-agnostic — works on any
+  cluster or workstation).
+- [`docs/ml-training-ris.md`](docs/ml-training-ris.md) — a worked example of
+  a site-specific addendum to the guide above (WashU RIS: LSF job syntax,
+  storage paths); write an equivalent short page for your own cluster if it
+  needs one.
+- [`docs/roadmap.md`](docs/roadmap.md) — implemented vs. planned features,
+  and what a new facility needs to provide to adopt bulkxrd.
 
 ## Roadmap
 

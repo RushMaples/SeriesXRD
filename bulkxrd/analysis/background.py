@@ -217,14 +217,16 @@ def _previous_user_metadata(out_path: Path) -> "Optional[Dict[str, Any]]":
             def _f(key):
                 return (np.asarray(fr[key][:], dtype="f8")
                         if key in fr else np.full(mask.size, np.nan))
-            pres, sig, temp = _f("pressure"), _f("pressure_sigma"), _f("temperature")
+            chans = tuple(_f(k) for k in
+                          ("pressure", "pressure_sigma", "temperature",
+                           "pos_x", "pos_y"))
             names = ([x.decode("utf-8", "replace") if isinstance(x, (bytes, bytearray))
                       else str(x) for x in fr["filename"][:]]
                      if "filename" in fr else [])
             by_name: Dict[str, tuple] = {}
             by_index: Dict[int, tuple] = {}
             for j in np.nonzero(mask)[0]:
-                rec = (pres[j], sig[j], temp[j])
+                rec = tuple(c[j] for c in chans)
                 by_index[int(j)] = rec
                 if j < len(names):
                     by_name[names[j]] = rec
@@ -438,6 +440,8 @@ def run_background_separation(
                    if red_temperature is not None and red_temperature.size == n
                    else None)
     pressure_sigma = None
+    pos_x = None
+    pos_y = None
     user_mask = None
     prev = _previous_user_metadata(out)
     if prev is not None:
@@ -451,7 +455,7 @@ def run_background_separation(
                 rec = prev["by_index"].get(i)
             if rec is None:
                 continue
-            p_val, s_val, t_val = rec
+            p_val, s_val, t_val, x_val, y_val = rec
             if np.isfinite(p_val):
                 if pressure is None:
                     pressure = np.full(n, np.nan, "f8")
@@ -464,6 +468,14 @@ def run_background_separation(
                 if temperature is None:
                     temperature = np.full(n, np.nan, "f8")
                 temperature[i] = t_val
+            if np.isfinite(x_val):
+                if pos_x is None:
+                    pos_x = np.full(n, np.nan, "f8")
+                pos_x[i] = x_val
+            if np.isfinite(y_val):
+                if pos_y is None:
+                    pos_y = np.full(n, np.nan, "f8")
+                pos_y[i] = y_val
             user_mask[i] = True
             n_carried += 1
         if n_carried:
@@ -504,6 +516,10 @@ def run_background_separation(
                                     else np.full(n, np.nan, "f8")).astype("f8"))
             if pressure_sigma is not None:
                 gf.create_dataset("pressure_sigma", data=pressure_sigma.astype("f8"))
+            if pos_x is not None:
+                gf.create_dataset("pos_x", data=pos_x.astype("f8"))
+            if pos_y is not None:
+                gf.create_dataset("pos_y", data=pos_y.astype("f8"))
             if user_mask is not None:
                 gf.create_dataset("user_edited", data=user_mask)
             if temperature is not None and temperature.size == n:

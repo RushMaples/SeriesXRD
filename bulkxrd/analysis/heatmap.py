@@ -254,6 +254,91 @@ def grid_map(values, *, n_cols: "Optional[int]" = None,
     return out
 
 
+def _cluster_1d(vals: np.ndarray, tol: "Optional[float]" = None):
+    """Cluster 1D stage coordinates into grid lines.
+
+    Motor read-back jitters around the commanded positions, so equal
+    coordinates repeat with small scatter while distinct scan lines sit a
+    full pitch apart. With no explicit ``tol``, the split point is found at
+    the largest ratio jump in the sorted consecutive differences (jitter ≪
+    pitch); a clean jump-free spacing means every distinct value is its own
+    line. Returns ``(labels, centers)`` — cluster index per input value and
+    the sorted cluster centers.
+    """
+    v = np.asarray(vals, dtype=float)
+    order = np.argsort(v, kind="stable")
+    s = v[order]
+    d = np.diff(s)
+    if tol is None:
+        pos = np.sort(d[d > 0])
+        if pos.size == 0:
+            tol = 0.0
+        elif pos.size == 1:
+            tol = 0.5 * pos[0]
+        else:
+            ratios = pos[1:] / pos[:-1]
+            k = int(np.argmax(ratios))
+            if ratios[k] > 4.0:      # clear jitter → pitch boundary
+                tol = float(np.sqrt(pos[k] * pos[k + 1]))
+            else:                    # clean grid: every distinct value a line
+                tol = 0.5 * float(pos[0])
+    labels_sorted = np.zeros(s.size, dtype=int)
+    if s.size > 1:
+        labels_sorted[1:] = np.cumsum(d > tol)
+    centers = np.array([float(s[labels_sorted == c].mean())
+                        for c in range(labels_sorted.max() + 1)])
+    labels = np.empty(v.size, dtype=int)
+    labels[order] = labels_sorted
+    return labels, centers
+
+
+def coordinate_grid(pos_x, pos_y, *, tol_x: "Optional[float]" = None,
+                    tol_y: "Optional[float]" = None) -> Dict[str, Any]:
+    """Place frames on the 2D grid implied by their stage coordinates.
+
+    The automatic alternative to :func:`frame_grid` when per-frame positions
+    exist (``/frames/pos_x``/``pos_y``): no frames-per-line or scan-direction
+    input needed — collection order becomes irrelevant because every frame
+    carries its own (x, y). Coordinates are clustered per axis (see
+    :func:`_cluster_1d`), so an irregular collection order, missing frames,
+    or serpentine vs raster all land correctly.
+
+    Returns ``{ok, error, grid, x_centers, y_centers, n_placed, n_collisions,
+    fill_frac}`` — ``grid[row, col]`` is the frame index (−1 empty), row 0 at
+    the smallest y, col 0 at the smallest x; a collision (two frames on one
+    cell) keeps the later frame.
+    """
+    out: Dict[str, Any] = {"ok": False, "error": "", "grid": None,
+                           "x_centers": None, "y_centers": None,
+                           "n_placed": 0, "n_collisions": 0, "fill_frac": 0.0}
+    x = np.asarray(pos_x, dtype=float)
+    y = np.asarray(pos_y, dtype=float)
+    if x.size != y.size:
+        out["error"] = "pos_x and pos_y differ in length."
+        return out
+    fin = np.isfinite(x) & np.isfinite(y)
+    if fin.sum() < 2:
+        out["error"] = ("Fewer than two frames have both x and y positions — "
+                        "import them from a CSV or the frame headers first.")
+        return out
+    idx = np.nonzero(fin)[0]
+    cx, x_centers = _cluster_1d(x[fin], tol_x)
+    cy, y_centers = _cluster_1d(y[fin], tol_y)
+    grid = np.full((y_centers.size, x_centers.size), -1, dtype=int)
+    n_coll = 0
+    for k, fi in enumerate(idx):
+        r, c = int(cy[k]), int(cx[k])
+        if grid[r, c] >= 0:
+            n_coll += 1
+        grid[r, c] = int(fi)
+    filled = int(np.sum(grid >= 0))
+    out.update({"ok": True, "grid": grid, "x_centers": x_centers,
+                "y_centers": y_centers, "n_placed": int(idx.size),
+                "n_collisions": n_coll,
+                "fill_frac": filled / grid.size if grid.size else 0.0})
+    return out
+
+
 # Per-frame scalars the scan-grid map can display (besides phase layers).
 FRAME_VALUES = ("total", "max", "contamination", "n_peaks",
                 "pressure", "temperature")

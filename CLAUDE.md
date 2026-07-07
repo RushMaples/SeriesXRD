@@ -113,7 +113,11 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
                                      (frame_metadata.py). NaN where unknown. Step-3 prior.
 /frames/pressure_sigma       (N,)   GPa per-frame uncertainty (only if a CSV supplied it)
 /frames/temperature, timestamp (N,) carried from reduced when present
-/frames/user_edited          (N,)   bool; P/σ/T a human set (GUI edit / CSV import).
+/frames/pos_x, pos_y         (N,)   stage positions (mapping scans; CSV import or
+                                     frame-header motor keys via frame_metadata.
+                                     import_positions_from_headers). Feed the Grid
+                                     map's coordinates layout (heatmap.coordinate_grid).
+/frames/user_edited          (N,)   bool; P/σ/T/x/y a human set (GUI edit / CSV import).
                                      Skipped by filename re-parse; carried (by filename)
                                      through a Step-1 rebuild so a corrected metadata
                                      outlier stays corrected. extract_to_analysis

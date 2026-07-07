@@ -25,8 +25,8 @@ information survives; cf. SimXRD-4M's no-pooling finding), a small multi-head
 self-attention encoder, mean+max pooled head → sigmoid. ~1 M parameters —
 minutes per epoch on a laptop CPU for small libraries, fast on a GPU.
 
-Run on any machine (WashU RIS or any other GPU box) — full guide in
-``docs/ml-training.md`` (WashU-RIS-specific addendum: ``docs/ml-training-ris.md``)::
+Run on any machine (workstation or any cluster GPU node) — full guide in
+``docs/ml-training.md`` (site-addendum example: ``docs/ml-training-ris.md``)::
 
     pip install -e .[phases,ml]          # pymatgen for reflections, torch for training
     bulkxrd-ml-train --workspace /path/to/workspace --out scorer.pt \
@@ -179,8 +179,8 @@ def _require_torch():
     except ImportError as e:
         raise RuntimeError(
             "Training the learned scorer needs PyTorch. Install the optional "
-            "extra with `pip install bulkxrd[ml]` (on RIS: load a CUDA module "
-            "first for GPU wheels).") from e
+            "extra with `pip install bulkxrd[ml]` (on a cluster, load the "
+            "site's CUDA module first for GPU wheels).") from e
 
 
 def build_model(n_points: int = 3501, *, channels: "Sequence[int]" = (32, 64, 96, 128),

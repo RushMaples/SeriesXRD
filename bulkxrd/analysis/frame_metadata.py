@@ -161,7 +161,16 @@ _CSV_ALIASES = {
     "dp": "pressure_sigma", "p_err": "pressure_sigma",
     "temperature_k": "temperature", "temperature": "temperature",
     "temp_k": "temperature", "temp": "temperature", "t_k": "temperature", "t": "temperature",
+    # Stage/sample position (mapping scans). Units are whatever the CSV/motor
+    # uses (typically mm) — the grid map only needs them to be consistent.
+    "pos_x_mm": "pos_x", "pos_x": "pos_x", "x_mm": "pos_x", "x": "pos_x",
+    "sam_x": "pos_x", "sample_x": "pos_x", "motor_x": "pos_x", "samx": "pos_x",
+    "pos_y_mm": "pos_y", "pos_y": "pos_y", "y_mm": "pos_y", "y": "pos_y",
+    "sam_y": "pos_y", "sample_y": "pos_y", "motor_y": "pos_y", "samy": "pos_y",
 }
+
+# Value channels a metadata CSV can carry (besides the frame/filename key).
+_CSV_VALUE_KEYS = ("pressure", "pressure_sigma", "temperature", "pos_x", "pos_y")
 
 
 def _to_float(s) -> "Optional[float]":
@@ -173,13 +182,15 @@ def _to_float(s) -> "Optional[float]":
 
 
 def read_pressure_csv(path: "str | Path") -> Dict[str, Any]:
-    """Parse a pressure CSV into canonical per-row records.
+    """Parse a frame-metadata CSV into canonical per-row records.
 
     The header may use any of the aliases in :data:`_CSV_ALIASES`. Each row is
     keyed by ``frame`` (int) and/or ``filename`` (str); values are ``pressure``
-    (GPa), ``pressure_sigma`` (GPa) and ``temperature`` (K). Returns
-    ``{ok, error, rows, columns}`` — ``rows`` is a list of dicts. A pressure
-    column is required.
+    (GPa), ``pressure_sigma`` (GPa), ``temperature`` (K), and stage positions
+    ``pos_x``/``pos_y`` (mapping scans; any consistent unit). Returns
+    ``{ok, error, rows, columns}`` — ``rows`` is a list of dicts. At least one
+    value column is required (a positions-only CSV is fine for a mapping run
+    at ambient conditions).
     """
     p = Path(path).expanduser()
     out: Dict[str, Any] = {"ok": False, "error": "", "rows": [], "columns": []}
@@ -206,8 +217,9 @@ def read_pressure_csv(path: "str | Path") -> Dict[str, Any]:
                     colmap[j] = key
             cols = set(colmap.values())
             out["columns"] = sorted(cols)
-            if "pressure" not in cols:
-                out["error"] = ("CSV needs a pressure column (e.g. 'pressure_gpa'). "
+            if not cols.intersection(_CSV_VALUE_KEYS):
+                out["error"] = ("CSV needs at least one value column (e.g. "
+                                "'pressure_gpa', 'temperature_K', 'pos_x_mm'). "
                                 f"Recognised columns: {sorted(cols) or 'none'}.")
                 return out
             if "frame" not in cols and "filename" not in cols:
@@ -232,12 +244,14 @@ def read_pressure_csv(path: "str | Path") -> Dict[str, Any]:
                         f = _to_float(val)
                         if f is not None:
                             rec[key] = f
-                if "pressure" in rec and ("frame" in rec or rec.get("filename")):
+                has_value = any(k in rec for k in _CSV_VALUE_KEYS)
+                if has_value and ("frame" in rec or rec.get("filename")):
                     rows.append(rec)
             out["rows"] = rows
             out["ok"] = bool(rows)
             if not rows:
-                out["error"] = "No usable rows (each needs a pressure and a frame/filename)."
+                out["error"] = ("No usable rows (each needs a value column and "
+                                "a frame/filename key).")
     except Exception as e:  # pragma: no cover - defensive
         out["error"] = f"Failed to read CSV: {e!r}"
     return out
@@ -258,14 +272,12 @@ def map_csv_to_frames(rows: "Sequence[Dict[str, Any]]", names: "Sequence[str]",
 
     Rows with a ``frame`` index map directly; rows with a ``filename`` map by
     basename / stem / full-path match against ``names``. Returns
-    ``{pressure, pressure_sigma, temperature}`` arrays of length
+    ``{pressure, pressure_sigma, temperature, pos_x, pos_y}`` arrays of length
     ``n`` (defaults to ``len(names)``), NaN where unmapped. ``frame`` keying
     takes precedence over ``filename`` when a row carries both.
     """
     n = int(n if n is not None else len(names))
-    pressure = np.full(n, np.nan, "f8")
-    sigma = np.full(n, np.nan, "f8")
-    temperature = np.full(n, np.nan, "f8")
+    arrays = {k: np.full(n, np.nan, "f8") for k in _CSV_VALUE_KEYS}
 
     # filename → frame index lookup (every alias key points to its frame).
     name_to_idx: Dict[str, int] = {}
@@ -276,11 +288,9 @@ def map_csv_to_frames(rows: "Sequence[Dict[str, Any]]", names: "Sequence[str]",
     def _assign(i: int, rec: Dict[str, Any]) -> None:
         if not (0 <= i < n):
             return
-        pressure[i] = rec["pressure"]
-        if "pressure_sigma" in rec:
-            sigma[i] = rec["pressure_sigma"]
-        if "temperature" in rec:
-            temperature[i] = rec["temperature"]
+        for k in _CSV_VALUE_KEYS:
+            if k in rec:
+                arrays[k][i] = rec[k]
 
     for rec in rows:
         if "frame" in rec:
@@ -290,14 +300,14 @@ def map_csv_to_frames(rows: "Sequence[Dict[str, Any]]", names: "Sequence[str]",
                 if k in name_to_idx:
                     _assign(name_to_idx[k], rec)
                     break
-    return {"pressure": pressure, "pressure_sigma": sigma, "temperature": temperature}
+    return arrays
 
 
 # ---------------------------------------------------------------------------
 # Read / write the analysis HDF5 /frames metadata
 # ---------------------------------------------------------------------------
 
-_META_KEYS = ("pressure", "pressure_sigma", "temperature")
+_META_KEYS = ("pressure", "pressure_sigma", "temperature", "pos_x", "pos_y")
 
 
 def read_frame_metadata(analysis_h5: "str | Path") -> Dict[str, Any]:
@@ -364,6 +374,8 @@ def apply_to_analysis(analysis_h5: "str | Path", *,
                       pressure: "Optional[Sequence[float]]" = None,
                       pressure_sigma: "Optional[Sequence[float]]" = None,
                       temperature: "Optional[Sequence[float]]" = None,
+                      pos_x: "Optional[Sequence[float]]" = None,
+                      pos_y: "Optional[Sequence[float]]" = None,
                       timestamp: "Optional[Sequence[str]]" = None,
                       user_frames: "Optional[Sequence[int]]" = None,
                       clear_user_marks: bool = False,
@@ -401,6 +413,8 @@ def apply_to_analysis(analysis_h5: "str | Path", *,
     pres = _check(pressure, "pressure")
     psig = _check(pressure_sigma, "pressure_sigma")
     temp = _check(temperature, "temperature")
+    px = _check(pos_x, "pos_x")
+    py = _check(pos_y, "pos_y")
     ts = None
     if timestamp is not None:
         ts = [str(x) for x in timestamp]
@@ -426,6 +440,10 @@ def apply_to_analysis(analysis_h5: "str | Path", *,
                 _write_frames_dataset(gf, "pressure_sigma", psig)
             if temp is not None:
                 _write_frames_dataset(gf, "temperature", temp)
+            if px is not None:
+                _write_frames_dataset(gf, "pos_x", px)
+            if py is not None:
+                _write_frames_dataset(gf, "pos_y", py)
             if ts is not None:
                 _write_frames_dataset(gf, "timestamp", ts,
                                       str_dtype=h5py.string_dtype(encoding="utf-8"))
@@ -451,7 +469,8 @@ def apply_to_analysis(analysis_h5: "str | Path", *,
 
     return {"out_h5": str(src), "n_frames": n,
             "n_pressure": _count(pres), "n_pressure_sigma": _count(psig),
-            "n_temperature": _count(temp)}
+            "n_temperature": _count(temp),
+            "n_pos": _count(px if px is not None else py)}
 
 
 def _merge(new: np.ndarray, existing: "Optional[np.ndarray]") -> np.ndarray:
@@ -518,21 +537,151 @@ def import_csv_to_analysis(analysis_h5: "str | Path", csv_path: "str | Path", *,
     if not parsed["ok"]:
         raise ValueError(parsed["error"] or "Could not read CSV.")
     mapped = map_csv_to_frames(parsed["rows"], meta["filename"], meta["n_frames"])
-    pressure = mapped["pressure"]
-    # Only write sigma/temperature if the CSV actually carried them.
-    psig = mapped["pressure_sigma"] if np.any(np.isfinite(mapped["pressure_sigma"])) else None
-    temp = mapped["temperature"] if np.any(np.isfinite(mapped["temperature"])) else None
-    mapped_idx = np.nonzero(np.isfinite(mapped["pressure"]))[0]
-    if not replace:
-        pressure = _merge(pressure, meta["pressure"])
-        if psig is not None:
-            psig = _merge(psig, meta["pressure_sigma"])
-        if temp is not None:
-            temp = _merge(temp, meta["temperature"])
-    man = apply_to_analysis(analysis_h5, pressure=pressure,
-                            pressure_sigma=psig, temperature=temp,
+    # Only write the channels the CSV actually carried (pressure included —
+    # a positions-only sheet must not touch the pressure channel).
+    chans: Dict[str, Any] = {}
+    any_mapped = np.zeros(int(meta["n_frames"]), dtype=bool)
+    for key in _CSV_VALUE_KEYS:
+        arr = mapped[key]
+        if not np.any(np.isfinite(arr)):
+            continue
+        any_mapped |= np.isfinite(arr)
+        chans[key] = arr if replace else _merge(arr, meta[key])
+    if not chans:
+        raise ValueError("CSV mapped no values onto the file's frames.")
+    mapped_idx = np.nonzero(any_mapped)[0]
+    man = apply_to_analysis(analysis_h5,
+                            pressure=chans.get("pressure"),
+                            pressure_sigma=chans.get("pressure_sigma"),
+                            temperature=chans.get("temperature"),
+                            pos_x=chans.get("pos_x"),
+                            pos_y=chans.get("pos_y"),
                             user_frames=mapped_idx.tolist())
     man["csv"] = {"columns": parsed["columns"], "n_rows": len(parsed["rows"])}
-    man["n_mapped"] = int(np.sum(np.isfinite(mapped["pressure"])))
-    man["summary"] = summarize_pressures(pressure)
+    man["n_mapped"] = int(mapped_idx.size)
+    man["summary"] = summarize_pressures(
+        chans.get("pressure", meta["pressure"]))
+    return man
+
+
+# ---------------------------------------------------------------------------
+# Stage positions from the raw frame files' headers (mapping scans)
+# ---------------------------------------------------------------------------
+
+def _resolve_frame_path(name: str, search_dir: "Optional[str | Path]") -> "Optional[Path]":
+    p = Path(str(name))
+    if p.is_file():
+        return p
+    if search_dir:
+        cand = Path(search_dir).expanduser() / p.name
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _header_value(header: Dict[str, Any], key: str) -> "Optional[float]":
+    """Value of ``key`` in an image header, case-insensitively. Also resolves
+    the paired name/value convention (``motor_mne``/``motor_pos``,
+    ``counter_mne``/``counter_pos``) many beamline EDFs use."""
+    low = {str(k).strip().lower(): v for k, v in header.items()}
+    k = key.strip().lower()
+    if k in low:
+        return _to_float(low[k])
+    for mne, pos in (("motor_mne", "motor_pos"), ("counter_mne", "counter_pos")):
+        names = str(low.get(mne, "")).split()
+        vals = str(low.get(pos, "")).split()
+        lnames = [nm.lower() for nm in names]
+        if k in lnames:
+            i = lnames.index(k)
+            if i < len(vals):
+                return _to_float(vals[i])
+    return None
+
+
+def frame_header_keys(analysis_h5: "str | Path", *, frame: int = 0,
+                      search_dir: "Optional[str | Path]" = None) -> Dict[str, Any]:
+    """List one frame's raw-image header keys (via fabio), to help find the
+    motor-position key names for :func:`import_positions_from_headers`.
+    Motor/counter names from the paired mne/pos convention are included.
+    Returns ``{ok, error, path, keys}``.
+    """
+    out: Dict[str, Any] = {"ok": False, "error": "", "path": "", "keys": []}
+    meta = read_frame_metadata(analysis_h5)
+    if not meta.get("ok") or not meta["filename"]:
+        out["error"] = "Analysis file has no /frames/filename."
+        return out
+    i = max(0, min(int(frame), len(meta["filename"]) - 1))
+    path = _resolve_frame_path(meta["filename"][i], search_dir)
+    if path is None:
+        out["error"] = (f"Raw frame file not found: {meta['filename'][i]!r} — "
+                        "pass search_dir pointing at the dataset folder.")
+        return out
+    try:
+        import fabio  # type: ignore
+        header = dict(fabio.open(str(path)).header)
+    except Exception as e:
+        out["error"] = f"Could not read the frame header: {e!r}"
+        return out
+    keys = sorted(header)
+    for mne in ("motor_mne", "counter_mne"):
+        for k, v in header.items():
+            if str(k).strip().lower() == mne:
+                keys += sorted(str(v).split())
+    out.update({"ok": True, "path": str(path), "keys": keys})
+    return out
+
+
+def import_positions_from_headers(analysis_h5: "str | Path", key_x: str,
+                                  key_y: str, *,
+                                  search_dir: "Optional[str | Path]" = None
+                                  ) -> Dict[str, Any]:
+    """Read per-frame stage positions from the raw frame files' headers
+    (EDF/CBF/... motor entries, via fabio) and write ``/frames/pos_x``/
+    ``/frames/pos_y`` for the grid map's coordinate layout.
+
+    ``key_x``/``key_y`` are the header keys (case-insensitive; the
+    ``motor_mne``/``motor_pos`` paired convention is resolved too). Frames
+    whose file is missing or lacks the keys stay NaN. Raises with the
+    available header keys when nothing maps, so the right names are one
+    error message away.
+    """
+    meta = read_frame_metadata(analysis_h5)
+    if not meta.get("ok"):
+        raise ValueError(meta["error"] or "Could not read frame metadata.")
+    names = meta["filename"]
+    if not names:
+        raise ValueError("Analysis file has no /frames/filename.")
+    import fabio  # type: ignore
+    n = int(meta["n_frames"])
+    px = np.full(n, np.nan, "f8")
+    py = np.full(n, np.nan, "f8")
+    n_missing_file = 0
+    for i, nm in enumerate(names):
+        path = _resolve_frame_path(nm, search_dir)
+        if path is None:
+            n_missing_file += 1
+            continue
+        try:
+            header = dict(fabio.open(str(path)).header)
+        except Exception:
+            n_missing_file += 1
+            continue
+        vx = _header_value(header, key_x)
+        vy = _header_value(header, key_y)
+        if vx is not None:
+            px[i] = vx
+        if vy is not None:
+            py[i] = vy
+    mapped = np.isfinite(px) | np.isfinite(py)
+    if not mapped.any():
+        probe = frame_header_keys(analysis_h5, search_dir=search_dir)
+        hint = (f" Available keys in {Path(probe['path']).name}: "
+                f"{', '.join(probe['keys'][:40])}" if probe.get("ok") else
+                " No frame file could be opened — check search_dir.")
+        raise ValueError(f"No positions found under headers {key_x!r}/{key_y!r}."
+                         + hint)
+    man = apply_to_analysis(analysis_h5, pos_x=px, pos_y=py,
+                            user_frames=np.nonzero(mapped)[0].tolist())
+    man["n_mapped"] = int(mapped.sum())
+    man["n_missing_file"] = n_missing_file
     return man

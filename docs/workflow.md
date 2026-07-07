@@ -363,22 +363,32 @@ table follows each stage's knobs.
 
 ## 5. Series metadata (pressure, temperature, time)
 
-Every phase-identification and series-plot feature reads from three
+Every phase-identification and series-plot feature reads from these
 `/frames` channels: `pressure` (GPa), `pressure_sigma` (GPa), `temperature`
-(K). There's also `timestamp` (ISO 8601 strings), carried through from the
-reduce stage when the raw frame metadata had it, used only for the "time"
-series axis. All of this lives on the **5 Frame meta** analysis tab.
+(K), and — for mapping scans — the stage positions `pos_x`/`pos_y` (any
+consistent unit, typically mm). There's also `timestamp` (ISO 8601 strings),
+carried through from the reduce stage when the raw frame metadata had it,
+used only for the "time" series axis. All of this lives on the **5 Frame
+meta** analysis tab.
 
-**Filename parsing** ("Extract from filenames"). Recognizes a
+**Filename parsing** ("Extract from filenames"). This is a generic mechanism,
+not tied to any one beamline's naming scheme: it recognizes **any**
 `<number><unit>` token in the frame's basename, falling back to the nearest
-parent folder if the basename has none. Examples: `UOTe-1GPa-001.tif` → 1.0
-GPa, `sample-1p5GPa` → 1.5 GPa (the `p`-as-decimal convention), `3p9GPa` →
-3.9 GPa, `500MPa` → 0.5 GPa, `10kbar` → 1.0 GPa. Units GPa/MPa/kPa/Pa/kbar/bar
-convert as expected; `Mbar` is read as *megabar* (100 GPa) rather than
-millibar — a DAC filename token is essentially never millibar. This runs
-automatically at Step 1 already (populating `/frames/pressure` before you
-ever open this tab), so "Extract from filenames" is mainly there to re-run it
-after a `replace`-style override, or to check what got parsed.
+parent folder if the basename has none. For example, a DAC session named
+`UOTe-1GPa-001.tif` parses to 1.0 GPa — that is just one worked example, not
+an assumed convention; the same parser handles `sample-1p5GPa` → 1.5 GPa (the
+`p`-as-decimal convention), `3p9GPa` → 3.9 GPa, `500MPa` → 0.5 GPa, `10kbar` →
+1.0 GPa, or any other prefix your facility's file-naming convention happens to
+put around the number. Units GPa/MPa/kPa/Pa/kbar/bar convert as expected;
+`Mbar` is read as *megabar* (100 GPa) rather than millibar — a DAC filename
+token is essentially never millibar. This runs automatically at Step 1
+already (populating `/frames/pressure` before you ever open this tab), so
+"Extract from filenames" is mainly there to re-run it after a `replace`-style
+override, or to check what got parsed. If your facility encodes pressure,
+temperature, or other conditions somewhere other than the filename (a log
+file, a beamline database export, a separate scan record), skip filename
+parsing and use the CSV import below instead — it is the general seam for
+"metadata lives somewhere else."
 
 **CSV import** ("Import CSV…", also `--pressure-csv` on the CLI). Column
 headers are matched case-insensitively against these aliases:
@@ -387,12 +397,15 @@ headers are matched case-insensitively against these aliases:
 |---|---|
 | `frame` (0-based index) | `frame`, `frame_index`, `index`, `idx`, `i`, `n` |
 | `filename` | `filename`, `file`, `name`, `fname`, `path` |
-| `pressure` (GPa, **required**) | `pressure_gpa`, `pressure`, `p_gpa`, `p`, `gpa` |
+| `pressure` (GPa) | `pressure_gpa`, `pressure`, `p_gpa`, `p`, `gpa` |
 | `pressure_sigma` (GPa) | `pressure_sigma_gpa`, `pressure_sigma`, `sigma_gpa`, `sigma`, `p_sigma`, `dp`, `p_err` |
 | `temperature` (K) | `temperature_k`, `temperature`, `temp_k`, `temp`, `t_k`, `t` |
+| `pos_x` (stage x) | `pos_x_mm`, `pos_x`, `x_mm`, `x`, `sam_x`, `sample_x`, `motor_x`, `samx` |
+| `pos_y` (stage y) | `pos_y_mm`, `pos_y`, `y_mm`, `y`, `sam_y`, `sample_y`, `motor_y`, `samy` |
 
-Each row needs a `pressure` column plus either `frame` or `filename` to key
-it (`frame` wins if a row somehow has both). Rows key by exact match, then
+Each row needs at least one value column plus either `frame` or `filename`
+to key it (`frame` wins if a row somehow has both) — a positions-only or
+temperature-only sheet is fine. Rows key by exact match, then
 basename, then stem, so a CSV built from your raw filenames (with or without
 extension, with or without a leading path) will map cleanly. Import
 **merges** by default: only frames the CSV actually provides get overwritten,
@@ -400,6 +413,19 @@ so a partial correction sheet for a handful of frames won't erase every other
 frame's pressure. `import_csv_to_analysis(..., replace=True)` (Python API
 only — not exposed in the GUI or CLI) wipes the whole channel and writes the
 CSV verbatim, leaving un-listed frames at NaN.
+
+**Stage positions from the frame headers** ("Read X/Y from headers…"). For
+mapping scans whose raw frames carry motor positions in their image headers
+(EDF/CBF and similar, read via fabio): give the two header key names —
+matched case-insensitively, and the `motor_mne`/`motor_pos` paired-list
+convention is resolved too — and every frame's position is written to
+`/frames/pos_x`/`pos_y`. "List keys" shows what the first frame's header
+actually contains, and a failed import lists the available keys in its error
+message. Point "Frames folder" at the dataset directory when the stored
+filenames are bare names rather than full paths. The Python API is
+`frame_metadata.import_positions_from_headers(analysis_h5, key_x, key_y,
+search_dir=...)`. Once positions exist, the Grid map's `coordinates` layout
+(§6.4) places frames automatically.
 
 **Manual editing.** The per-frame table on the Frame meta tab lets you
 select one or more rows and type a P/σ/T value into the editor row above
@@ -474,17 +500,21 @@ was physically collected on, colored by a per-frame scalar.
   axis), `contamination` (the Step-1 spot score), `n_peaks` (fitted peak
   count), `pressure`, `temperature`, or (once phases are enabled and Step 3a
   has run) `phase: <name>` for that phase's matched-reflection intensity.
-- **Frames per line**: how many frames the stage collected before turning
-  (horizontal scan) or how tall one column is (vertical scan) — this must
-  match your actual raster width/height, there is no auto-detection.
-- **Scan lines**: `horizontal` (scan lines are rows) or `vertical` (scan
-  lines are columns).
-- **Boustrophedon (serpentine)**: checked = the stage reverses direction
-  every line (the common fast-raster pattern); unchecked = unidirectional
-  (every line scans the same way, e.g. with a fly-back). Get this wrong and
-  every other row/column is mirrored.
+- **Layout**: how frames are placed on the grid.
+  - `coordinates` — automatic. Each frame is placed by its recorded stage
+    position (`/frames/pos_x`, `pos_y`; see §5 for how to import them from a
+    CSV or the frame headers). Positions are clustered per axis with a
+    jitter-tolerant snap, so collection order, serpentine vs raster, and
+    missing frames are all irrelevant; axes are in real stage units. Use
+    this whenever positions exist.
+  - `scan lines` — manual, for series without recorded positions. Set:
+    **Frames per line** (how many frames the stage collected before turning
+    — must match your raster width/height, no auto-detection), **Scan
+    lines** (`horizontal` = rows, `vertical` = columns), and
+    **Boustrophedon** (checked = the stage reversed direction every line;
+    unchecked = unidirectional. Get this wrong and every other line is
+    mirrored). Frame 0 is the top-left of the first scan line.
 
-Frame 0 is the top-left of the first scan line regardless of orientation.
 Hovering the rendered grid shows the underlying frame index and value.
 
 ## 7. File management
@@ -594,6 +624,9 @@ case of raw data, can be arbitrarily large.
   any dataset (cake waviness, sampling, channel diagnosis, robust-channel
   provenance) — the same diagnostics referenced in §4.2's troubleshooting
   table.
-- [`docs/ml-training-ris.md`](ml-training-ris.md) — WashU RIS-specific
-  cluster notes (LSF job syntax, storage paths) for the same training
-  pipeline.
+- [`docs/ml-training-ris.md`](ml-training-ris.md) — a worked example of a
+  site-specific cluster addendum (WashU RIS: LSF job syntax, storage paths)
+  to the same training pipeline; use it as a template for your own cluster's
+  notes if you need one, not as a requirement.
+- [`docs/roadmap.md`](roadmap.md) — implemented vs. planned features, and the
+  "Site adoption" section covering what a new facility needs to provide.

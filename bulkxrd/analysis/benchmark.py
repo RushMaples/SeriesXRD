@@ -9,7 +9,7 @@ then scores the ranker against the known labels:
     MRR             mean reciprocal rank of the first true phase
     identify hits   (optional, needs pymatgen) does Step 3a verify the truth?
 
-This is the VALIDATION GATE the RIS training guide requires: run it once with
+This is the VALIDATION GATE the training guide (docs/ml-training.md) requires: run it once with
 the default cosine scorer to pin the deterministic baseline, and again with
 ``--ml-scorer torch:<model.pt>`` — a trained scorer is only promoted when it
 beats the baseline on the same command. Because ingest reuses the pipeline's
