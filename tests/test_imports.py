@@ -25,6 +25,11 @@ mods = [
     'bulkxrd.analysis.ml_rank', 'bulkxrd.analysis.ml_scorer',
     'bulkxrd.analysis.ml_train',
     'bulkxrd.analysis.parallel', 'bulkxrd.analysis.batch',
+    'bulkxrd.analysis.benchmark', 'bulkxrd.analysis.corpus',
+    'bulkxrd.analysis.unknowns', 'bulkxrd.analysis.microstructure',
+    'bulkxrd.analysis.fractions', 'bulkxrd.analysis.refine_export',
+    'bulkxrd.reduce.straighten', 'bulkxrd.reduce.texture',
+    'bulkxrd.reduce.watch',
 ]
 for m in mods:
     importlib.import_module(m)

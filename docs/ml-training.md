@@ -2,10 +2,12 @@
 
 This is the end-to-end guide for training, validating, and deploying the
 RADAR-PD-style learned pair scorer (`bulkxrd-ml-train` → `scorer.pt` →
-`TorchScorer`). It applies to any cluster or workstation. If you run on WashU
-RIS specifically, read this document first, then
-[`docs/ml-training-ris.md`](ml-training-ris.md) for the RIS-only parts (LSF
-job syntax, storage paths).
+`TorchScorer`). It applies to any cluster or workstation — read this document
+first regardless of where you run. If your cluster benefits from a short
+site-specific addendum (scheduler syntax, storage layout), see
+[`docs/ml-training-ris.md`](ml-training-ris.md) for a worked example (WashU
+RIS: LSF job syntax, storage paths) you can adapt for your own site; it is an
+example addendum, not a prerequisite.
 
 The pipeline analyzes pressure series, temperature series, and other in-situ
 series. Examples below use diamond-anvil-cell (DAC) pressure series because
@@ -44,11 +46,20 @@ dataset(s) you will validate against.
 
 1. **Geometry.** Wavy cake rings (a sample measured off the calibrant
    position) turn every peak into a constant-splitting doublet the simulator
-   does not model. Run `reduce.straighten.diagnose_reduced()` on a
-   cakes-enabled reduction: the first-harmonic amplitude `A1` should be much
-   smaller than the peak FWHM (it also reports the physical offset in mm).
-   Fix by re-refining the PONI on a sample-position ring and re-reducing.
-   `straighten_reduced()` is the rescue path for already-collected data.
+   does not model. A cakes-enabled reduction already checks this
+   automatically at completion: it fits the ring wobble on a few saved cakes
+   and prints a `[REDUCE] geometry check OK` line, or a `WARNING` giving the
+   implied 1D doublet splitting (in bins) and the sample offset in mm, and
+   records the summary in the reduction manifest (`geometry_check`). Confirm
+   that check passed before collecting training data from a dataset. For a
+   manual look, or on a reduction from before this check existed, run
+   `reduce.straighten.diagnose_reduced()` on a cakes-enabled reduction
+   directly (same underlying fit: the first-harmonic amplitude `A1` should be
+   much smaller than the peak FWHM), or use the Reduction stage's Review tab
+   ("Diagnose waviness" / "Write straightened 1D" buttons — both need
+   `save_cakes`). Fix by re-refining the PONI on a sample-position ring and
+   re-reducing; `straighten_reduced()` (Python API) / "Write straightened 1D"
+   (GUI) is the rescue path for already-collected data.
 2. **Sampling.** Step 2 measures the median fitted FWHM in bins and warns
    with a concrete `npt_1d` recommendation when peaks are undersampled
    (< 4 bins). Check `median_fwhm_bins` / `npt_recommended` in the peaks

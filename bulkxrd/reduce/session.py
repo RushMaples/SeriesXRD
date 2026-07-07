@@ -20,6 +20,20 @@ _DEFAULTS = {
     "session_name": "reduction",
     "file_patterns": "*.tif;*.tiff;*.edf;*.cbf;*.mar3450;*.h5",
     "recursive": False,
+    "h5_data_path": "",          # HDF5 stack containers: dataset path holding the
+                                 # frame stack. Blank = auto (NeXus entry/data/data
+                                 # and common layouts, else the largest 3D image
+                                 # dataset in the file).
+    # NeXus per-frame metadata harvesting (stack containers only). Blank =
+    # auto-probe common locations; set a dataset path to pin an unusual layout.
+    "h5_timestamp_path": "",
+    "h5_pos_x_path": "",
+    "h5_pos_y_path": "",
+    "h5_temperature_path": "",
+    # Live watch mode (Run tab / bulkxrd-watch).
+    "watch_steps": "12",         # analysis steps re-run as frames arrive
+                                 # (off | 12 | 123)
+    "watch_poll": "5",           # seconds between folder polls
     "npt_1d": "",                # blank = auto: ~1 bin per pixel of radial extent
                                  # (pyFAI rule of thumb, from the accepted PONI +
                                  # first frame). A fixed low value under-samples

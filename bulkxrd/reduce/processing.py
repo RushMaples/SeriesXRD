@@ -24,7 +24,9 @@ from ..core.config import (
     output_base,
 )
 from ..core.handoff import load_handoff
-from ..core.io import read_detector_image
+from ..core.io import (read_detector_image, expand_frame_sources,
+                       frame_display_name, harvest_stack_metadata,
+                       is_h5_frame_spec)
 from ..core.masks import load_mask_npz
 
 DEFAULT_PATTERNS = "*.tif;*.tiff;*.edf;*.cbf;*.mar3450;*.h5"
@@ -327,6 +329,57 @@ def _resolve_npt_1d(raw_npt, poni_file, first_image_file
     return 1500, None, "fallback"
 
 
+def _parse_azimuth_range(v):
+    """'min,max' / (min, max) in degrees → tuple, else None (full azimuth)."""
+    if v in (None, "", (), []):
+        return None
+    try:
+        if isinstance(v, str):
+            a, b = (float(x) for x in v.replace(";", ",").split(",")[:2])
+        else:
+            a, b = float(v[0]), float(v[1])
+        return (a, b) if b > a else None
+    except (TypeError, ValueError, IndexError):
+        print(f"[REDUCE] WARNING: unparseable azimuth_range {v!r} — using "
+              f"the full azimuth.", flush=True)
+        return None
+
+
+def build_settings(config: Dict[str, Any], npt_1d: int) -> Dict[str, Any]:
+    """Integration settings shared by the batch reducer and the live watcher.
+
+    One place resolves the config's integration knobs so the two entry points
+    cannot drift apart.
+    """
+    return {
+        "npt_1d": int(npt_1d),
+        # Optional azimuthal sector (deg) applied to ALL 1D channels alike —
+        # mean/robust/sigmaclip must see the same pixels or spot_residual =
+        # mean − robust becomes meaningless. Cakes stay full-azimuth (they are
+        # the waviness/texture diagnostic). Useful stopgap for wavy rings when
+        # re-calibration isn't possible; needs a pyFAI whose robust integrators
+        # accept azimuth_range.
+        "azimuth_range": _parse_azimuth_range(config.get("azimuth_range", "")),
+        # Default q: the analysis stage is designed around q (peak widths
+        # ~constant in q; d-conversion is wavelength-free). 2th_deg is honoured
+        # when a session explicitly selects it.
+        "unit": config.get("unit", "q_A^-1") or "q_A^-1",
+        "method": config.get("method", "csr") or "csr",
+        "polarization_factor": float(config["polarization_factor"]) if str(config.get("polarization_factor", "")).strip() else None,
+        "robust_1d": bool(config.get("robust_1d", True)),
+        # Half-width of the azimuthal quantile band averaged for the robust
+        # channel (0.05 -> 45-55%). 0 = pure median (staircases on low counts).
+        "robust_quant_halfwidth": float(config.get("robust_quant_halfwidth", 0.05)
+                                        if str(config.get("robust_quant_halfwidth", "")).strip() != ""
+                                        else 0.05),
+        "sigmaclip_1d": bool(config.get("sigmaclip_1d", True)),
+        "sigmaclip_thresh": float(config.get("sigmaclip_thresh", 3.0) or 3.0),
+        "sigmaclip_maxiter": int(config.get("sigmaclip_maxiter", 5) or 5),
+        "npt_radial": int(config.get("npt_radial", 500) or 500),
+        "npt_azimuthal": int(config.get("npt_azimuthal", 360) or 360),
+    }
+
+
 def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
     """Run a full batch reduction. Returns the manifest (also written to disk).
 
@@ -347,51 +400,22 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
             f"No frames found in {config.get('dataset_dir')!r} "
             f"matching {config.get('file_patterns', DEFAULT_PATTERNS)!r}"
         )
+    # HDF5/NeXus stack containers (Eiger-style master files) expand into one
+    # source per stored frame; plain image files pass through unchanged.
+    files, n_stacks = expand_frame_sources(
+        files, str(config.get("h5_data_path", "") or ""))
+    if n_stacks:
+        print(f"[REDUCE] expanded {n_stacks} HDF5 stack container(s) -> "
+              f"{len(files)} frames total", flush=True)
+    if not files:
+        raise FileNotFoundError(
+            "The matched files contained no readable frames (HDF5 containers "
+            "were skipped — see the log; pass h5_data_path if the stack "
+            "layout was not recognized).")
 
     npt_1d, npt_suggested, npt_mode = _resolve_npt_1d(
         config.get("npt_1d", ""), handoff.accepted_poni, files[0])
-    def _parse_az(v):
-        """'min,max' / (min, max) in degrees → tuple, else None (full azimuth)."""
-        if v in (None, "", (), []):
-            return None
-        try:
-            if isinstance(v, str):
-                a, b = (float(x) for x in v.replace(";", ",").split(",")[:2])
-            else:
-                a, b = float(v[0]), float(v[1])
-            return (a, b) if b > a else None
-        except (TypeError, ValueError, IndexError):
-            print(f"[REDUCE] WARNING: unparseable azimuth_range {v!r} — using "
-                  f"the full azimuth.", flush=True)
-            return None
-
-    settings = {
-        "npt_1d": npt_1d,
-        # Optional azimuthal sector (deg) applied to ALL 1D channels alike —
-        # mean/robust/sigmaclip must see the same pixels or spot_residual =
-        # mean − robust becomes meaningless. Cakes stay full-azimuth (they are
-        # the waviness/texture diagnostic). Useful stopgap for wavy rings when
-        # re-calibration isn't possible; needs a pyFAI whose robust integrators
-        # accept azimuth_range.
-        "azimuth_range": _parse_az(config.get("azimuth_range", "")),
-        # Default q: the analysis stage is designed around q (peak widths
-        # ~constant in q; d-conversion is wavelength-free). 2th_deg is honoured
-        # when a session explicitly selects it.
-        "unit": config.get("unit", "q_A^-1") or "q_A^-1",
-        "method": config.get("method", "csr") or "csr",
-        "polarization_factor": float(config["polarization_factor"]) if str(config.get("polarization_factor", "")).strip() else None,
-        "robust_1d": bool(config.get("robust_1d", True)),
-        # Half-width of the azimuthal quantile band averaged for the robust
-        # channel (0.05 -> 45-55%). 0 = pure median (staircases on low counts).
-        "robust_quant_halfwidth": float(config.get("robust_quant_halfwidth", 0.05)
-                                        if str(config.get("robust_quant_halfwidth", "")).strip() != ""
-                                        else 0.05),
-        "sigmaclip_1d": bool(config.get("sigmaclip_1d", True)),
-        "sigmaclip_thresh": float(config.get("sigmaclip_thresh", 3.0) or 3.0),
-        "sigmaclip_maxiter": int(config.get("sigmaclip_maxiter", 5) or 5),
-        "npt_radial": int(config.get("npt_radial", 500) or 500),
-        "npt_azimuthal": int(config.get("npt_azimuthal", 360) or 360),
-    }
+    settings = build_settings(config, npt_1d)
     save_cakes = bool(config.get("save_cakes", False))
     cake_every = max(1, int(config.get("cake_every", 1) or 1))
     make_thumbnails = bool(config.get("make_thumbnails", True))
@@ -482,10 +506,45 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
             g_frames.create_dataset("temperature", shape=(total,), dtype="f8", fillvalue=np.nan)
             g_frames.create_dataset("timestamp",   shape=(total,), dtype=str_dt)
             for i, f in enumerate(files):
-                try:
-                    ds_files[i] = str(f.relative_to(dataset_root))
-                except ValueError:
-                    ds_files[i] = f.name
+                ds_files[i] = frame_display_name(f, dataset_root)
+
+            # NeXus per-frame metadata: stack containers often carry
+            # timestamps, stage positions, and temperature alongside the
+            # images — harvest them into /frames so nothing needs a sidecar
+            # CSV. Plain image files are unaffected (their headers are read
+            # on demand by frame_metadata.import_positions_from_headers).
+            if any(is_h5_frame_spec(f) for f in files):
+                meta = harvest_stack_metadata(
+                    files,
+                    timestamp_path=str(config.get("h5_timestamp_path", "") or ""),
+                    pos_x_path=str(config.get("h5_pos_x_path", "") or ""),
+                    pos_y_path=str(config.get("h5_pos_y_path", "") or ""),
+                    temperature_path=str(config.get("h5_temperature_path", "") or ""))
+                if any(meta["timestamp"]):
+                    g_frames["timestamp"][...] = np.array(meta["timestamp"],
+                                                          dtype=object)
+                if np.any(np.isfinite(meta["temperature"])):
+                    g_frames["temperature"][...] = meta["temperature"]
+                for key in ("pos_x", "pos_y"):
+                    if np.any(np.isfinite(meta[key])):
+                        g_frames.create_dataset(key, data=meta[key])
+                if meta["n_frames_with_meta"]:
+                    manifest_nexus = {
+                        "n_frames_with_meta": int(meta["n_frames_with_meta"]),
+                        "timestamps": int(sum(bool(t) for t in meta["timestamp"])),
+                        "positions": int(np.sum(np.isfinite(meta["pos_x"])
+                                                | np.isfinite(meta["pos_y"]))),
+                        "temperature": int(np.sum(np.isfinite(meta["temperature"]))),
+                    }
+                    print(f"[REDUCE] NeXus metadata harvested: "
+                          f"{manifest_nexus['timestamps']} timestamp(s), "
+                          f"{manifest_nexus['positions']} position(s), "
+                          f"{manifest_nexus['temperature']} temperature(s)",
+                          flush=True)
+                else:
+                    manifest_nexus = None
+            else:
+                manifest_nexus = None
             
             g_cake = h5.create_group("cakes") if save_cakes else None
             # ds_cake / ds_cake_idx created lazily once the cake shape is known;
@@ -616,6 +675,8 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
         "h5_file": str(h5_path),
         "config": config,
     }
+    if manifest_nexus:
+        manifest["nexus_metadata"] = manifest_nexus
     if robust_estimators:
         manifest["robust_estimator"] = robust_estimators[0]
         if len(robust_estimators) > 1:   # mixed pyFAI fallbacks across workers
@@ -634,6 +695,42 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
     if sigmaclip_errors:
         manifest["sigmaclip_warnings"] = sigmaclip_errors[:10]
         print(f"[REDUCE] WARNING: sigma-clip pattern unavailable: {sigmaclip_errors[0]}", flush=True)
+
+    # Geometry health check: when cakes were saved, fit the ring waviness on a
+    # few of them right away. A large first harmonic means the sample sat off
+    # the calibrant position — every 1D peak becomes a doublet, and it is far
+    # cheaper to learn that now than after a full analysis run.
+    if save_cakes and n_cakes:
+        try:
+            from .straighten import diagnose_reduced
+            rep = diagnose_reduced(h5_path, max_cakes=3)
+            summ = rep.get("summary") or {}
+            if rep.get("ok") and summ:
+                manifest["geometry_check"] = summ
+                bin_w = 0.0
+                try:
+                    import h5py as _h5c
+                    with _h5c.File(str(h5_path), "r") as _f:
+                        r = np.asarray(_f["patterns/radial"][:], dtype=float)
+                        bin_w = float((r.max() - r.min()) / max(r.size - 1, 1))
+                except Exception:
+                    pass
+                split = float(summ.get("doublet_splitting", 0.0))
+                if bin_w > 0 and split > 3.0 * bin_w:
+                    off = summ.get("offset_mm")
+                    off_txt = f" (implied sample offset ~{off:.3f} mm)" if off else ""
+                    print(f"[REDUCE] WARNING: geometry check — ring waviness "
+                          f"implies a 1D doublet splitting of {split:.4g} "
+                          f"({split / bin_w:.1f} bins){off_txt}. Re-refine the "
+                          f"geometry on a sample-position ring and re-reduce, "
+                          f"or use the Review tab's straightening tools.",
+                          flush=True)
+                else:
+                    print(f"[REDUCE] geometry check OK (waviness A1 = "
+                          f"{summ.get('A1_median', float('nan')):.4g})", flush=True)
+        except Exception as e:  # a diagnostic must never fail the reduction
+            print(f"[REDUCE] geometry check skipped: {e!r}", flush=True)
+
     write_json(manifest_path, manifest)
     manifest["manifest_file"] = str(manifest_path)
     print(f"[REDUCE] done: {total - len(failures)}/{total} frames in {elapsed:.1f}s -> {h5_path}", flush=True)

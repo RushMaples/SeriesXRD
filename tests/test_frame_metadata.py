@@ -67,10 +67,20 @@ def test_csv_by_frame_and_filename():
         m2 = fm.map_csv_to_frames(r2["rows"], names, len(names))
         assert np.isnan(m2["pressure"][0]) and m2["pressure"][1] == 9.9 and m2["pressure"][2] == 8.8
 
-        # a CSV without a pressure column is rejected
-        c3 = td / "bad.csv"
+        # a value-only CSV needs no pressure column (temperature series,
+        # positions-only mapping runs) — but NO value column at all is rejected
+        c3 = td / "temps.csv"
         c3.write_text("frame,temperature_K\n0,300\n")
-        assert not fm.read_pressure_csv(c3)["ok"]
+        r3 = fm.read_pressure_csv(c3)
+        assert r3["ok"] and r3["rows"][0]["temperature"] == 300.0
+        c4 = td / "positions.csv"
+        c4.write_text("frame,pos_x_mm,pos_y_mm\n0,1.0,2.0\n1,1.5,2.0\n")
+        r4 = fm.read_pressure_csv(c4)
+        m4 = fm.map_csv_to_frames(r4["rows"], names, len(names))
+        assert m4["pos_x"][1] == 1.5 and m4["pos_y"][0] == 2.0
+        c5 = td / "novalues.csv"
+        c5.write_text("frame,notes\n0,hello\n")
+        assert not fm.read_pressure_csv(c5)["ok"]
 
 
 def _make_analysis(path, names):
@@ -183,6 +193,199 @@ def test_background_step1_carries_metadata():
         assert md["timestamp"] == ["t0", "t1", "t2"]
 
 
+def _wavy_reduced(path, names, nb=40):
+    import h5py
+    rng = np.random.default_rng(0)
+    n = len(names)
+    mean = rng.normal(10, 1, (n, nb)).astype("f4")
+    with h5py.File(str(path), "w") as h:
+        h.attrs["unit"] = "q_A^-1"
+        h.attrs["poni_text"] = "Wavelength: 4.0e-11"
+        gp = h.create_group("patterns")
+        gp.create_dataset("intensity", data=mean)
+        gp.create_dataset("intensity_robust", data=mean.copy())
+        gp.create_dataset("radial", data=np.linspace(1, 8, nb))
+        gf = h.create_group("frames")
+        gf.create_dataset("filename", data=np.array(names, dtype=object),
+                          dtype=h5py.string_dtype(encoding="utf-8"))
+        gf.create_dataset("excluded", data=np.zeros(n, "?"))
+        gf.create_dataset("pressure", data=np.full(n, np.nan))
+
+
+def test_user_edits_survive_reparse_and_step1():
+    """The bug from the field: a mistyped filename token (50p7GPa for what
+    should have been 5.27 GPa) was re-parsed on every Step-1 re-run,
+    resurrecting the outlier a user had already corrected by hand. Manual
+    edits are now marked user_edited, skipped by re-parsing, and carried
+    forward through a Step-1 rebuild."""
+    from bulkxrd.analysis.background import run_background_separation
+    names = ["UOTe-1GPa-001.tif", "UOTe-50p7GPa-002.tif", "UOTe-3GPa-003.tif"]
+    with tempfile.TemporaryDirectory() as td:
+        red = Path(td) / "red.h5"
+        _wavy_reduced(red, names)
+        out = Path(td) / "an.h5"
+        run_background_separation(red, out)
+        md = fm.read_frame_metadata(out)
+        assert np.allclose(md["pressure"], [1.0, 50.7, 3.0])
+
+        # Fix the outlier by hand, as the GUI's "Apply to selected" does.
+        pr = md["pressure"].copy()
+        pr[1] = 5.27
+        fm.apply_to_analysis(out, pressure=pr, user_frames=[1])
+        md = fm.read_frame_metadata(out)
+        assert md["user_edited"].tolist() == [False, True, False]
+
+        # A filename re-parse must not clobber the fix (other frames still parse).
+        fm.extract_to_analysis(out)
+        md = fm.read_frame_metadata(out)
+        assert np.allclose(md["pressure"], [1.0, 5.27, 3.0])
+
+        # A full Step-1 re-run rebuilds the file — the fix must be carried.
+        run_background_separation(red, out)
+        md = fm.read_frame_metadata(out)
+        assert np.allclose(md["pressure"], [1.0, 5.27, 3.0]), md["pressure"]
+        assert md["user_edited"].tolist() == [False, True, False]
+
+        # replace=True is the explicit reset: re-parse everything, clear marks.
+        fm.extract_to_analysis(out, replace=True)
+        md = fm.read_frame_metadata(out)
+        assert np.allclose(md["pressure"], [1.0, 50.7, 3.0])
+        assert not md["user_edited"].any()
+
+
+def test_csv_import_marks_user_frames():
+    """CSV rows are deliberate human input: mapped frames get the user mark, so
+    a later filename re-parse cannot overwrite them."""
+    names = ["a-1GPa.tif", "b-2GPa.tif", "c-3GPa.tif"]
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "an.h5"
+        _make_analysis(p, names)
+        fm.extract_to_analysis(p)
+        csv = Path(td) / "fix.csv"
+        csv.write_text("frame,pressure_gpa\n1,9.9\n")
+        fm.import_csv_to_analysis(p, csv)
+        md = fm.read_frame_metadata(p)
+        assert md["user_edited"].tolist() == [False, True, False]
+        fm.extract_to_analysis(p)                    # re-parse: keeps the CSV value
+        assert np.allclose(fm.read_frame_metadata(p)["pressure"], [1.0, 9.9, 3.0])
+
+
+def test_positions_csv_and_step1_carry():
+    """Positions imported from a CSV land in /frames/pos_x+pos_y, are marked
+    user-edited, and survive a Step-1 rebuild (the coordinate grid map needs
+    them to persist like every other deliberate metadata input)."""
+    from bulkxrd.analysis.background import run_background_separation
+    names = ["m-001.tif", "m-002.tif", "m-003.tif", "m-004.tif"]
+    with tempfile.TemporaryDirectory() as td:
+        red = Path(td) / "red.h5"
+        _wavy_reduced(red, names)
+        out = Path(td) / "an.h5"
+        run_background_separation(red, out)
+        csv = Path(td) / "pos.csv"
+        csv.write_text("filename,pos_x_mm,pos_y_mm\n"
+                       "m-001.tif,0.0,0.0\nm-002.tif,0.1,0.0\n"
+                       "m-003.tif,0.0,0.1\nm-004.tif,0.1,0.1\n")
+        man = fm.import_csv_to_analysis(out, csv)
+        assert man["n_mapped"] == 4
+        md = fm.read_frame_metadata(out)
+        assert np.allclose(md["pos_x"], [0.0, 0.1, 0.0, 0.1])
+        assert np.allclose(md["pos_y"], [0.0, 0.0, 0.1, 0.1])
+        assert np.isnan(md["pressure"]).all()      # positions-only CSV: P untouched
+        run_background_separation(red, out)        # rebuild
+        md = fm.read_frame_metadata(out)
+        assert np.allclose(md["pos_x"], [0.0, 0.1, 0.0, 0.1])
+        assert np.allclose(md["pos_y"], [0.0, 0.0, 0.1, 0.1])
+
+
+def test_positions_from_edf_headers():
+    """Stage positions read from real EDF headers (direct key and the ESRF
+    motor_mne/motor_pos pair convention), with the instructive failure path."""
+    try:
+        import fabio
+        from fabio.edfimage import EdfImage
+    except ImportError:
+        print("  (fabio missing - header test skipped)")
+        return
+    from bulkxrd.analysis.frame_metadata import (
+        import_positions_from_headers, frame_header_keys)
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        names = []
+        for i in range(3):
+            f = td / f"map-{i:03d}.edf"
+            img = EdfImage(data=np.zeros((4, 4), dtype=np.int32))
+            img.header["samx"] = f"{0.1 * i:.3f}"                    # direct key
+            img.header["motor_mne"] = "phi kappa samy"
+            img.header["motor_pos"] = f"10.0 20.0 {0.2 * i:.3f}"     # paired key
+            img.write(str(f))
+            names.append(str(f))
+        p = td / "an.h5"
+        _make_analysis(p, names)
+        man = import_positions_from_headers(p, "SAMX", "samy")       # case-insensitive
+        assert man["n_mapped"] == 3
+        md = fm.read_frame_metadata(p)
+        assert np.allclose(md["pos_x"], [0.0, 0.1, 0.2])
+        assert np.allclose(md["pos_y"], [0.0, 0.2, 0.4])
+        assert md["user_edited"].all()
+        keys = frame_header_keys(p)
+        assert keys["ok"] and "samx" in keys["keys"] and "samy" in keys["keys"]
+        try:
+            import_positions_from_headers(p, "nope_x", "nope_y")
+            assert False, "expected ValueError with available keys"
+        except ValueError as e:
+            assert "samx" in str(e)                                  # names the keys
+
+
+def test_coordinate_grid_snapping():
+    """coordinate_grid recovers the scan grid from jittered stage positions,
+    independent of collection order (serpentine here)."""
+    from bulkxrd.analysis.heatmap import coordinate_grid
+    rng = np.random.default_rng(1)
+    xs, ys, order = [], [], []
+    fi = 0
+    for r in range(3):                     # 3 rows x 4 cols, serpentine
+        cols = range(4) if r % 2 == 0 else range(3, -1, -1)
+        for c in cols:
+            xs.append(0.05 * c + rng.normal(0, 0.002))   # jitter << pitch
+            ys.append(0.05 * r + rng.normal(0, 0.002))
+            order.append((r, c, fi))
+            fi += 1
+    cg = coordinate_grid(np.array(xs), np.array(ys))
+    assert cg["ok"], cg["error"]
+    g = cg["grid"]
+    assert g.shape == (3, 4) and cg["fill_frac"] == 1.0 and cg["n_collisions"] == 0
+    for r, c, k in order:
+        assert g[r, c] == k, (r, c, k, g)
+    # a missing frame leaves a hole, everything else still lands
+    cg2 = coordinate_grid(np.array(xs[:-1]), np.array(ys[:-1]))
+    assert cg2["ok"] and cg2["grid"].shape == (3, 4)
+    assert int(np.sum(cg2["grid"] < 0)) == 1
+    # exact (jitter-free) coordinates also cluster correctly
+    cg3 = coordinate_grid(np.repeat([0.0, 1.0], 2), np.tile([0.0, 1.0], 2))
+    assert cg3["ok"] and cg3["grid"].shape == (2, 2) and cg3["fill_frac"] == 1.0
+
+
+def test_prior_range_offenders_names_the_outlier():
+    """The identify range-widening warning names the frame(s) responsible and
+    flags a value far off the series median as a likely metadata error."""
+    from bulkxrd.analysis.identify import prior_range_offenders
+    pr = np.array([1.0, 2.0, 50.7, 3.0, np.nan])
+    w = np.full(5, 2.0)
+    names = ["a.tif", "b.tif", "UOTe-50p7GPa-002.tif", "c.tif", "d.tif"]
+    lines = prior_range_offenders(pr, w, 0.0, 15.0, names=names)
+    assert len(lines) == 1, lines
+    assert "frame 2" in lines[0] and "50p7GPa" in lines[0] and "50.7" in lines[0]
+    assert "median" in lines[0]                       # the outlier hint fired
+    # Low priors near 0 must NOT be flagged when p_min is 0 (the search's low
+    # side clamps at 0, so they never actually widen the range).
+    assert prior_range_offenders(np.array([1.0, 2.0]), np.full(2, 2.0),
+                                 0.0, 15.0) == []
+    # A genuinely out-of-range value without outlier character gets no hint.
+    tight = prior_range_offenders(np.array([14.0, 15.5, 16.0]), np.full(3, 2.0),
+                                  0.0, 15.0)
+    assert tight and all("median" not in s for s in tight)
+
+
 def main() -> None:
     test_parse_pressure_units()
     test_extract_and_summary()
@@ -190,6 +393,12 @@ def main() -> None:
     test_apply_roundtrip_and_partial_overwrite()
     test_partial_csv_merges_not_erases()
     test_background_step1_carries_metadata()
+    test_user_edits_survive_reparse_and_step1()
+    test_csv_import_marks_user_frames()
+    test_positions_csv_and_step1_carry()
+    test_positions_from_edf_headers()
+    test_coordinate_grid_snapping()
+    test_prior_range_offenders_names_the_outlier()
     print("FRAME METADATA TEST OK")
 
 

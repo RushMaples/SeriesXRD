@@ -95,11 +95,16 @@ _DEFAULTS = {
     "ml_scorer": "",               # ''/'cosine' = deterministic; 'torch:<model.pt>' = trained
     # Grid map (view-only): scan geometry for mapping runs.
     "map_value": "total",          # per-frame scalar shown on the grid
+    "map_layout": "scan lines",    # scan lines (order-based) | coordinates (pos_x/pos_y)
     "map_line_len": "",            # frames per scan line (user's raster width/height)
     "map_order": "horizontal",     # horizontal rows | vertical columns
     "map_serpentine": True,        # boustrophedon vs unidirectional raster
     "map_roi_min": "",
     "map_roi_max": "",
+    # Stage-position header keys (mapping runs; Frame meta tab dialog).
+    "pos_header_x": "",
+    "pos_header_y": "",
+    "pos_header_dir": "",
     # Parallelism: 0 = auto (CPU count − 1), 1 = serial, N = N processes.
     "num_workers": "0",
 }

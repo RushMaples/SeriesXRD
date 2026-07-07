@@ -63,12 +63,15 @@ raw detector frames + a calibrant image
 | Stage | Reads | Writes | GUI | CLI |
 |---|---|---|---|---|
 | Calibrate | calibrant image + PONI | `handoff_for_next_notebook.json` (PONI + mask) | `bulkxrd-calib-gui` | none (worker only) |
-| Reduce | handoff JSON + dataset folder | `reduced_<session>_<ts>.h5` | `bulkxrd-reduce-gui` | none (worker only) |
+| Reduce | handoff JSON + dataset folder | `reduced_<session>_<ts>.h5` | `bulkxrd-reduce-gui` | none for a batch run (worker only); `bulkxrd-watch` for live mode |
 | Analyze | reduced `.h5` | `<stem>_analysis.h5` | `bulkxrd-analysis-gui` | `bulkxrd-analyze` |
 
-Calibration and reduction have no polished argument-per-flag CLI the way
-analysis does — see [§3.4](#34-headless-driving-of-calibrationreduction) for
-what running them without the GUI actually looks like.
+Calibration has no polished argument-per-flag CLI the way analysis does. A
+batch reduction likewise has none — see
+[§3.4](#34-headless-driving-of-calibrationreduction) for what running either
+stage without the GUI actually looks like. Reduction's live-mode counterpart
+is the exception: `bulkxrd-watch` (see [§3.5](#35-live-mode-during-a-beamtime-bulkxrd-watch))
+is a fully-flagged, documented CLI in its own right.
 
 The unified launcher `bulkxrd` embeds all three stages as tabs in one window
 and wires the handoffs automatically: accepting a calibration fills in the
@@ -169,11 +172,23 @@ Six tabs, in order:
    to pull one from an earlier session).
 2. **2 Dataset** — the folder of sample frames, file-glob patterns
    (default `*.tif;*.tiff;*.edf;*.cbf;*.mar3450;*.h5`), recursive search
-   toggle, "Scan dataset" to preview the file list and count.
+   toggle, "Scan dataset" to preview the file list and count. HDF5/NeXus
+   stack containers (Eiger-style master files holding many frames in one
+   `.h5`) are expanded automatically — the scan preview shows the true frame
+   count, and "HDF5 data path" pins the frame dataset when the auto-detection
+   (NeXus `entry/data/data` first, else the largest 3D image dataset) doesn't
+   match an unusual layout.
 3. **3 Settings** — integration parameters (binning, unit, channels, cakes,
    thumbnails, workers). See [§4.2](#42-reduction) for the ones that matter.
 4. **4 Run** — launch the crash-isolated worker subprocess, watch a progress
-   bar and log.
+   bar and log. Also hosts the live-watch controls: "Start watching (live)" /
+   "Stop watching", an analysis-steps selector (`off`/`12`/`123`), and a poll
+   interval in seconds. The live file is handed to the Review tab and the
+   Analysis stage as soon as it is created, and Stop finishes the current
+   batch gracefully rather than killing it mid-append. See
+   [§3.5](#35-live-mode-during-a-beamtime-bulkxrd-watch) for the equivalent
+   CLI (`bulkxrd-watch`) and the full behavior — this tab is a thin front end
+   over the same worker.
 5. **5 Review** — inspector for the reduced HDF5: structure summary plus
    overlaid/separated plots of a few sample patterns and (if saved) a cake.
    Two cake-waviness tools live here (both need `save_cakes`):
@@ -262,6 +277,61 @@ detection knob the GUI has (`--min-snr`, `--min-prominence-snr`,
 `--detrend-bins`). For anything beyond that, call
 `bulkxrd.analysis.peaks.run_peak_fitting(...)` /
 `bulkxrd.analysis.worker.run_analysis(config_dict)` from your own script.
+
+### 3.5 Live mode during a beamtime (`bulkxrd-watch`)
+
+```bash
+bulkxrd-watch --workspace ~/my_experiment            # needs an accepted calibration
+bulkxrd-watch --workspace ~/my_experiment --steps 123  # live phase ID too
+bulkxrd-watch --workspace ~/my_experiment --steps ''   # reduce only
+```
+
+Polls the configured dataset folder (`--poll 5` seconds) while frames are
+still being collected, integrates each new frame once it settles, and
+appends it to a growing `reduced_<session>_<ts>_live.h5`. After every batch
+(`--analyze-every N` to thin this out) the analysis worker re-runs the
+chosen steps against the live file, so opening the analysis GUI on it shows
+current Review/Peak map/Pattern map views mid-run. Ctrl-C (or `--idle-exit
+30` minutes without a new frame) ends the watch with a final analysis pass.
+
+The same mode is available in the GUI: the Reduction tab's **4 Run** tab has
+"Start watching (live)" / "Stop watching" with the analysis-steps and poll
+controls; the live file is handed to the Review tab and the Analysis stage
+as soon as it is created, and Stop finishes the current batch gracefully.
+
+An interrupted watch resumes with `--resume path/to/reduced_..._live.h5`
+(this overrides `--out` if both are passed): frames already in the file are
+skipped (matched by their stored names) and new ones append; the file's bin
+count and channel set win over the config if they differ. `--resume` refuses
+a target that isn't a live-mode file — only a `*_live.h5` written by
+`bulkxrd-watch` (i.e. one carrying the `live_mode` attribute) can be resumed.
+Separately, a plain `--out` pointing at an already-existing file, with no
+`--resume`, is refused so a finished live file can't be truncated by
+accident.
+
+What it handles: plain image files (processed only after their size/mtime
+is stable across two polls), growing HDF5 stacks (new frames picked up per
+poll; the newest frame of a still-growing stack waits one poll so a
+half-written chunk is never read), NeXus metadata (timestamps/positions/
+temperature harvested per batch), and transient read failures (3 retries,
+then the frame is marked failed and skipped).
+
+What it deliberately does not do: cakes and gallery thumbnails are skipped
+for speed, and the live file is appended in place rather than
+written-tmp-and-replaced — a hard kill mid-append can corrupt the live file
+(never an archival one). Frame order is arrival order. When the run is
+over, do a normal full reduction for the archival file; the live file is a
+working view.
+
+**Other command-line tools.** `bulkxrd-texture reduced.h5` writes per-ring
+azimuthal texture metrics (`/texture`: texture index, spot fraction,
+preferred-orientation harmonic) from a cakes-enabled reduction.
+`bulkxrd-export-refinement analysis.h5 out_dir` writes a Rietveld hand-off
+bundle (patterns as `.xy`, phase CIFs, GSAS-II `instrument.instprm`, README
+with a GSASIIscriptable snippet). `bulkxrd-analyze --fractions` adds
+semi-quantitative intensity-share phase fractions (`/fractions`) after the
+residual step — see `analysis/fractions.py`'s docstring for what those
+fractions do and do not correct.
 
 ## 4. Parameter tuning
 
@@ -363,22 +433,32 @@ table follows each stage's knobs.
 
 ## 5. Series metadata (pressure, temperature, time)
 
-Every phase-identification and series-plot feature reads from three
+Every phase-identification and series-plot feature reads from these
 `/frames` channels: `pressure` (GPa), `pressure_sigma` (GPa), `temperature`
-(K). There's also `timestamp` (ISO 8601 strings), carried through from the
-reduce stage when the raw frame metadata had it, used only for the "time"
-series axis. All of this lives on the **5 Frame meta** analysis tab.
+(K), and — for mapping scans — the stage positions `pos_x`/`pos_y` (any
+consistent unit, typically mm). There's also `timestamp` (ISO 8601 strings),
+carried through from the reduce stage when the raw frame metadata had it,
+used only for the "time" series axis. All of this lives on the **5 Frame
+meta** analysis tab.
 
-**Filename parsing** ("Extract from filenames"). Recognizes a
+**Filename parsing** ("Extract from filenames"). This is a generic mechanism,
+not tied to any one beamline's naming scheme: it recognizes **any**
 `<number><unit>` token in the frame's basename, falling back to the nearest
-parent folder if the basename has none. Examples: `UOTe-1GPa-001.tif` → 1.0
-GPa, `sample-1p5GPa` → 1.5 GPa (the `p`-as-decimal convention), `3p9GPa` →
-3.9 GPa, `500MPa` → 0.5 GPa, `10kbar` → 1.0 GPa. Units GPa/MPa/kPa/Pa/kbar/bar
-convert as expected; `Mbar` is read as *megabar* (100 GPa) rather than
-millibar — a DAC filename token is essentially never millibar. This runs
-automatically at Step 1 already (populating `/frames/pressure` before you
-ever open this tab), so "Extract from filenames" is mainly there to re-run it
-after a `replace`-style override, or to check what got parsed.
+parent folder if the basename has none. For example, a DAC session named
+`UOTe-1GPa-001.tif` parses to 1.0 GPa — that is just one worked example, not
+an assumed convention; the same parser handles `sample-1p5GPa` → 1.5 GPa (the
+`p`-as-decimal convention), `3p9GPa` → 3.9 GPa, `500MPa` → 0.5 GPa, `10kbar` →
+1.0 GPa, or any other prefix your facility's file-naming convention happens to
+put around the number. Units GPa/MPa/kPa/Pa/kbar/bar convert as expected;
+`Mbar` is read as *megabar* (100 GPa) rather than millibar — a DAC filename
+token is essentially never millibar. This runs automatically at Step 1
+already (populating `/frames/pressure` before you ever open this tab), so
+"Extract from filenames" is mainly there to re-run it after a `replace`-style
+override, or to check what got parsed. If your facility encodes pressure,
+temperature, or other conditions somewhere other than the filename (a log
+file, a beamline database export, a separate scan record), skip filename
+parsing and use the CSV import below instead — it is the general seam for
+"metadata lives somewhere else."
 
 **CSV import** ("Import CSV…", also `--pressure-csv` on the CLI). Column
 headers are matched case-insensitively against these aliases:
@@ -387,12 +467,15 @@ headers are matched case-insensitively against these aliases:
 |---|---|
 | `frame` (0-based index) | `frame`, `frame_index`, `index`, `idx`, `i`, `n` |
 | `filename` | `filename`, `file`, `name`, `fname`, `path` |
-| `pressure` (GPa, **required**) | `pressure_gpa`, `pressure`, `p_gpa`, `p`, `gpa` |
+| `pressure` (GPa) | `pressure_gpa`, `pressure`, `p_gpa`, `p`, `gpa` |
 | `pressure_sigma` (GPa) | `pressure_sigma_gpa`, `pressure_sigma`, `sigma_gpa`, `sigma`, `p_sigma`, `dp`, `p_err` |
 | `temperature` (K) | `temperature_k`, `temperature`, `temp_k`, `temp`, `t_k`, `t` |
+| `pos_x` (stage x) | `pos_x_mm`, `pos_x`, `x_mm`, `x`, `sam_x`, `sample_x`, `motor_x`, `samx` |
+| `pos_y` (stage y) | `pos_y_mm`, `pos_y`, `y_mm`, `y`, `sam_y`, `sample_y`, `motor_y`, `samy` |
 
-Each row needs a `pressure` column plus either `frame` or `filename` to key
-it (`frame` wins if a row somehow has both). Rows key by exact match, then
+Each row needs at least one value column plus either `frame` or `filename`
+to key it (`frame` wins if a row somehow has both) — a positions-only or
+temperature-only sheet is fine. Rows key by exact match, then
 basename, then stem, so a CSV built from your raw filenames (with or without
 extension, with or without a leading path) will map cleanly. Import
 **merges** by default: only frames the CSV actually provides get overwritten,
@@ -401,11 +484,36 @@ frame's pressure. `import_csv_to_analysis(..., replace=True)` (Python API
 only — not exposed in the GUI or CLI) wipes the whole channel and writes the
 CSV verbatim, leaving un-listed frames at NaN.
 
+**Stage positions from the frame headers** ("Read X/Y from headers…"). For
+mapping scans whose raw frames carry motor positions in their image headers
+(EDF/CBF and similar, read via fabio): give the two header key names —
+matched case-insensitively, and the `motor_mne`/`motor_pos` paired-list
+convention is resolved too — and every frame's position is written to
+`/frames/pos_x`/`pos_y`. "List keys" shows what the first frame's header
+actually contains, and a failed import lists the available keys in its error
+message. Point "Frames folder" at the dataset directory when the stored
+filenames are bare names rather than full paths. The Python API is
+`frame_metadata.import_positions_from_headers(analysis_h5, key_x, key_y,
+search_dir=...)`. Once positions exist, the Grid map's `coordinates` layout
+(§6.4) places frames automatically.
+
 **Manual editing.** The per-frame table on the Frame meta tab lets you
 select one or more rows and type a P/σ/T value into the editor row above
 "Apply to selected" — useful for a handful of frames a ruby-fluorescence or
 membrane-gauge reading corrected by hand. Blank fields in the editor are left
 unchanged on the selected frames.
+
+**Edits persist.** Values you set by hand (and frames a CSV provided) are
+marked `user` in the table's Src column (`/frames/user_edited` on disk).
+Marked frames are skipped by "Extract from filenames", and a Step-1 re-run
+carries them into the rebuilt analysis file (matched by filename) — so a
+correction to a mistyped filename pressure (e.g. `50p7GPa` that should have
+been 5.27) stays fixed no matter how often you re-run. The explicit reset is
+`extract_to_analysis(..., replace=True)` (Python API), which re-parses every
+frame and clears the marks. If identification ever widens its pressure range
+to cover the metadata (the `[IDENTIFY] WARNING: widening pressure range`
+log line), the frames responsible are now listed by name right below it,
+with an outlier hint when one value sits far off the series median.
 
 **How it feeds downstream.** `pressure`/`pressure_sigma` drive the Step-3a
 pressure prior (§4.4); `temperature` drives the thermal-expansion seam
@@ -462,17 +570,21 @@ was physically collected on, colored by a per-frame scalar.
   axis), `contamination` (the Step-1 spot score), `n_peaks` (fitted peak
   count), `pressure`, `temperature`, or (once phases are enabled and Step 3a
   has run) `phase: <name>` for that phase's matched-reflection intensity.
-- **Frames per line**: how many frames the stage collected before turning
-  (horizontal scan) or how tall one column is (vertical scan) — this must
-  match your actual raster width/height, there is no auto-detection.
-- **Scan lines**: `horizontal` (scan lines are rows) or `vertical` (scan
-  lines are columns).
-- **Boustrophedon (serpentine)**: checked = the stage reverses direction
-  every line (the common fast-raster pattern); unchecked = unidirectional
-  (every line scans the same way, e.g. with a fly-back). Get this wrong and
-  every other row/column is mirrored.
+- **Layout**: how frames are placed on the grid.
+  - `coordinates` — automatic. Each frame is placed by its recorded stage
+    position (`/frames/pos_x`, `pos_y`; see §5 for how to import them from a
+    CSV or the frame headers). Positions are clustered per axis with a
+    jitter-tolerant snap, so collection order, serpentine vs raster, and
+    missing frames are all irrelevant; axes are in real stage units. Use
+    this whenever positions exist.
+  - `scan lines` — manual, for series without recorded positions. Set:
+    **Frames per line** (how many frames the stage collected before turning
+    — must match your raster width/height, no auto-detection), **Scan
+    lines** (`horizontal` = rows, `vertical` = columns), and
+    **Boustrophedon** (checked = the stage reversed direction every line;
+    unchecked = unidirectional. Get this wrong and every other line is
+    mirrored). Frame 0 is the top-left of the first scan line.
 
-Frame 0 is the top-left of the first scan line regardless of orientation.
 Hovering the rendered grid shows the underlying frame index and value.
 
 ## 7. File management
@@ -497,6 +609,10 @@ once you've run all three stages once:
       reduced_<session>_<ts>.h5
       reduced_<session>_<ts>.manifest.json
       reduced_<session>_<ts>_previews/       (per-frame gallery thumbnails, if enabled)
+      reduced_<session>_<ts>_live.h5          (bulkxrd-watch output, same folder as a
+                                              normal reduction; a working view — appended
+                                              in place, no cakes/thumbnails; run a full
+                                              reduction for the archival file)
       <reduced_stem>_analysis.h5             (default analysis output, beside the reduced file)
   figures/                            calibration QA figures (per generation)
   metadata/
@@ -519,6 +635,8 @@ once you've run all three stages once:
     reduce_<ts>.json                  reduction worker manifest
     analysis_<ts>.json                analysis worker manifest
     worker_preview_<ts>.json          cake-orientation preview output
+    watch_analysis_cfg_<ts>.json      bulkxrd-watch's per-batch analysis config snapshot
+    watch_analysis_<ts>.json          bulkxrd-watch's per-batch analysis worker manifest
 ```
 
 The session config JSONs *are* your saved parameter tuning — every field you
@@ -535,6 +653,7 @@ Re-opening the same workspace restores every knob exactly where you left it.
 | `metadata/<workflow>/genNNN/...` (calibration QA generations you haven't accepted) | Yes, once you've accepted the generation you want | Costs pyFAI compute time to regenerate if you need to go back to an earlier trial. |
 | `*.tmp` files | Yes, if any are ever left behind | Every HDF5/JSON write in this pipeline is atomic (`.tmp` file + `os.replace`) — a `.tmp` should never persist after a normal run or a caught exception. A stray one can only survive a hard kill mid-write (e.g. `kill -9`); it's an incomplete write and safe to remove. |
 | `reduced_*.h5` | No — this is the reduction stage's entire output | Re-generating it re-runs the full integration over every frame. Keep it; it's the input every analysis run starts from. |
+| `reduced_*_live.h5` (`bulkxrd-watch` output) | Yes, once you've run a normal full reduction over the same dataset | It's a working view, not the archival file — no cakes/thumbnails, appended in place rather than atomically. Regenerable only by re-watching (`--resume` continues an interrupted one) or by a full reduction, which is the archival path anyway. |
 | `<stem>_analysis.h5` | Regenerable from the reduced file, but keep it if you've spent time tuning Step 2/3 parameters or have run Step 3a/ML export | Re-running the analysis worker rebuilds it from scratch (each step is not free — Step 3a in particular can be slow with many candidate phases). |
 | `accepted_calibrations/.../handoff_for_next_notebook.json` + its `accepted_calibration/` folder | No | This is the calibration stage's entire deliverable and the reduction stage's only input. Small (a PONI + a mask + a couple of PNGs); back it up with your data. |
 | `reference_phases/user_phases.json` + imported CIFs | No | Your hand-entered/imported phase library. Not regenerable without re-entering every phase. |
@@ -582,6 +701,9 @@ case of raw data, can be arbitrarily large.
   any dataset (cake waviness, sampling, channel diagnosis, robust-channel
   provenance) — the same diagnostics referenced in §4.2's troubleshooting
   table.
-- [`docs/ml-training-ris.md`](ml-training-ris.md) — WashU RIS-specific
-  cluster notes (LSF job syntax, storage paths) for the same training
-  pipeline.
+- [`docs/ml-training-ris.md`](ml-training-ris.md) — a worked example of a
+  site-specific cluster addendum (WashU RIS: LSF job syntax, storage paths)
+  to the same training pipeline; use it as a template for your own cluster's
+  notes if you need one, not as a requirement.
+- [`docs/roadmap.md`](roadmap.md) — implemented vs. planned features, and the
+  "Site adoption" section covering what a new facility needs to provide.
