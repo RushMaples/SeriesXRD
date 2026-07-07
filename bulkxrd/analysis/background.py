@@ -355,6 +355,10 @@ def run_background_separation(
                         if frames is not None and "pressure" in frames else None)
         red_temperature = (np.asarray(frames["temperature"][:], dtype=float)
                            if frames is not None and "temperature" in frames else None)
+        red_pos_x = (np.asarray(frames["pos_x"][:], dtype=float)
+                     if frames is not None and "pos_x" in frames else None)
+        red_pos_y = (np.asarray(frames["pos_y"][:], dtype=float)
+                     if frames is not None and "pos_y" in frames else None)
         red_timestamp = (
             [x.decode("utf-8", "replace") if isinstance(x, (bytes, bytearray)) else str(x)
              for x in frames["timestamp"][:]]
@@ -440,8 +444,10 @@ def run_background_separation(
                    if red_temperature is not None and red_temperature.size == n
                    else None)
     pressure_sigma = None
-    pos_x = None
-    pos_y = None
+    # Stage positions carried from the reduced file (NeXus stack harvest);
+    # user-edited values below override per frame.
+    pos_x = (red_pos_x if red_pos_x is not None and red_pos_x.size == n else None)
+    pos_y = (red_pos_y if red_pos_y is not None and red_pos_y.size == n else None)
     user_mask = None
     prev = _previous_user_metadata(out)
     if prev is not None:

@@ -54,6 +54,7 @@ bulkxrd-ml-train = "bulkxrd.analysis.ml_train:main"
 bulkxrd-benchmark = "bulkxrd.analysis.benchmark:main"
 bulkxrd-corpus = "bulkxrd.analysis.corpus:main"
 bulkxrd-texture = "bulkxrd.reduce.texture:main"
+bulkxrd-watch = "bulkxrd.reduce.watch:main"
 bulkxrd-export-refinement = "bulkxrd.analysis.refine_export:main"
 bulkxrd-inspect = "bulkxrd.core.inspect:main"
 

@@ -96,6 +96,36 @@ bulkxrd's own output files are refused as frame sources, `hdf5plugin` is
 loaded when present (Eiger bitshuffle/LZ4 compression), and the Dataset
 tab's scan preview shows the true expanded frame count.
 
+**NeXus per-frame metadata harvesting (new in this release).** Stack
+containers often carry more than images: per-frame timestamps, stage
+positions, and sample temperature. Reduction now harvests them
+(`core/io.harvest_stack_metadata`) into `/frames/timestamp`, `pos_x`/`pos_y`,
+and `temperature` — probing NeXus/areaDetector conventions first
+(`entry/data/timestamp`, `entry/instrument/positioners/samx`,
+`entry/sample/temperature`, ...), with `h5_timestamp_path`/`h5_pos_x_path`/
+`h5_pos_y_path`/`h5_temperature_path` config keys to pin unusual layouts.
+Numeric timestamps are treated as seconds (only elapsed time matters
+downstream); scalar positions broadcast. Step 1 carries the positions into
+the analysis file, so an Eiger mapping scan feeds the coordinate grid map
+with no sidecar CSV at all.
+
+**Watch-folder / during-beamtime mode (new in this release).**
+`bulkxrd-watch` polls the dataset folder while frames are still being
+collected, integrates each new frame once it settles (size/mtime stable
+across two polls; a growing HDF5 stack's newest frame is held back one poll
+so a half-written chunk is never read; failures retry 3× before giving up),
+and appends to a growing `*_live.h5` with resizable datasets. The file is
+opened only for each batch append and closed again, so between batches it is
+a consistent, ordinary reduced file — and every `--analyze-every` batches
+the crash-isolated analysis worker re-runs the configured steps against it
+(`--steps 12` default: background + peaks; `123` adds phase ID; `''` reduce
+only), using the workspace's analysis config for the knobs. The design
+tradeoff is explicit: the live file trades the tmp+replace atomicity for
+append speed (a hard kill can corrupt at most the live file, never an
+archival one), skips cakes/thumbnails, and a normal full reduction remains
+the archival path when the run ends. Ctrl-C or `--idle-exit N` minutes ends
+the watch with a final analysis flush.
+
 **Geometry health check on reduction completion (new in this release).**
 When cakes were saved, the reduction fits ring waviness on the first few
 cakes as it finishes and warns — with the implied 1D doublet splitting in
@@ -148,31 +178,19 @@ collects.
 
 ## Planned
 
-**1. NeXus per-frame metadata harvesting.** The stack ingestion above reads
-the frame images; a NeXus master file often ALSO carries per-frame exposure
-times, timestamps, and motor positions that today still need a sidecar CSV
-or header keys. Design: a metadata sibling to the image auto-detection that
-maps common NeXus locations onto `/frames/timestamp` and `pos_x`/`pos_y`
-during reduction.
+**1. Live-mode resume + GUI integration.** `bulkxrd-watch` starts a fresh
+live file per invocation; resuming an interrupted watch into an existing
+live file (re-reading its processed-source list as the seen-set) and a
+"Watch folder" toggle on the Reduction tab are the natural next steps once
+the CLI mechanics have seen real beamtime.
 
-**2. Live watch-folder / during-beamtime mode.** Reduce and analyze frames as
-they land during an active beamtime, appending to the HDF5 and refreshing the
-maps incrementally instead of requiring a complete dataset up front. Design:
-the current convention is atomic rebuild — every analysis step copies the
-whole file to a `.tmp` and replaces it — which is safe but means a live mode
-needs either a genuinely incremental append path (extend datasets in place,
-which loses the "always complete or absent" atomicity guarantee for the
-duration of a run) or a cheap way to re-run the atomic rebuild often enough
-that it feels live on a growing but still-modest frame count. The tradeoff
-between these two is the crux of the design.
-
-**3. Rietveld-quality phase fractions.** The intensity-share/RIR fractions
+**2. Rietveld-quality phase fractions.** The intensity-share/RIR fractions
 above are implemented; publication-grade weight fractions come from refining
 the exported bundle in GSAS-II (or similar) and, if wanted later, importing
 the refined scale factors back into `/fractions` — an import bridge, not an
 in-house Rietveld engine.
 
-**4. Open-set structure search for unknowns.** Take a Step 3c cluster's
+**3. Open-set structure search for unknowns.** Take a Step 3c cluster's
 d-fingerprint and search it against a COD-derived candidate set using the
 same `ml_scorer` seam Step 3b already defines, instead of stopping at "here
 is an unidentified cluster of coherent peaks." The design need is a
@@ -181,7 +199,7 @@ subset per query is too slow to be interactive, so this needs the corpus
 tooling (`analysis/corpus.py`) plus a precomputed/cached simulation layer
 searched by approximate d-fingerprint match before any scorer runs.
 
-**5. Multi-detector / multi-geometry sessions.** Support one series measured
+**4. Multi-detector / multi-geometry sessions.** Support one series measured
 across two (or more) detector positions or geometries within a single
 analysis — e.g. a wide-angle and a high-angle detector, or a mid-run
 detector-distance change. Design: needs a per-frame PONI association (today
@@ -190,7 +208,7 @@ reduce and into the analysis HDF5's frame metadata, so azimuthal integration
 and downstream d-spacing conversion pick the right geometry per frame rather
 than assuming one geometry for the whole series.
 
-**6. Automatic calibrant detection.** The geometry health check on
+**5. Automatic calibrant detection.** The geometry health check on
 reduction completion is implemented (see above); the remaining half is
 detecting the calibrant from the accepted calibration's fit residuals or the
 image itself, and flagging a stale calibration reused from a different

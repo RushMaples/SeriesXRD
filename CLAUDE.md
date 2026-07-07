@@ -28,6 +28,10 @@ bulkxrd/
                     (straighten_reduced → /patterns/intensity_straightened)
     texture.py      azimuthal texture metrics per saved cake (bulkxrd-texture):
                     texture index, spot fraction, PO 2nd harmonic -> /texture
+    watch.py        live/during-beamtime mode (bulkxrd-watch): polls the dataset
+                    folder, appends settled frames to a growing *_live.h5
+                    (batch-closed resizable datasets; no cakes/thumbnails),
+                    re-runs analysis steps via the worker per batch
   analysis/      analysis stage (THIS IS THE ACTIVE WORK)
     background.py   Step 1 — DONE (also carries /frames pressure/temp/timestamp)
     peaks.py        Step 2 — DONE
@@ -100,7 +104,12 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
 /cakes/radial, /cakes/azimuthal, /cakes/frame_index
 /frames/filename, ok, seconds, excluded, frame_index, thumb
 /frames/pressure, temperature, timestamp   placeholders (pressure seeded NaN; populated
-                                            downstream by analysis/frame_metadata.py)
+                                            downstream by analysis/frame_metadata.py).
+                                            For HDF5 stack inputs, timestamp/temperature
+                                            (+ /frames/pos_x, pos_y) are harvested from
+                                            NeXus locations at reduce time (core/io.
+                                            harvest_stack_metadata; h5_*_path config
+                                            keys pin unusual layouts)
 ```
 
 ### Analysis HDF5 (output of `analysis/background.py` Step 1)

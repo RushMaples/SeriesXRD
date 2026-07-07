@@ -268,6 +268,36 @@ detection knob the GUI has (`--min-snr`, `--min-prominence-snr`,
 `bulkxrd.analysis.peaks.run_peak_fitting(...)` /
 `bulkxrd.analysis.worker.run_analysis(config_dict)` from your own script.
 
+### 3.5 Live mode during a beamtime (`bulkxrd-watch`)
+
+```bash
+bulkxrd-watch --workspace ~/my_experiment            # needs an accepted calibration
+bulkxrd-watch --workspace ~/my_experiment --steps 123  # live phase ID too
+bulkxrd-watch --workspace ~/my_experiment --steps ''   # reduce only
+```
+
+Polls the configured dataset folder (`--poll 5` seconds) while frames are
+still being collected, integrates each new frame once it settles, and
+appends it to a growing `reduced_<session>_<ts>_live.h5`. After every batch
+(`--analyze-every N` to thin this out) the analysis worker re-runs the
+chosen steps against the live file, so opening the analysis GUI on it shows
+current Review/Peak map/Pattern map views mid-run. Ctrl-C (or `--idle-exit
+30` minutes without a new frame) ends the watch with a final analysis pass.
+
+What it handles: plain image files (processed only after their size/mtime
+is stable across two polls), growing HDF5 stacks (new frames picked up per
+poll; the newest frame of a still-growing stack waits one poll so a
+half-written chunk is never read), NeXus metadata (timestamps/positions/
+temperature harvested per batch), and transient read failures (3 retries,
+then the frame is marked failed and skipped).
+
+What it deliberately does not do: cakes and gallery thumbnails are skipped
+for speed, and the live file is appended in place rather than
+written-tmp-and-replaced — a hard kill mid-append can corrupt the live file
+(never an archival one). Frame order is arrival order. When the run is
+over, do a normal full reduction for the archival file; the live file is a
+working view.
+
 **Other command-line tools.** `bulkxrd-texture reduced.h5` writes per-ring
 azimuthal texture metrics (`/texture`: texture index, spot fraction,
 preferred-orientation harmonic) from a cakes-enabled reduction.

@@ -177,6 +177,188 @@ def frame_display_name(source, root: "Optional[str | Path]" = None) -> str:
     return p.name
 
 
+# Per-frame metadata locations probed inside a stack container when no
+# explicit path is given. Beamlines are far less consistent here than with
+# the image data itself, so explicit *_path overrides always win.
+_NEXUS_TIMESTAMP_PATHS = (
+    "entry/data/timestamp",
+    "entry/data/time",
+    "entry/instrument/NDAttributes/NDArrayTimeStamp",   # APS areaDetector
+)
+_NEXUS_POSITION_GROUPS = (
+    "entry/sample", "entry/sample/positioners",
+    "entry/instrument/positioners", "entry/data",
+)
+_NEXUS_POS_X_NAMES = ("pos_x", "sample_x", "sam_x", "samx", "x")
+_NEXUS_POS_Y_NAMES = ("pos_y", "sample_y", "sam_y", "samy", "y")
+_NEXUS_TEMPERATURE_PATHS = ("entry/sample/temperature",)
+
+
+def _seconds_to_iso(values: np.ndarray) -> "List[str]":
+    """Float seconds → ISO strings the analysis 'time' axis can parse. Only
+    DIFFERENCES matter downstream (elapsed time), so any epoch base (UNIX,
+    EPICS, run-relative) gives the same series axis."""
+    from datetime import datetime, timedelta, timezone
+    base = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    out = []
+    for v in np.asarray(values, dtype=float).ravel():
+        if not np.isfinite(v):
+            out.append("")
+            continue
+        try:
+            out.append((base + timedelta(seconds=float(v)))
+                       .replace(tzinfo=None).isoformat())
+        except (OverflowError, ValueError):
+            out.append("")
+    return out
+
+
+def h5_stack_metadata(path: str | Path, n_frames: int, *,
+                      timestamp_path: str = "", pos_x_path: str = "",
+                      pos_y_path: str = "", temperature_path: str = "") -> dict:
+    """Harvest per-frame metadata a NeXus/HDF5 stack container carries.
+
+    Returns ``{timestamp, pos_x, pos_y, temperature}`` — ``timestamp`` a list
+    of ISO strings (or None), the rest float arrays of length ``n_frames``
+    (or None when not found). Explicit ``*_path`` arguments pin a dataset;
+    otherwise common NeXus/areaDetector locations are probed. A per-frame
+    array must match ``n_frames``; a scalar broadcasts (one value for the
+    whole stack — normal for a still batch). Numeric timestamps are treated
+    as seconds and converted (only elapsed time is used downstream).
+    """
+    out = {"timestamp": None, "pos_x": None, "pos_y": None, "temperature": None}
+    p = Path(path).expanduser()
+    try:
+        import h5py  # type: ignore
+    except ImportError:
+        return out
+    _import_hdf5_plugins()
+
+    def _series(h5, dspath) -> "Optional[np.ndarray]":
+        node = h5.get(dspath)
+        if node is None or not isinstance(node, h5py.Dataset):
+            return None
+        try:
+            raw = node[()]
+        except Exception:
+            return None
+        arr = np.atleast_1d(np.asarray(raw))
+        if arr.ndim != 1:
+            return None
+        if arr.size == 1:
+            return np.repeat(arr, n_frames)
+        if arr.size >= n_frames:
+            return arr[:n_frames]
+        return None
+
+    def _float_series(h5, dspath) -> "Optional[np.ndarray]":
+        arr = _series(h5, dspath)
+        if arr is None or arr.dtype.kind not in "fiu":
+            return None
+        return np.asarray(arr, dtype="f8")
+
+    try:
+        with h5py.File(str(p), "r") as h5:
+            # Timestamps: explicit path, else probe. String datasets pass
+            # through; numeric ones convert as seconds.
+            ts_paths = ([timestamp_path] if timestamp_path
+                        else list(_NEXUS_TIMESTAMP_PATHS))
+            for cand in ts_paths:
+                arr = _series(h5, cand)
+                if arr is None:
+                    continue
+                if arr.dtype.kind in "SUO":
+                    out["timestamp"] = [
+                        x.decode("utf-8", "replace")
+                        if isinstance(x, (bytes, bytearray)) else str(x)
+                        for x in arr]
+                elif arr.dtype.kind in "fiu":
+                    out["timestamp"] = _seconds_to_iso(arr)
+                if out["timestamp"] is not None:
+                    break
+
+            def _positions(explicit, names):
+                if explicit:
+                    return _float_series(h5, explicit)
+                for grp in _NEXUS_POSITION_GROUPS:
+                    for nm in names:
+                        arr = _float_series(h5, f"{grp}/{nm}")
+                        if arr is not None:
+                            return arr
+                return None
+
+            out["pos_x"] = _positions(pos_x_path, _NEXUS_POS_X_NAMES)
+            out["pos_y"] = _positions(pos_y_path, _NEXUS_POS_Y_NAMES)
+
+            t_paths = ([temperature_path] if temperature_path
+                       else list(_NEXUS_TEMPERATURE_PATHS))
+            for cand in t_paths:
+                arr = _float_series(h5, cand)
+                if arr is not None:
+                    out["temperature"] = arr
+                    break
+    except Exception:
+        return {"timestamp": None, "pos_x": None, "pos_y": None,
+                "temperature": None}
+    return out
+
+
+def harvest_stack_metadata(sources: "Sequence[str]", *,
+                           timestamp_path: str = "", pos_x_path: str = "",
+                           pos_y_path: str = "", temperature_path: str = ""
+                           ) -> dict:
+    """Map container metadata onto an expanded frame-source list.
+
+    ``sources`` is the :func:`expand_frame_sources` output (mixed plain files
+    and stack specs). Container metadata is read once per container and
+    aligned by each spec's frame index. Returns ``{timestamp (list[str]),
+    pos_x, pos_y, temperature (float arrays)}`` of length ``len(sources)``
+    — all-empty/NaN entries for plain files — plus ``n_frames_with_meta``.
+    """
+    n = len(sources)
+    timestamp = [""] * n
+    pos_x = np.full(n, np.nan, "f8")
+    pos_y = np.full(n, np.nan, "f8")
+    temperature = np.full(n, np.nan, "f8")
+    # One pass to learn each container's frame count (max index asked for).
+    parsed: "List[Optional[Tuple[Path, str, int]]]" = []
+    counts: dict = {}
+    for src in sources:
+        if is_h5_frame_spec(src):
+            file_part, dset, idx = parse_h5_frame_spec(src)
+            parsed.append((file_part, dset, idx))
+            key = str(file_part)
+            counts[key] = max(counts.get(key, 0), idx + 1)
+        else:
+            parsed.append(None)
+    per_container: dict = {}
+    touched = 0
+    for k, rec in enumerate(parsed):
+        if rec is None:
+            continue
+        file_part, dset, idx = rec
+        key = str(file_part)
+        if key not in per_container:
+            per_container[key] = h5_stack_metadata(
+                file_part, counts[key],
+                timestamp_path=timestamp_path, pos_x_path=pos_x_path,
+                pos_y_path=pos_y_path, temperature_path=temperature_path)
+        meta = per_container[key]
+        got = False
+        if meta["timestamp"] is not None and idx < len(meta["timestamp"]):
+            timestamp[k] = meta["timestamp"][idx]
+            got = True
+        for name, arr in (("pos_x", pos_x), ("pos_y", pos_y),
+                          ("temperature", temperature)):
+            m = meta[name]
+            if m is not None and idx < m.size:
+                arr[k] = m[idx]
+                got = True
+        touched += int(got)
+    return {"timestamp": timestamp, "pos_x": pos_x, "pos_y": pos_y,
+            "temperature": temperature, "n_frames_with_meta": touched}
+
+
 def _read_h5_frame(source) -> np.ndarray:
     import h5py  # type: ignore
     _import_hdf5_plugins()

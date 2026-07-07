@@ -29,6 +29,7 @@ mods = [
     'bulkxrd.analysis.unknowns', 'bulkxrd.analysis.microstructure',
     'bulkxrd.analysis.fractions', 'bulkxrd.analysis.refine_export',
     'bulkxrd.reduce.straighten', 'bulkxrd.reduce.texture',
+    'bulkxrd.reduce.watch',
 ]
 for m in mods:
     importlib.import_module(m)

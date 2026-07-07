@@ -24,6 +24,12 @@ _DEFAULTS = {
                                  # frame stack. Blank = auto (NeXus entry/data/data
                                  # and common layouts, else the largest 3D image
                                  # dataset in the file).
+    # NeXus per-frame metadata harvesting (stack containers only). Blank =
+    # auto-probe common locations; set a dataset path to pin an unusual layout.
+    "h5_timestamp_path": "",
+    "h5_pos_x_path": "",
+    "h5_pos_y_path": "",
+    "h5_temperature_path": "",
     "npt_1d": "",                # blank = auto: ~1 bin per pixel of radial extent
                                  # (pyFAI rule of thumb, from the accepted PONI +
                                  # first frame). A fixed low value under-samples
