@@ -107,6 +107,36 @@ def test_peaks_excluded_atomic_and_parallel():
         assert np.array_equal(c_serial, _counts(a2))
 
 
+def test_peak_seed_pressure_scan_order_metadata():
+    import h5py
+    with tempfile.TemporaryDirectory() as td:
+        red = Path(td) / "reduced.h5"
+        _make_reduced(red, n=6, excluded_idx=(), noise=2.0)
+        a = Path(td) / "a.h5"
+        run_background_separation(red, a, num_workers=1)
+        with h5py.File(str(a), "r+") as h:
+            names = np.array([
+                "P01_scan002_020.tif", "P01_scan002_010.tif", "P01_scan002_030.tif",
+                "P01_scan001_020.tif", "P01_scan001_010.tif", "P01_scan001_030.tif",
+            ], dtype=object)
+            h["frames/filename"][:] = names
+            if "pressure" in h["frames"]:
+                del h["frames/pressure"]
+            h["frames"].create_dataset(
+                "pressure", data=np.array([20, 10, 30, 20, 10, 30], float))
+
+        run_peak_fitting(
+            a, None, seed_tracking_axis="pressure", seed_group_by="scan",
+            num_workers=2)
+        with h5py.File(str(a), "r") as h:
+            pk = h["peaks"]
+            assert pk.attrs["seed_tracking_axis"] == "pressure"
+            assert pk.attrs["seed_group_by"] == "scan"
+            assert int(pk.attrs["seed_group_count"]) == 2
+            frames = pk["frame"][:]
+            assert np.all(frames[:-1] <= frames[1:])      # saved layout stays frame-sorted
+
+
 def test_identify_excluded_and_parallel():
     if not ph.pymatgen_available():
         print("  (pymatgen not installed — skipping identify parallel/excluded)")
@@ -184,6 +214,7 @@ def test_batch_cli_step2_knobs():
 def main() -> None:
     test_background_wavelength_excluded_and_parallel()
     test_peaks_excluded_atomic_and_parallel()
+    test_peak_seed_pressure_scan_order_metadata()
     test_identify_excluded_and_parallel()
     test_batch_cli()
     test_batch_cli_step2_knobs()

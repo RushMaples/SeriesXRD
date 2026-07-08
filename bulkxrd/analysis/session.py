@@ -56,6 +56,10 @@ _DEFAULTS = {
                                  # noise floor reflects real noise and small peaks aren't
                                  # lost under an inflated global threshold.
     "propagate_seeds": True,
+    "seed_tracking_axis": "same",  # same = follow unknown_tracking_axis; else frame|pressure|temperature|time
+    "seed_group_by": "same",       # same = follow unknown_group_by; else none|scan|folder
+    "seed_axis_predictor": True,   # for physical axes, shift seeds by recent local drift
+    "seed_max_axis_gap": "",       # optional GPa/K/s cap before seed memory resets
     # Step 3 prep — candidate phases (names from the reference-phase library)
     # enabled for compound identification. Edited on the GUI's Phases tab.
     "candidate_phases": [],
@@ -93,6 +97,16 @@ _DEFAULTS = {
     "ml_rank_top_k": "5",
     "ml_rank_source": "auto",      # auto|residual|fit — what to rank against
     "ml_scorer": "",               # ''/'cosine' = deterministic; 'torch:<model.pt>' = trained
+    # Step 3c unknown tracking: frame-order by default; pressure/temperature/time
+    # sort residual peaks by that metadata axis and predict smooth center drift.
+    "unknown_tracking_axis": "frame",  # frame|pressure|temperature|time
+    "unknown_group_by": "none",        # none|scan|folder — keep independent scans separate
+    "unknown_axis_predictor": True,
+    "unknown_link_tol_fwhm": "1.5",
+    "unknown_max_gap": "2",          # missing ordered samples tolerated
+    "unknown_max_axis_gap": "",      # optional GPa/K/s cap for physical-axis linking
+    "unknown_min_frames": "3",
+    "unknown_jaccard": "0.6",
     # Grid map (view-only): scan geometry for mapping runs.
     "map_value": "total",          # per-frame scalar shown on the grid
     "map_layout": "scan lines",    # scan lines (order-based) | coordinates (pos_x/pos_y)

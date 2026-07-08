@@ -11,7 +11,8 @@ Workflow left-to-right across tabs — configure (1-6), run (7), inspect (8-11):
     8 Review      — single-frame QC: traces + fitted peaks + contamination curve
     9 Peak map    — scatter of fitted peak positions across the series
     10 Pattern map — waterfall / reflection tracks / per-phase intensity (needs Step 3a)
-    11 Grid map   — per-frame scalars refolded onto a 2D scan grid (mapping runs)
+    11 Unknowns    — stacked Step-3c unknown-cluster diagram + exports
+    12 Grid map    — per-frame scalars refolded onto a 2D scan grid (mapping runs)
 
 Series plots (9-11) can use frame index, pressure, temperature, or elapsed
 time as the independent variable.
@@ -37,7 +38,7 @@ from ..core.naming import next_available_path
 from ..core.processes import terminate_process_tree, worker_popen
 from ..guikit.theme import (
     BG, BG2, FG, ACCENT, ACCENT2, WARN, MUTED, ENTRY_BG,
-    CLR_RAW, CLR_MSKD, CLR_SMTH, CLR_DIFF,
+    CLR_RAW, CLR_MSKD, CLR_SMTH, CLR_DIFF, CLR_REF,
 )
 from ..guikit.tkstyle import apply_dark_theme
 from ..guikit.tooltip import ToolTip as _ToolTip
@@ -100,6 +101,37 @@ HELP: Dict[str, str] = {
         "Apply each frame's temperature (Frame metadata tab) to the predicted "
         "d-spacings of phases that define thermal expansion. Uncheck to treat "
         "all frames as ambient temperature."
+    ),
+    "unknown_tracking_axis": (
+        "Axis used to link residual peaks into unknown tracks. frame preserves "
+        "collection order; pressure/temperature/time sort frames by that metadata "
+        "and allow smooth peak drift along the chosen axis."
+    ),
+    "unknown_group_by": (
+        "Keep independent series separate while tracking unknowns. Use scan for "
+        "datasets named with scan001/scan034-style tokens; use folder when each "
+        "scan lives in its own directory."
+    ),
+    "unknown_axis_predictor": (
+        "For pressure/temperature/time tracking, extrapolate the next peak center "
+        "from the track's recent slope. Keep on for pressure-shifting unknowns."
+    ),
+    "unknown_link_tol_fwhm": (
+        "Linking tolerance in fitted-peak widths. Raise if a real unknown line "
+        "splits into short tracks; lower if nearby unrelated peaks are merging."
+    ),
+    "unknown_max_gap": (
+        "How many missing ordered samples a track may skip before it is closed. "
+        "With pressure tracking, samples are pressure-sorted frames."
+    ),
+    "unknown_max_axis_gap": (
+        "Optional maximum physical-axis jump between linked observations: GPa for "
+        "pressure, K for temperature, seconds for time. Blank = no physical cap."
+    ),
+    "unknown_min_frames": "Minimum distinct observations required to keep an unknown track.",
+    "unknown_jaccard": (
+        "Co-occurrence threshold for merging tracks into one unknown cluster. "
+        "Higher = stricter clustering."
     ),
     # Step 1
     "max_half_window": (
@@ -187,6 +219,24 @@ HELP: Dict[str, str] = {
         "Seed each frame's detection with the previous frame's good peak "
         "centers, so a reflection keeps its identity as it drifts through the "
         "series (compression, heating). Keep on for series data."
+    ),
+    "seed_tracking_axis": (
+        "Order used for peak-seed propagation. same follows the Unknowns "
+        "tracking axis; pressure/temperature/time sort frames by metadata so "
+        "seeds move along the physical scan instead of raw file order."
+    ),
+    "seed_group_by": (
+        "Keep seed propagation inside independent series. same follows the "
+        "Unknowns grouping. Use scan for scan001/scan034-style names, or "
+        "folder when each scan lives in its own directory."
+    ),
+    "seed_axis_predictor": (
+        "For pressure/temperature/time seed order, shift seed centers by their "
+        "recent drift before fitting the next frame. Keep on for pressure scans."
+    ),
+    "seed_max_axis_gap": (
+        "Optional physical-axis jump that resets seed memory: GPa for pressure, "
+        "K for temperature, seconds for time. Blank = no cap."
     ),
     # Step 3a metadata-prior knobs
     "use_pressure_prior": (
@@ -345,7 +395,8 @@ class AnalysisApp:
             ("8 Review",     self._tab_review),
             ("9 Peak map",   self._tab_heatmap),
             ("10 Pattern map", self._tab_patternmap),
-            ("11 Grid map",  self._tab_gridmap),
+            ("11 Unknowns",   self._tab_unknowns),
+            ("12 Grid map",  self._tab_gridmap),
         ]:
             frame = ttk.Frame(self.nb, padding=10)
             builder(frame)
@@ -753,7 +804,7 @@ class AnalysisApp:
     # ------------------------------------------------------------------
 
     def _tab_peaks(self, frame):
-        ttk = self.ttk
+        tk, ttk = self.tk, self.ttk
         self.checkbox(frame, "run_step2", "Run Step 2 — pseudo-Voigt peak fitting", row=0)
         # Primary controls: fit source + sensitivity preset + auto range.
         self.combo(frame, "peak_source", "Peak source",
@@ -777,6 +828,37 @@ class AnalysisApp:
         self.field(frame, "detrend_bins", "Detrend window (bins, 0=off)", row=9, width=12, col=1)
         self.checkbox(frame, "propagate_seeds",
                       "Propagate peak seeds frame-to-frame", row=10)
+        seedrow = ttk.Frame(frame)
+        seedrow.grid(row=11, column=0, columnspan=6, sticky="w", padx=4, pady=3)
+        ttk.Label(seedrow, text="Seed order", foreground=MUTED).pack(side="left", padx=(0, 4))
+        self.vars["seed_tracking_axis"] = tk.StringVar(
+            value=str(self.config.get("seed_tracking_axis", "same") or "same"))
+        _seed_axis = ttk.Combobox(
+            seedrow, textvariable=self.vars["seed_tracking_axis"],
+            values=["same", "frame", "pressure", "temperature", "time"],
+            state="readonly", width=11)
+        _seed_axis.pack(side="left")
+        _ToolTip(_seed_axis, HELP["seed_tracking_axis"])
+        ttk.Label(seedrow, text="group by", foreground=MUTED).pack(side="left", padx=(10, 2))
+        self.vars["seed_group_by"] = tk.StringVar(
+            value=str(self.config.get("seed_group_by", "same") or "same"))
+        _seed_group = ttk.Combobox(
+            seedrow, textvariable=self.vars["seed_group_by"],
+            values=["same", "none", "scan", "folder"], state="readonly", width=8)
+        _seed_group.pack(side="left")
+        _ToolTip(_seed_group, HELP["seed_group_by"])
+        self.vars["seed_axis_predictor"] = tk.BooleanVar(
+            value=bool(self.config.get("seed_axis_predictor", True)))
+        _seed_pred = ttk.Checkbutton(
+            seedrow, text="predict drift", variable=self.vars["seed_axis_predictor"])
+        _seed_pred.pack(side="left", padx=(10, 2))
+        _ToolTip(_seed_pred, HELP["seed_axis_predictor"])
+        ttk.Label(seedrow, text="axis gap", foreground=MUTED).pack(side="left", padx=(10, 2))
+        self.vars["seed_max_axis_gap"] = tk.StringVar(
+            value=str(self.config.get("seed_max_axis_gap", "")))
+        _seed_gap = ttk.Entry(seedrow, textvariable=self.vars["seed_max_axis_gap"], width=7)
+        _seed_gap.pack(side="left")
+        _ToolTip(_seed_gap, HELP["seed_max_axis_gap"])
         _pk_help = ttk.Label(
             frame,
             text=(
@@ -792,7 +874,7 @@ class AnalysisApp:
             ),
             foreground=MUTED, justify="left", wraplength=640,
         )
-        _pk_help.grid(row=11, column=0, columnspan=6, sticky="w", padx=6, pady=(12, 4))
+        _pk_help.grid(row=12, column=0, columnspan=6, sticky="w", padx=6, pady=(12, 4))
         self.autowrap(_pk_help)
 
     # ------------------------------------------------------------------
@@ -1017,6 +1099,7 @@ class AnalysisApp:
             ("peak map", self.load_heatmap),
             ("identify", self.load_identify),
             ("pattern map", self.load_pattern_map),
+            ("unknowns", self.load_unknowns),
         ]
 
         def _run_loader(i=0):
@@ -1108,7 +1191,10 @@ class AnalysisApp:
         self._show_baseline = tk.BooleanVar(value=True)
         self._show_clean = tk.BooleanVar(value=True)
         self._show_spot = tk.BooleanVar(value=False)
+        self._show_residual = tk.BooleanVar(value=False)
         self._show_peaks = tk.BooleanVar(value=True)
+        self._show_residual_peaks = tk.BooleanVar(value=False)
+        self._show_unknowns = tk.BooleanVar(value=False)
         self._show_cake = tk.BooleanVar(value=False)
         for var, label in [
             (self._show_mean, "mean"),
@@ -1116,12 +1202,21 @@ class AnalysisApp:
             (self._show_baseline, "baseline"),
             (self._show_clean, "clean"),
             (self._show_spot, "spot_residual"),
+            (self._show_residual, "residual"),
             (self._show_peaks, "fitted peaks"),
+            (self._show_residual_peaks, "residual peaks"),
+            (self._show_unknowns, "unknown peaks"),
             (self._show_cake, "cake (2D)"),
         ]:
-            ttk.Checkbutton(togglerow, text=label, variable=var,
-                            command=self._schedule_review_render).pack(
-                side="left", padx=2)
+            cb = ttk.Checkbutton(togglerow, text=label, variable=var,
+                                 command=self._schedule_review_render)
+            cb.pack(side="left", padx=2)
+            if label == "residual":
+                _ToolTip(cb, "Step-3a removal result: /residual/clean.")
+            elif label == "residual peaks":
+                _ToolTip(cb, "Peaks re-fitted on /residual/clean.")
+            elif label == "unknown peaks":
+                _ToolTip(cb, "Step-3c unknown-track observations for this frame.")
         self._review_source_reduced = ""
 
         # Matplotlib area
@@ -1307,6 +1402,8 @@ class AnalysisApp:
             _plot(ax1, fd.get("clean"), "clean", ACCENT2)
         if self._show_spot.get():
             _plot(ax1, fd.get("spot_residual"), "spot_residual", CLR_DIFF)
+        if self._show_residual.get():
+            _plot(ax1, fd.get("residual"), "residual", CLR_REF, lw=1.0, alpha=0.9)
 
         # Overlay fitted peaks if requested.
         peaks = fd.get("peaks", [])
@@ -1325,15 +1422,29 @@ class AnalysisApp:
             for c in bad_centers:
                 ax1.axvline(c, color=WARN, lw=0.7, alpha=0.5)
 
+        residual_peaks = fd.get("residual_peaks", [])
+        if self._show_residual_peaks.get() and residual_peaks:
+            for k, p in enumerate(residual_peaks):
+                ax1.axvline(
+                    p["center"], color=CLR_REF, lw=0.9, alpha=0.75,
+                    linestyle="--",
+                    label="residual peaks" if k == 0 else None,
+                )
+
+        unknown_obs = fd.get("unknown_obs", [])
+        if self._show_unknowns.get() and unknown_obs:
+            for k, p in enumerate(unknown_obs):
+                ax1.axvline(
+                    p["center"], color=WARN, lw=1.0, alpha=0.85,
+                    linestyle=":",
+                    label="unknown peaks" if k == 0 else None,
+                )
+
         fname = Path(fd.get("filename", "")).name or f"frame {frame_index}"
         ax1.set_title(f"{fname}  [frame {frame_index}]", color=FG)
         ax1.set_xlabel(unit)
         ax1.set_ylabel("intensity")
-        if any([
-            self._show_mean.get(), self._show_robust.get(),
-            self._show_baseline.get(), self._show_clean.get(),
-            self._show_spot.get(),
-        ]):
+        if ax1.get_legend_handles_labels()[1]:
             ax1.legend(fontsize=7, framealpha=0.4)
         self._style_ax(ax1)
 
@@ -2381,24 +2492,39 @@ class AnalysisApp:
             if hasattr(self, "_fm_status"):
                 self._fm_status.configure(text=str(e))
 
-    def _do_export_frames(self, indices, out_dir, *, source="fit", peaks=True):
+    def _do_export_frames(self, indices, out_dir, *, source="fit", peaks=True,
+                          residual_unknowns=True, status_label=None):
         """Run the frame export (patterns + optional peaks.csv). Returns the
         manifest, or None on failure (logged + status)."""
+        status = status_label or getattr(self, "_fm_status", None)
         path = str(self.config.get("analysis_h5_file", "") or "").strip()
         if not path or not Path(path).is_file():
-            self._fm_status.configure(text="Run Step 1 first (no analysis file yet).")
+            if status is not None:
+                status.configure(text="Run Step 1 first (no analysis file yet).")
             return None
         from .refine_export import export_frames
         try:
             man = export_frames(path, out_dir, frames=indices,
-                                source=source, peaks=peaks)
+                                source=source, peaks=peaks,
+                                residual_peaks=residual_unknowns,
+                                unknowns=residual_unknowns)
         except Exception as e:
             self.log(f"Frame export failed: {e!r}", "WARN")
-            self._fm_status.configure(text=f"Export failed: {e}")
+            if status is not None:
+                status.configure(text=f"Export failed: {e}")
             return None
         msg = (f"Exported {man['n_frames']} frame(s) ({man['source']}) "
-               f"+ {man['n_peaks']} peak row(s) -> {out_dir}")
-        self._fm_status.configure(text=msg)
+               f"+ {man['n_peaks']} peak row(s)")
+        extra = []
+        if man.get("n_residual_peaks"):
+            extra.append(f"{man['n_residual_peaks']} residual peak row(s)")
+        if man.get("n_unknown_obs"):
+            extra.append(f"{man['n_unknown_obs']} unknown row(s)")
+        if extra:
+            msg += " + " + " + ".join(extra)
+        msg += f" -> {out_dir}"
+        if status is not None:
+            status.configure(text=msg)
         self.log(msg)
         return man
 
@@ -2418,37 +2544,44 @@ class AnalysisApp:
         content.pack(fill="both", expand=True)
         ttk.Label(content, text=(
             "Writes each frame as a two-column .xy pattern (native axis "
-            "always; 2θ too when the wavelength is known) and, optionally, "
-            "one peaks.csv with every fitted peak of these frames."),
+            "always; 2θ too when the wavelength is known) and optional CSVs "
+            "for fitted, residual, and unknown peaks."),
             foreground=MUTED, wraplength=430, justify="left").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
         ttk.Label(content, text="Pattern channel").grid(row=1, column=0,
                                                         sticky="w", pady=2)
         v_src = tk.StringVar(value="fit")
         _src = ttk.Combobox(content, textvariable=v_src, state="readonly",
-                            width=10,
+                            width=12,
                             values=["fit", "clean", "mean", "hybrid",
-                                    "sigmaclip", "robust"])
+                                    "sigmaclip", "robust", "residual"])
         _src.grid(row=1, column=1, sticky="w")
         _ToolTip(_src, "fit = the channel Step 2 actually fitted (default). "
-                       "The others are the reduction-side channels "
+                       "residual = /residual/clean after phase subtraction. "
+                       "The other entries are reduction-side channels "
                        "reconstructed exactly as the pipeline does.")
         v_peaks = tk.BooleanVar(value=True)
         ttk.Checkbutton(content, text="Include fitted peaks (peaks.csv)",
                         variable=v_peaks).grid(row=2, column=0, columnspan=2,
                                                sticky="w", pady=2)
-        ttk.Label(content, text="Destination").grid(row=3, column=0,
+        v_resunk = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            content,
+            text="Include residual/unknown peaks when available",
+            variable=v_resunk,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(content, text="Destination").grid(row=4, column=0,
                                                     sticky="w", pady=2)
         v_dir = tk.StringVar(value=str(self.config.get("export_frames_dir", "")))
         ttk.Entry(content, textvariable=v_dir, width=36).grid(
-            row=3, column=1, sticky="we")
+            row=4, column=1, sticky="we")
 
         def _browse():
             d = self.filedialog.askdirectory(title="Export destination folder")
             if d:
                 v_dir.set(d)
         ttk.Button(content, text="Browse", command=_browse).grid(
-            row=3, column=2, padx=4)
+            row=4, column=2, padx=4)
 
         def _go():
             dest = v_dir.get().strip()
@@ -2461,10 +2594,11 @@ class AnalysisApp:
             self.save_config(silent=True)
             dlg.destroy()
             self._do_export_frames(indices, dest, source=v_src.get(),
-                                   peaks=bool(v_peaks.get()))
+                                   peaks=bool(v_peaks.get()),
+                                   residual_unknowns=bool(v_resunk.get()))
 
         btns = ttk.Frame(content)
-        btns.grid(row=4, column=0, columnspan=3, sticky="e", pady=(8, 0))
+        btns.grid(row=5, column=0, columnspan=3, sticky="e", pady=(8, 0))
         ttk.Button(btns, text="Export", command=_go).pack(side="left", padx=4)
         ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="left",
                                                                   padx=4)
@@ -2859,6 +2993,65 @@ class AnalysisApp:
             "export (needs bulkxrd[ml]; see docs/ml-training.md). Whatever the "
             "scorer proposes, Step 3a still verifies."))
 
+        # -- Step 3c unknown tracking ------------------------------------
+        unkrow = ttk.Frame(frame)
+        unkrow.grid(row=11, column=0, columnspan=6, sticky="w", pady=(4, 2))
+        ttk.Label(unkrow, text="Unknown tracking:", foreground=MUTED).pack(
+            side="left", padx=(0, 6))
+        ttk.Label(unkrow, text="track by", foreground=MUTED).pack(side="left", padx=(4, 2))
+        self.vars["unknown_tracking_axis"] = tk.StringVar(
+            value=str(self.config.get("unknown_tracking_axis", "frame") or "frame"))
+        _ut_axis = ttk.Combobox(
+            unkrow, textvariable=self.vars["unknown_tracking_axis"],
+            values=["frame", "pressure", "temperature", "time"],
+            state="readonly", width=11)
+        _ut_axis.pack(side="left")
+        _ToolTip(_ut_axis, HELP["unknown_tracking_axis"])
+        ttk.Label(unkrow, text="group by", foreground=MUTED).pack(side="left", padx=(10, 2))
+        self.vars["unknown_group_by"] = tk.StringVar(
+            value=str(self.config.get("unknown_group_by", "none") or "none"))
+        _ut_group = ttk.Combobox(
+            unkrow, textvariable=self.vars["unknown_group_by"],
+            values=["none", "scan", "folder"], state="readonly", width=8)
+        _ut_group.pack(side="left")
+        _ToolTip(_ut_group, HELP["unknown_group_by"])
+        ttk.Label(unkrow, text="tol×FWHM", foreground=MUTED).pack(side="left", padx=(10, 2))
+        self.vars["unknown_link_tol_fwhm"] = tk.StringVar(
+            value=str(self.config.get("unknown_link_tol_fwhm", "1.5")))
+        _ut_tol = ttk.Entry(unkrow, textvariable=self.vars["unknown_link_tol_fwhm"], width=5)
+        _ut_tol.pack(side="left")
+        _ToolTip(_ut_tol, HELP["unknown_link_tol_fwhm"])
+        ttk.Label(unkrow, text="missing", foreground=MUTED).pack(side="left", padx=(10, 2))
+        self.vars["unknown_max_gap"] = tk.StringVar(
+            value=str(self.config.get("unknown_max_gap", "2")))
+        _ut_gap = ttk.Entry(unkrow, textvariable=self.vars["unknown_max_gap"], width=5)
+        _ut_gap.pack(side="left")
+        _ToolTip(_ut_gap, HELP["unknown_max_gap"])
+        ttk.Label(unkrow, text="axis gap", foreground=MUTED).pack(side="left", padx=(10, 2))
+        self.vars["unknown_max_axis_gap"] = tk.StringVar(
+            value=str(self.config.get("unknown_max_axis_gap", "")))
+        _ut_agap = ttk.Entry(unkrow, textvariable=self.vars["unknown_max_axis_gap"], width=7)
+        _ut_agap.pack(side="left")
+        _ToolTip(_ut_agap, HELP["unknown_max_axis_gap"])
+        ttk.Label(unkrow, text="min frames", foreground=MUTED).pack(side="left", padx=(10, 2))
+        self.vars["unknown_min_frames"] = tk.StringVar(
+            value=str(self.config.get("unknown_min_frames", "3")))
+        _ut_min = ttk.Entry(unkrow, textvariable=self.vars["unknown_min_frames"], width=5)
+        _ut_min.pack(side="left")
+        _ToolTip(_ut_min, HELP["unknown_min_frames"])
+        ttk.Label(unkrow, text="Jaccard", foreground=MUTED).pack(side="left", padx=(10, 2))
+        self.vars["unknown_jaccard"] = tk.StringVar(
+            value=str(self.config.get("unknown_jaccard", "0.6")))
+        _ut_j = ttk.Entry(unkrow, textvariable=self.vars["unknown_jaccard"], width=5)
+        _ut_j.pack(side="left")
+        _ToolTip(_ut_j, HELP["unknown_jaccard"])
+        self.vars["unknown_axis_predictor"] = tk.BooleanVar(
+            value=bool(self.config.get("unknown_axis_predictor", True)))
+        _ut_pred = ttk.Checkbutton(
+            unkrow, text="predict drift", variable=self.vars["unknown_axis_predictor"])
+        _ut_pred.pack(side="left", padx=(10, 2))
+        _ToolTip(_ut_pred, HELP["unknown_axis_predictor"])
+
         self._identify_help = ttk.Label(
             frame,
             text=(
@@ -2876,14 +3069,14 @@ class AnalysisApp:
             ),
             foreground=MUTED, justify="left", wraplength=640,
         )
-        self._identify_help.grid(row=12, column=0, columnspan=6, sticky="w",
+        self._identify_help.grid(row=13, column=0, columnspan=6, sticky="w",
                                  padx=6, pady=(8, 4))
         self._identify_help.grid_remove()   # hidden until the checkbox reveals it
         self.autowrap(self._identify_help)
 
         # -- controls row -------------------------------------------------
         ctrl = ttk.Frame(frame)
-        ctrl.grid(row=11, column=0, columnspan=6, sticky="w", pady=(4, 2))
+        ctrl.grid(row=12, column=0, columnspan=6, sticky="w", pady=(4, 2))
 
         ttk.Button(ctrl, text="Load identification",
                    command=self.load_identify).pack(side="left", padx=4)
@@ -3630,7 +3823,310 @@ class AnalysisApp:
         self._attach_hover(self._patternmap_canvas, self._pm_status)
 
     # ------------------------------------------------------------------
-    # Tab 11 — Grid map (per-frame scalars on the 2D scan grid)
+    # Tab 11 — Unknowns (Step-3c stacked cluster diagram)
+    # ------------------------------------------------------------------
+
+    def _tab_unknowns(self, frame):
+        tk, ttk = self.tk, self.ttk
+
+        row1 = ttk.Frame(frame)
+        row1.pack(fill="x", pady=(0, 4))
+        ttk.Button(row1, text="Load unknowns",
+                   command=self.load_unknowns).pack(side="left", padx=4)
+        ttk.Button(row1, text="Open in window",
+                   command=lambda: self._open_plot_window(
+                       getattr(self, "_unknowns_fig", None), "Unknowns")
+                   ).pack(side="left", padx=4)
+        ttk.Label(row1, text="X axis:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        self._unk_xaxis = ttk.Combobox(
+            row1,
+            values=["frame", "pressure", "temperature", "time"],
+            state="readonly", width=11,
+        )
+        self._unk_xaxis.set("frame")
+        self._unk_xaxis.pack(side="left", padx=2)
+        self._unk_xaxis.bind("<<ComboboxSelected>>", lambda e: self.load_unknowns())
+
+        ttk.Label(row1, text="Color by:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        self._unk_color = ttk.Combobox(
+            row1,
+            values=["center", "amplitude", "track", "group"],
+            state="readonly", width=10,
+        )
+        self._unk_color.set("center")
+        self._unk_color.pack(side="left", padx=2)
+        self._unk_color.bind("<<ComboboxSelected>>", lambda e: self.load_unknowns())
+
+        ttk.Label(row1, text="Min obs/cluster:", foreground=MUTED).pack(
+            side="left", padx=(12, 2))
+        self._unk_min_obs = tk.StringVar(value="1")
+        _min_entry = ttk.Entry(row1, textvariable=self._unk_min_obs, width=5)
+        _min_entry.pack(side="left", padx=2)
+        _min_entry.bind("<Return>", lambda e: self.load_unknowns())
+        _ToolTip(_min_entry, "Minimum residual-peak observations per unknown cluster.")
+        ttk.Label(row1, text="Min frames/cluster:", foreground=MUTED).pack(
+            side="left", padx=(12, 2))
+        self._unk_min_frames = tk.StringVar(value="1")
+        _min_frames_entry = ttk.Entry(row1, textvariable=self._unk_min_frames, width=5)
+        _min_frames_entry.pack(side="left", padx=2)
+        _min_frames_entry.bind("<Return>", lambda e: self.load_unknowns())
+        _ToolTip(
+            _min_frames_entry,
+            "Minimum distinct frames supporting the cluster; useful for hiding short bursts.",
+        )
+        ttk.Button(row1, text="Refresh", command=self.load_unknowns).pack(
+            side="left", padx=4)
+
+        row2 = ttk.Frame(frame)
+        row2.pack(fill="x", pady=(0, 4))
+        ttk.Label(row2, text="Export →", foreground=MUTED).pack(side="left", padx=(4, 6))
+        ttk.Button(row2, text="Diagram CSV…",
+                   command=self.export_unknown_diagram_clicked).pack(side="left", padx=2)
+        ttk.Button(row2, text="Frames with unknowns…",
+                   command=self.export_unknown_frames_clicked).pack(side="left", padx=2)
+        self._unknowns_status = ttk.Label(row2, text="", foreground=MUTED)
+        self._unknowns_status.pack(side="left", padx=12)
+
+        self.unknowns_plot_frame = ttk.Frame(frame)
+        self.unknowns_plot_frame.pack(fill="both", expand=True)
+        ttk.Label(
+            self.unknowns_plot_frame,
+            text="Load unknowns after Step 3a residual + Step 3c has run.",
+            foreground=MUTED,
+        ).pack(anchor="center", expand=True)
+
+    def _unknown_min_obs_value(self) -> int:
+        try:
+            return max(1, int(float(self._unk_min_obs.get())))
+        except Exception:
+            return 1
+
+    def _unknown_min_frames_value(self) -> int:
+        try:
+            return max(1, int(float(self._unk_min_frames.get())))
+        except Exception:
+            return 1
+
+    def _unknown_filtered_clusters(self, data=None):
+        if data is None:
+            data = getattr(self, "_unknowns_data", None)
+        if not data or not data.get("ok"):
+            return []
+        min_obs = self._unknown_min_obs_value()
+        min_frames = self._unknown_min_frames_value()
+        return [
+            c for c in data.get("clusters", [])
+            if int(c.get("n_obs", 0)) >= min_obs
+            and int(c.get("n_frames_observed", 0)) >= min_frames
+        ]
+
+    def _unknown_selected_frames(self, data=None):
+        import numpy as np
+        if data is None:
+            data = getattr(self, "_unknowns_data", None)
+        if not data or not data.get("ok"):
+            return []
+        keep_clusters = {
+            int(c["cluster"]) for c in self._unknown_filtered_clusters(data)
+        }
+        frame = np.asarray(data["frame"], dtype=int)
+        cluster = np.asarray(data["cluster"], dtype=int)
+        keep = np.array([int(c) in keep_clusters for c in cluster], dtype=bool)
+        return sorted(set(int(f) for f in frame[keep].tolist()))
+
+    def load_unknowns(self):
+        """Render Step-3c unknown clusters as a stacked phase diagram."""
+        self.pull_vars()
+        path = str(self.config.get("analysis_h5_file", "") or "").strip()
+        if not path or not Path(path).is_file():
+            return
+
+        prev = getattr(self, "_unknowns_fig", None)
+        if prev is not None:
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.close(prev)
+            except Exception:
+                pass
+            self._unknowns_fig = None
+
+        for w in self.unknowns_plot_frame.winfo_children():
+            w.destroy()
+
+        try:
+            import matplotlib
+            matplotlib.use("TkAgg", force=False)
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        except Exception as e:
+            self.ttk.Label(
+                self.unknowns_plot_frame,
+                text=f"matplotlib unavailable: {e}",
+                foreground=WARN,
+            ).pack(anchor="center", expand=True)
+            return
+
+        import numpy as np
+
+        from .heatmap import unknown_diagram
+        x_axis = getattr(self._unk_xaxis, "get", lambda: "frame")() or "frame"
+        data = unknown_diagram(path, x_axis=x_axis)
+        self._unknowns_data = data
+        if not data.get("ok"):
+            err = data.get("error", "unknown error")
+            self.ttk.Label(
+                self.unknowns_plot_frame,
+                text=f"Unknowns: {err}",
+                foreground=WARN,
+            ).pack(anchor="center", expand=True)
+            self._unknowns_status.configure(text=err)
+            return
+
+        clusters = self._unknown_filtered_clusters(data)
+        cluster_ids = [int(c["cluster"]) for c in clusters]
+        row_of = {cid: i for i, cid in enumerate(cluster_ids)}
+
+        frame = np.asarray(data["frame"], dtype=int)
+        x = np.asarray(data["x"], dtype=float)
+        cluster = np.asarray(data["cluster"], dtype=int)
+        center = np.asarray(data["center"], dtype=float)
+        amp = np.asarray(data["amplitude"], dtype=float)
+        track = np.asarray(data["track"], dtype=float)
+        group = np.asarray(data.get("group", np.zeros(frame.size)), dtype=float)
+        keep = np.isfinite(x) & np.array([int(c) in row_of for c in cluster], dtype=bool)
+        x_plot = x[keep]
+        y_plot = np.array([row_of[int(c)] for c in cluster[keep]], dtype=float)
+        color_by = getattr(self._unk_color, "get", lambda: "center")() or "center"
+        c_plot = {"amplitude": amp, "track": track, "group": group}.get(color_by, center)[keep]
+
+        fig_h = 5.0 if len(clusters) <= 80 else 6.5
+        fig = Figure(figsize=(8, fig_h), dpi=100, layout="constrained")
+        self._unknowns_fig = fig
+        fig.patch.set_facecolor(BG)
+        ax = fig.add_subplot(1, 1, 1)
+        self._style_ax(ax)
+
+        if not clusters or x_plot.size == 0:
+            ax.set_title("No unknown clusters to display with current filter", color=FG)
+            ax.set_xlabel(data.get("x_label") or "frame index")
+            ax.set_ylabel("unknown cluster")
+        else:
+            for c in clusters:
+                ci = int(c["cluster"])
+                row = row_of[ci]
+                x0, x1 = c.get("x_min"), c.get("x_max")
+                if x0 == x0 and x1 == x1:
+                    ax.hlines(row, float(x0), float(x1), color=MUTED,
+                              lw=0.8, alpha=0.35)
+
+            sizes = np.full(x_plot.size, 26.0)
+            amp_plot = amp[keep]
+            finite_amp = amp_plot[np.isfinite(amp_plot) & (amp_plot > 0)]
+            if finite_amp.size:
+                lo, hi = float(np.percentile(finite_amp, 10)), float(np.percentile(finite_amp, 95))
+                if hi > lo:
+                    sizes = 18.0 + 34.0 * np.clip((amp_plot - lo) / (hi - lo), 0, 1)
+            sc = ax.scatter(
+                x_plot, y_plot, c=c_plot, s=sizes,
+                cmap="viridis", alpha=0.9, edgecolors=FG, linewidths=0.25,
+            )
+            try:
+                cb = fig.colorbar(sc, ax=ax, label=color_by)
+                self._style_colorbar(cb)
+            except Exception:
+                pass
+            ax.set_xlabel(data.get("x_label") or "frame index")
+            ax.set_ylabel("unknown cluster")
+            ax.set_title(
+                f"Unknown clusters — {len(clusters)} cluster(s), "
+                f"{int(x_plot.size)} observation(s)",
+                color=FG,
+            )
+            if len(clusters) <= 35:
+                ax.set_yticks(np.arange(len(clusters)))
+                labels = []
+                for rec in clusters:
+                    gl = str(rec.get("group_label", "") or "")
+                    labels.append(f"{gl}:{rec['cluster']}" if gl else str(rec["cluster"]))
+                ax.set_yticklabels(labels)
+            else:
+                ticks = np.unique(np.linspace(0, len(clusters) - 1,
+                                             min(18, len(clusters))).astype(int))
+                ax.set_yticks(ticks)
+                ax.set_yticklabels([str(cluster_ids[i]) for i in ticks])
+            ax.set_ylim(-0.75, len(clusters) - 0.25)
+
+        canvas = self._embed_figure(self.unknowns_plot_frame, fig)
+        n_frames = len(self._unknown_selected_frames(data))
+        self._unknowns_status.configure(
+            text=(f"{len(clusters)} clusters, {int(x_plot.size)}/{data['n_obs']} obs, "
+                  f"{n_frames} frame(s) with unknowns"))
+        self._attach_hover(canvas, self._unknowns_status)
+
+    def export_unknown_diagram_clicked(self):
+        """Export observation + cluster summary CSVs for the Unknowns tab."""
+        self.pull_vars()
+        path = str(self.config.get("analysis_h5_file", "") or "").strip()
+        if not path or not Path(path).is_file():
+            self._unknowns_status.configure(text="No analysis file loaded.")
+            return
+        default = Path(self.config.get("export_frames_dir", "") or
+                       (Path(path).parent / "unknown_diagram"))
+        dest = self.filedialog.askdirectory(
+            title="Export unknown diagram CSVs",
+            initialdir=str(default.parent if default.parent.exists() else Path(path).parent),
+        )
+        if not dest:
+            return
+        x_axis = getattr(self._unk_xaxis, "get", lambda: "frame")() or "frame"
+        try:
+            from .heatmap import write_unknown_diagram_csv
+            man = write_unknown_diagram_csv(
+                path,
+                dest,
+                x_axis=x_axis,
+                min_obs_per_cluster=self._unknown_min_obs_value(),
+                min_frames_per_cluster=self._unknown_min_frames_value(),
+            )
+        except Exception as e:
+            self.log(f"Unknown diagram export failed: {e!r}", "WARN")
+            self._unknowns_status.configure(text=f"Export failed: {e}")
+            return
+        msg = (f"Exported unknown diagram: {man['n_clusters']} clusters, "
+               f"{man['n_obs']} obs -> {dest}")
+        self._unknowns_status.configure(text=msg)
+        self.log(msg)
+
+    def export_unknown_frames_clicked(self):
+        """Export residual patterns for frames carrying unknown observations."""
+        data = getattr(self, "_unknowns_data", None)
+        if not data or not data.get("ok"):
+            self.load_unknowns()
+            data = getattr(self, "_unknowns_data", None)
+        frames = self._unknown_selected_frames(data)
+        if not frames:
+            self._unknowns_status.configure(text="No unknown frames to export.")
+            return
+        path = str(self.config.get("analysis_h5_file", "") or "").strip()
+        stem = Path(path).stem.replace("_analysis", "")
+        default_root = Path(self.config.get("export_frames_dir", "") or "outputs")
+        initial = default_root if default_root.exists() else Path(path).parent
+        dest = self.filedialog.askdirectory(
+            title=f"Export {len(frames)} frame(s) with unknowns",
+            initialdir=str(initial),
+        )
+        if not dest:
+            return
+        self.config["export_frames_dir"] = dest
+        self.save_config(silent=True)
+        out_dir = Path(dest) / f"unknown_frames_{stem}"
+        self._do_export_frames(
+            frames, out_dir, source="residual", peaks=True,
+            residual_unknowns=True, status_label=self._unknowns_status,
+        )
+
+    # ------------------------------------------------------------------
+    # Tab 12 — Grid map (per-frame scalars on the 2D scan grid)
     # ------------------------------------------------------------------
 
     def _tab_gridmap(self, frame):

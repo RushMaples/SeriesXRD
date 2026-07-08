@@ -191,7 +191,7 @@ def test_export_frames_patterns_and_peaks_csv():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         an = td / "an.h5"
-        _analysis_file(an)
+        _, clean = _analysis_file(an)
         # Add a Step-2 peaks table: 2 peaks on frame 0, 1 on frame 1 (flagged),
         # 1 on frame 3 — with the Step-3a attribution column.
         with h5py.File(str(an), "r+") as h:
@@ -209,10 +209,30 @@ def test_export_frames_patterns_and_peaks_csv():
             gp.create_dataset("phase",
                               data=np.array(["Fe", "", "Fe", "Fe"], dtype=object),
                               dtype=h5py.string_dtype(encoding="utf-8"))
+            rg = h.create_group("residual")
+            rg.create_dataset("clean", data=clean * 0.5)
+            rpk = rg.create_group("peaks")
+            rpk.create_dataset("counts", data=np.array([1, 1, 0, 1, 0], "i4"))
+            rpk.create_dataset("frame", data=np.array([0, 1, 3], "i4"))
+            rpk.create_dataset("center", data=np.array([2.1, 2.6, 3.6]))
+            rpk.create_dataset("amplitude", data=np.array([10.0, 20.0, 30.0]))
+            rpk.create_dataset("fwhm", data=np.array([0.04, 0.05, 0.06]))
+            unk = h.create_group("unknowns")
+            obs = unk.create_group("obs")
+            obs.create_dataset("track", data=np.array([4], "i4"))
+            obs.create_dataset("frame", data=np.array([1], "i4"))
+            obs.create_dataset("center", data=np.array([2.6]))
+            obs.create_dataset("amplitude", data=np.array([20.0]))
+            obs.create_dataset("fwhm", data=np.array([0.05]))
+            tr = unk.create_group("tracks")
+            tr.create_dataset("id", data=np.array([4], "i4"))
+            tr.create_dataset("cluster", data=np.array([9], "i4"))
 
         out = td / "sel"
-        man = export_frames(an, out, frames=[0, 1], source="clean")
+        man = export_frames(an, out, frames=[0, 1], source="residual")
         assert man["n_frames"] == 2
+        assert man["n_residual_peaks"] == 2
+        assert man["n_unknown_obs"] == 1
         pats = sorted(p.name for p in (out / "patterns").iterdir())
         # native q + 2θ for exactly frames 0 and 1
         assert pats == ["frame_0000.xy", "frame_0000_q.xy",
@@ -225,10 +245,19 @@ def test_export_frames_patterns_and_peaks_csv():
         assert flagged[0]["flag"] == "2"                  # kept, not dropped
         assert flagged[0]["phase"] == "Fe"
         assert rows[0]["filename"] == "frame_0000.tif"
+        with (out / "residual_peaks.csv").open() as fh:
+            rrows = list(csv.DictReader(fh))
+        assert len(rrows) == 2
+        assert {r["frame"] for r in rrows} == {"0", "1"}
+        with (out / "unknowns.csv").open() as fh:
+            urows = list(csv.DictReader(fh))
+        assert len(urows) == 1 and urows[0]["cluster"] == "9"
 
         # channel provenance lands in the .xy header
         head = (out / "patterns" / "frame_0000_q.xy").read_text().splitlines()[:6]
-        assert any("clean" in ln for ln in head), head
+        assert any("residual" in ln for ln in head), head
+        data_q = np.loadtxt(out / "patterns" / "frame_0000_q.xy")
+        assert np.allclose(data_q[:, 1], clean[0] * 0.5, atol=1e-4)
 
         # peaks=False -> no CSV; frames=None -> non-excluded frames only
         out2 = td / "all"

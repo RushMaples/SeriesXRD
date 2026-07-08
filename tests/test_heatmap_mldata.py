@@ -65,6 +65,15 @@ def test_pattern_image():
         assert img["ok"], img["error"]
         assert img["Z"].shape == (800, 4)          # (n_bins, n_frames)
         assert img["radial"].size == 800 and img["x"].size == 4
+        # Step-3a-removal residual is a viewable stack too.
+        import h5py
+        with h5py.File(str(h5), "r+") as f:
+            f.create_group("residual").create_dataset(
+                "clean", data=np.asarray(f["background/clean"][:]) * 0.25)
+        res = hm.pattern_image(h5, source="residual")
+        assert res["ok"], res["error"]
+        assert res["Z"].shape == (800, 4)
+        assert np.allclose(res["Z"].T, img["Z"].T * 0.25)
         # mean/robust reconstruct without error
         assert hm.pattern_image(h5, source="robust")["ok"]
         # unknown source rejected

@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import h5py
 from bulkxrd.analysis.unknowns import link_tracks, cluster_tracks, run_unknowns
 from bulkxrd.analysis.microstructure import williamson_hall
+from bulkxrd.analysis.heatmap import unknown_diagram, write_unknown_diagram_csv
 
 TWO_PI = 2 * np.pi
 
@@ -46,6 +47,35 @@ def _residual_file(path, n_frames=15):
         gp.create_dataset("fwhm", data=np.asarray(fwhms, "f8"))
 
 
+def _multi_scan_pressure_file(path):
+    """Two interleaved pressure scans with identical pressure-dependent peaks."""
+    pressures = np.array([0.0, 0.0, 1.0, 1.0, 2.0, 2.0])
+    frames = np.arange(6, dtype=int)
+    centers = 2.0 + 0.02 * pressures
+    names = [
+        "P01_scan001_UOTe_0GPa_000.tif",
+        "P02_scan002_UOTe_0GPa_000.tif",
+        "P01_scan001_UOTe_1GPa_001.tif",
+        "P02_scan002_UOTe_1GPa_001.tif",
+        "P01_scan001_UOTe_2GPa_002.tif",
+        "P02_scan002_UOTe_2GPa_002.tif",
+    ]
+    with h5py.File(str(path), "w") as h:
+        h.attrs["unit"] = "q_A^-1"
+        gf = h.create_group("frames")
+        gf.create_dataset("filename", data=np.asarray(names, dtype=object),
+                          dtype=h5py.string_dtype(encoding="utf-8"))
+        gf.create_dataset("pressure", data=pressures)
+        gf.create_dataset("temperature", data=300.0 + pressures * 10.0)
+        rg = h.create_group("residual")
+        gp = rg.create_group("peaks")
+        gp.create_dataset("counts", data=np.ones(6, "i4"))
+        gp.create_dataset("frame", data=frames.astype("i4"))
+        gp.create_dataset("center", data=centers.astype("f8"))
+        gp.create_dataset("amplitude", data=np.full(6, 50.0, "f8"))
+        gp.create_dataset("fwhm", data=np.full(6, 0.02, "f8"))
+
+
 def test_unknown_clustering():
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "an.h5"
@@ -70,6 +100,84 @@ def test_unknown_clustering():
         # re-run replaces the group (idempotent)
         man2 = run_unknowns(p)
         assert man2["n_clusters"] == 2
+
+
+def test_unknown_diagram_and_csv_export():
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "an.h5"
+        _residual_file(p)
+        run_unknowns(p, min_track_frames=3, jaccard_threshold=0.6)
+
+        diag = unknown_diagram(p, x_axis="frame")
+        assert diag["ok"], diag["error"]
+        assert diag["n_obs"] == 40
+        assert diag["n_frames_with_unknowns"] == 15
+        assert len(diag["clusters"]) == 2
+        assert set(diag["cluster_ids"]) == {0, 1}
+        assert diag["frame"].shape == diag["x"].shape == diag["center"].shape
+        assert np.allclose(diag["x"], diag["frame"])
+        assert all(c["n_obs"] == 20 for c in diag["clusters"])
+        assert all(c["n_frames_observed"] == 10 for c in diag["clusters"])
+
+        out = Path(td) / "unknown_export"
+        man = write_unknown_diagram_csv(p, out)
+        assert man["n_obs"] == 40
+        assert man["n_clusters"] == 2
+        assert (out / "unknown_observations.csv").is_file()
+        assert (out / "unknown_clusters.csv").is_file()
+        text = (out / "unknown_clusters.csv").read_text()
+        assert "d_fingerprint" in text
+
+        filtered = Path(td) / "unknown_export_filtered"
+        man2 = write_unknown_diagram_csv(p, filtered, min_frames_per_cluster=11)
+        assert man2["n_total_obs"] == 40
+        assert man2["n_total_clusters"] == 2
+        assert man2["n_obs"] == 0
+        assert man2["n_clusters"] == 0
+        assert (filtered / "unknown_observations.csv").read_text().count("\n") == 1
+
+
+def test_pressure_tracking_can_group_by_scan():
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "an.h5"
+        _multi_scan_pressure_file(p)
+        no_group = run_unknowns(
+            p, tracking_axis="pressure", group_by="none",
+            min_track_frames=3, jaccard_threshold=0.6)
+        assert no_group["tracking_axis"] == "pressure"
+        assert no_group["group_by"] == "none"
+        assert no_group["n_tracks"] == 1, no_group
+
+        _multi_scan_pressure_file(p)
+        grouped = run_unknowns(
+            p, tracking_axis="pressure", group_by="scan",
+            min_track_frames=3, jaccard_threshold=0.6)
+        assert grouped["group_by"] == "scan"
+        assert grouped["n_tracks"] == 2, grouped
+        assert grouped["n_clusters"] == 2, grouped
+        assert set(grouped["group_labels"]) == {"scan001", "scan002"}
+        with h5py.File(str(p), "r") as h:
+            g = h["unknowns"]
+            assert str(g.attrs["tracking_axis"]) == "pressure"
+            assert str(g.attrs["group_by"]) == "scan"
+            labels = [x.decode() if isinstance(x, bytes) else str(x)
+                      for x in g["groups/label"][:]]
+            assert labels == ["scan001", "scan002"]
+            assert sorted(g["tracks/group"][:].tolist()) == [0, 1]
+
+
+def test_temperature_tracking_uses_temperature_axis():
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "an.h5"
+        _multi_scan_pressure_file(p)
+        man = run_unknowns(
+            p, tracking_axis="temperature", group_by="scan",
+            min_track_frames=3, jaccard_threshold=0.6)
+        assert man["tracking_axis"] == "temperature"
+        assert man["n_tracks"] == 2
+        with h5py.File(str(p), "r") as h:
+            axis = h["unknowns/obs/axis"][:]
+            assert np.all(np.isin(axis, [300.0, 310.0, 320.0]))
 
 
 def test_track_linking_gap_tolerance():
@@ -130,6 +238,9 @@ def test_williamson_hall():
 def main() -> None:
     test_track_linking_gap_tolerance()
     test_unknown_clustering()
+    test_unknown_diagram_and_csv_export()
+    test_pressure_tracking_can_group_by_scan()
+    test_temperature_tracking_uses_temperature_axis()
     test_williamson_hall()
     print("UNKNOWNS/WH TEST OK")
 

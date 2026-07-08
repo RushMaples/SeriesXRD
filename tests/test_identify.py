@@ -413,6 +413,18 @@ def test_pressure_prior_rejects_decoy_end_to_end():
             assert f["identify"].attrs["n_pressure_prior"] == 3
             assert np.max(f["identify/Decoy/confidence"][:]) < 0.5
 
+        # The summary's "seen" threshold follows the caller/GUI value rather
+        # than a hard-coded 0.5. A threshold of 1.0 excludes every finite
+        # confidence because the seen test is strict (> threshold).
+        with h5py.File(str(h5), "r+") as f:
+            if "identify" in f:
+                del f["identify"]
+        strict = _run_identification_synthetic(
+            h5, [au], {"Au": au_refl}, P, pressure_window=2.0, seen_conf=1.0)
+        assert strict["summary"]["Au"]["n_frames_seen"] == 0
+        with h5py.File(str(h5), "r") as f:
+            assert float(f["identify"].attrs["seen_conf"]) == 1.0
+
         # marker_prior path: same data, but no metadata pressure -> derive from Au.
         with h5py.File(str(h5), "r+") as f:
             f["frames/pressure"][...] = np.nan

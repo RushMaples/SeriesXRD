@@ -95,6 +95,13 @@ def _opt_int(v):
     return None if f is None else int(round(f))
 
 
+def _same_or_value(cfg: dict, key: str, fallback_key: str, default: str) -> str:
+    value = str(cfg.get(key, "same") or "same").strip().lower()
+    if value in ("", "same", "same as unknowns", "unknown", "unknowns"):
+        value = str(cfg.get(fallback_key, default) or default).strip().lower()
+    return value or default
+
+
 def run_analysis(cfg: dict) -> dict:
     """Drive Step 1 (background), Step 2 (peaks), and/or Step 3a (EOS phase
     matching) from a config dict. Returns a merged manifest."""
@@ -177,6 +184,15 @@ def run_analysis(cfg: dict) -> dict:
             min_fwhm_bins=_opt_float(cfg.get("min_fwhm_bins")),
             local_baseline_bins=_as_int(cfg.get("detrend_bins"), 0),
             propagate_seeds=_as_bool(cfg.get("propagate_seeds", True), True),
+            seed_tracking_axis=_same_or_value(
+                cfg, "seed_tracking_axis", "unknown_tracking_axis", "frame"),
+            seed_group_by=_same_or_value(
+                cfg, "seed_group_by", "unknown_group_by", "none"),
+            seed_max_axis_gap=_opt_float(
+                cfg.get("seed_max_axis_gap", cfg.get("unknown_max_axis_gap", ""))),
+            seed_axis_predictor=_as_bool(
+                cfg.get("seed_axis_predictor", cfg.get("unknown_axis_predictor", True)),
+                True),
             num_workers=num_workers,
         )
         out_path = m2["out_h5"]
@@ -257,6 +273,7 @@ def run_analysis(cfg: dict) -> dict:
             pressure_window=_as_float(cfg.get("pressure_window"), 2.0),
             pressure_sigma_k=_as_float(cfg.get("pressure_sigma_k"), 2.0),
             min_matched=min_matched,
+            seen_conf=_as_float(cfg.get("seen_conf"), 0.5),
             marker_prior=_as_bool(cfg.get("marker_prior", False), False),
             # Soft intensity-agreement factor (0 = position-only confidence).
             intensity_k=_as_float(cfg.get("intensity_k"), 0.3),
@@ -272,7 +289,14 @@ def run_analysis(cfg: dict) -> dict:
             out_path, phases,
             seen_conf=_as_float(cfg.get("seen_conf"), 0.5),
             rel_tol=rel_tol,
-            min_snr=_as_float(cfg.get("min_snr"), 5.0),
+            min_snr=_opt_float(cfg.get("min_snr")),
+            min_prominence_snr=_opt_float(cfg.get("min_prominence_snr")),
+            window_factor=_opt_float(cfg.get("window_factor")),
+            max_chi2=_opt_float(cfg.get("max_chi2")),
+            edge_bins=_opt_int(cfg.get("edge_bins")),
+            fit_min=_opt_float(cfg.get("fit_min")),
+            fit_max=_opt_float(cfg.get("fit_max")),
+            min_fwhm_bins=_opt_float(cfg.get("min_fwhm_bins")),
             min_matched=min_matched,
             allow_sparse=_as_bool(cfg.get("allow_sparse", False), False),
         )
@@ -285,8 +309,14 @@ def run_analysis(cfg: dict) -> dict:
         if _as_bool(cfg.get("run_step3c", True), True) and m3r.get("n_residual_peaks"):
             m3c = run_unknowns(
                 out_path,
+                link_tol_fwhm=_as_float(cfg.get("unknown_link_tol_fwhm"), 1.5),
+                max_gap=_as_int(cfg.get("unknown_max_gap"), 2),
                 min_track_frames=_as_int(cfg.get("unknown_min_frames"), 3),
                 jaccard_threshold=_as_float(cfg.get("unknown_jaccard"), 0.6),
+                tracking_axis=str(cfg.get("unknown_tracking_axis", "frame") or "frame"),
+                group_by=str(cfg.get("unknown_group_by", "none") or "none"),
+                max_axis_gap=_opt_float(cfg.get("unknown_max_axis_gap")),
+                axis_predictor=_as_bool(cfg.get("unknown_axis_predictor", True), True),
             )
             manifest["step3_unknowns"] = m3c
             manifest["steps"].append("unknowns")
