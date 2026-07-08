@@ -219,6 +219,9 @@ suite would also fix this one file's plain-`python` no-op.
   needs one.
 - [`docs/roadmap.md`](docs/roadmap.md) — implemented vs. planned features,
   and what a new facility needs to provide to adopt bulkxrd.
+- [`docs/test-data.md`](docs/test-data.md) — open datasets you can download to
+  exercise each stage (calibration frames, measured patterns, CIFs, simulated
+  patterns) and which command each one feeds.
 
 ## Roadmap
 

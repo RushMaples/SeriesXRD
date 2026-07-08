@@ -18,6 +18,10 @@ upper/lower bounds only (size underestimated, strain overestimated) and the
 output is flagged ``instrument_corrected=False`` — don't put uncorrected values
 in a paper.
 
+References: G. K. Williamson & W. H. Hall, Acta Metall. 1 (1953) 22
+(the size/strain decomposition); P. Scherrer, Nachr. Ges. Wiss. Goettingen
+(1918) 98 (the K/D size term).
+
 ``williamson_hall`` returns per-frame results and (optionally) appends
 ``/microstructure`` to the analysis HDF5. Pure numpy + h5py.
 """

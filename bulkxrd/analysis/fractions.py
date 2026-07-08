@@ -30,6 +30,10 @@ and patterns and refine in a dedicated tool (see docs/roadmap.md "Refinement
 hand-off").
 
 Pure numpy + h5py (h5py imported lazily inside functions). No pymatgen, no GUI.
+
+References: F. H. Chung, J. Appl. Cryst. 7 (1974) 519 (the matrix-flushing /
+RIR quantification this approximates); C. R. Hubbard & R. L. Snyder, Powder
+Diffr. 3 (1988) 74 (the RIR = I/Icor convention expected in ``use_rir``).
 """
 from __future__ import annotations
 

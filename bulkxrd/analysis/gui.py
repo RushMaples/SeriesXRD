@@ -1068,6 +1068,14 @@ class AnalysisApp:
                    command=lambda: self._open_plot_window(
                        getattr(self, "_review_fig", None), "Review")
                    ).pack(side="left", padx=4)
+        _rev_exp = ttk.Button(ctrl, text="Export frame…",
+                              command=self.review_export_frame_clicked)
+        _rev_exp.pack(side="left", padx=4)
+        _ToolTip(_rev_exp, (
+            "Export the frame shown here: its pattern as a two-column .xy "
+            "(channel of your choice) and optionally its fitted peaks as "
+            "peaks.csv. Select several frames on the Frame meta tab to "
+            "export a batch."))
 
         # Trace toggles live on their own row: one long row of controls used
         # to run wider than the window and clip on the right.
@@ -2246,6 +2254,16 @@ class AnalysisApp:
                    command=self.fm_apply_selected_clicked).pack(side="left", padx=4)
         ttk.Button(editor, text="Refresh table",
                    command=self.fm_refresh_table_clicked).pack(side="left", padx=4)
+        _exp_btn = ttk.Button(editor, text="Export selected…",
+                              command=self.fm_export_selected_clicked)
+        _exp_btn.pack(side="left", padx=(12, 4))
+        _ToolTip(_exp_btn, (
+            "Export the selected frame(s): the chosen reduction/fit channel "
+            "as two-column .xy patterns (native axis always; 2θ too when the "
+            "wavelength is known) and, optionally, every fitted peak of those "
+            "frames as one peaks.csv (center/amplitude/fwhm ± esd, eta, area, "
+            "chi2, flag, phase). Rietveld hand-off is the separate "
+            "bulkxrd-export-refinement bundle."))
 
         _fm_hint = ttk.Label(
             frame,
@@ -2362,6 +2380,118 @@ class AnalysisApp:
             self.log(f"import_csv_to_analysis failed: {e!r}", "WARN")
             if hasattr(self, "_fm_status"):
                 self._fm_status.configure(text=str(e))
+
+    def _do_export_frames(self, indices, out_dir, *, source="fit", peaks=True):
+        """Run the frame export (patterns + optional peaks.csv). Returns the
+        manifest, or None on failure (logged + status)."""
+        path = str(self.config.get("analysis_h5_file", "") or "").strip()
+        if not path or not Path(path).is_file():
+            self._fm_status.configure(text="Run Step 1 first (no analysis file yet).")
+            return None
+        from .refine_export import export_frames
+        try:
+            man = export_frames(path, out_dir, frames=indices,
+                                source=source, peaks=peaks)
+        except Exception as e:
+            self.log(f"Frame export failed: {e!r}", "WARN")
+            self._fm_status.configure(text=f"Export failed: {e}")
+            return None
+        msg = (f"Exported {man['n_frames']} frame(s) ({man['source']}) "
+               f"+ {man['n_peaks']} peak row(s) -> {out_dir}")
+        self._fm_status.configure(text=msg)
+        self.log(msg)
+        return man
+
+    def _export_frames_dialog(self, indices):
+        """Small options dialog (channel, peaks.csv, destination), then export."""
+        tk, ttk = self.tk, self.ttk
+        path = str(self.config.get("analysis_h5_file", "") or "").strip()
+        if not path or not Path(path).is_file():
+            self._fm_status.configure(text="Run Step 1 first (no analysis file yet).")
+            return
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"Export {len(indices)} frame(s)")
+        dlg.configure(bg=BG)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        content = ttk.Frame(dlg, padding=10)
+        content.pack(fill="both", expand=True)
+        ttk.Label(content, text=(
+            "Writes each frame as a two-column .xy pattern (native axis "
+            "always; 2θ too when the wavelength is known) and, optionally, "
+            "one peaks.csv with every fitted peak of these frames."),
+            foreground=MUTED, wraplength=430, justify="left").grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        ttk.Label(content, text="Pattern channel").grid(row=1, column=0,
+                                                        sticky="w", pady=2)
+        v_src = tk.StringVar(value="fit")
+        _src = ttk.Combobox(content, textvariable=v_src, state="readonly",
+                            width=10,
+                            values=["fit", "clean", "mean", "hybrid",
+                                    "sigmaclip", "robust"])
+        _src.grid(row=1, column=1, sticky="w")
+        _ToolTip(_src, "fit = the channel Step 2 actually fitted (default). "
+                       "The others are the reduction-side channels "
+                       "reconstructed exactly as the pipeline does.")
+        v_peaks = tk.BooleanVar(value=True)
+        ttk.Checkbutton(content, text="Include fitted peaks (peaks.csv)",
+                        variable=v_peaks).grid(row=2, column=0, columnspan=2,
+                                               sticky="w", pady=2)
+        ttk.Label(content, text="Destination").grid(row=3, column=0,
+                                                    sticky="w", pady=2)
+        v_dir = tk.StringVar(value=str(self.config.get("export_frames_dir", "")))
+        ttk.Entry(content, textvariable=v_dir, width=36).grid(
+            row=3, column=1, sticky="we")
+
+        def _browse():
+            d = self.filedialog.askdirectory(title="Export destination folder")
+            if d:
+                v_dir.set(d)
+        ttk.Button(content, text="Browse", command=_browse).grid(
+            row=3, column=2, padx=4)
+
+        def _go():
+            dest = v_dir.get().strip()
+            if not dest:
+                self.messagebox.showerror("Export frames",
+                                          "Pick a destination folder.",
+                                          parent=dlg)
+                return
+            self.config["export_frames_dir"] = dest
+            self.save_config(silent=True)
+            dlg.destroy()
+            self._do_export_frames(indices, dest, source=v_src.get(),
+                                   peaks=bool(v_peaks.get()))
+
+        btns = ttk.Frame(content)
+        btns.grid(row=4, column=0, columnspan=3, sticky="e", pady=(8, 0))
+        ttk.Button(btns, text="Export", command=_go).pack(side="left", padx=4)
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="left",
+                                                                  padx=4)
+        content.columnconfigure(1, weight=1)
+
+    def review_export_frame_clicked(self):
+        """Export the frame currently shown on the Review tab."""
+        try:
+            idx = int(self._review_idx_var.get())
+        except (ValueError, TypeError):
+            idx = 0
+        self._export_frames_dialog([idx])
+
+    def fm_export_selected_clicked(self):
+        """Export the frames selected in the Frame meta table."""
+        self.pull_vars()
+        tbl = getattr(self, "_fm_table", None)
+        sel = list(tbl.selection()) if tbl is not None else []
+        if not sel:
+            self._fm_status.configure(
+                text="Select one or more frames in the table first.")
+            return
+        try:
+            indices = sorted(int(iid) for iid in sel)
+        except ValueError:
+            return
+        self._export_frames_dialog(indices)
 
     def import_positions_clicked(self):
         """Dialog: read per-frame stage positions from the raw frames' headers."""

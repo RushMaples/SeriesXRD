@@ -330,7 +330,17 @@ azimuthal texture metrics (`/texture`: texture index, spot fraction,
 preferred-orientation harmonic) from a cakes-enabled reduction.
 `bulkxrd-export-refinement analysis.h5 out_dir` writes a Rietveld hand-off
 bundle (patterns as `.xy`, phase CIFs, GSAS-II `instrument.instprm`, README
-with a GSASIIscriptable snippet). `bulkxrd-analyze --fractions` adds
+with a GSASIIscriptable snippet). Narrow it to specific frames with
+`--frames 0,5,10` (default: all non-excluded frames), pick which pattern
+channel to export with `--source` (default `fit` — the channel Step 2
+actually fitted; `clean`/`mean`/`hybrid`/`sigmaclip`/`robust` also available),
+and add `--peaks` to also write `peaks.csv` — every fitted peak of the
+exported frames (center/amplitude/fwhm ± esd, eta, area, chi2, flag, and the
+Step-3a attributed phase when present). The same frame export is on the
+Analysis GUI: "Export selected…" on the Frame metadata editor (multi-select
+rows) and "Export frame…" on the Review tab (current frame) both write the
+chosen channel's `.xy` (native q always, plus 2θ when the wavelength is
+known) and an optional `peaks.csv`. `bulkxrd-analyze --fractions` adds
 semi-quantitative intensity-share phase fractions (`/fractions`) after the
 residual step — see `analysis/fractions.py`'s docstring for what those
 fractions do and do not correct.
