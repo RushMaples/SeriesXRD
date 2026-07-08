@@ -200,13 +200,64 @@ def _test_residual_uses_fit_source():
         assert np.max(np.abs(res[near3])) < 5.0, "explained peak not cleanly removed"
 
 
-def main() -> None:
+def _test_residual_refit_uses_peak_window():
+    """Residual re-detection inherits Step-2's fit window from /peaks attrs."""
+    import h5py
+    from bulkxrd.analysis.identify import _h5_safe
+    x = np.linspace(2.0, 8.0, 2000)
+    clean = (pseudo_voigt(x, 3.0, 100.0, 0.05, 0.5)
+             + pseudo_voigt(x, 7.0, 80.0, 0.05, 0.5))[None, :].astype("f4")
+    phase = Phase(name="KnownX")
+    with tempfile.TemporaryDirectory() as td:
+        h5p = Path(td) / "an.h5"
+        with h5py.File(h5p, "w") as o:
+            o.attrs["unit"] = "q_A^-1"
+            o.create_dataset("radial", data=x)
+            o.create_group("background").create_dataset("clean", data=clean)
+            gp = o.create_group("peaks")
+            gp.attrs["fit_max"] = 6.0
+            gp.attrs["min_snr"] = 5.0
+            gp.attrs["min_prominence_snr"] = 2.0
+            gp.attrs["edge_bins"] = 5
+            gp.attrs["min_fwhm_bins"] = 2.0
+            gp.attrs["local_baseline_bins"] = 81
+            gp.create_dataset("counts", data=np.array([2], "i4"))
+            gp.create_dataset("frame", data=np.array([0, 0], "i4"))
+            gp.create_dataset("center", data=np.array([3.0, 7.0], "f8"))
+            gp.create_dataset("amplitude", data=np.array([100.0, 80.0], "f8"))
+            gp.create_dataset("fwhm", data=np.array([0.05, 0.05], "f8"))
+            gp.create_dataset("eta", data=np.array([0.5, 0.5], "f8"))
+            gp.create_dataset("flag", data=np.array([0, 0], "i4"))
+            idg = o.create_group("identify"); idg.attrs["wavelength"] = 0.0
+            g = idg.create_group(_h5_safe("KnownX"))
+            g.create_dataset("confidence", data=np.array([1.0], "f8"))
+            g.create_dataset("pressure", data=np.array([0.0], "f8"))
+            g.create_dataset("n_matched", data=np.array([3], "i4"))
+            g.create_dataset("refl_d", data=np.array([2.0 * np.pi / 3.0]))
+            g.create_dataset("refl_hkl", data=np.array(["(1, 1, 1)"], dtype=object),
+                             dtype=h5py.string_dtype(encoding="utf-8"))
+        m = run_residual(h5p, [phase], seen_conf=0.5, rel_tol=0.01, min_matched=3)
+        assert m["fit_max"] == 6.0, m
+        assert m["local_baseline_bins"] == 0, m
+        with h5py.File(h5p, "r") as h5:
+            assert float(h5["residual"].attrs["fit_max"]) == 6.0
+            assert int(h5["residual"].attrs["local_baseline_bins"]) == 0
+            centers = np.asarray(h5["residual/peaks/center"][:], float)
+        assert not any(abs(c - 7.0) < 0.1 for c in centers), centers
+
+
+def test_residual_suite() -> None:
     _test_attribute_peaks()
     _test_attribute_one_to_one()
     _test_subtract_peaks()
     _test_run_residual_end_to_end()
     _test_evidence_gate()
     _test_residual_uses_fit_source()
+    _test_residual_refit_uses_peak_window()
+
+
+def main() -> None:
+    test_residual_suite()
     print("RESIDUAL TEST OK")
 
 

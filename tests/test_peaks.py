@@ -8,7 +8,7 @@ from bulkxrd.analysis.peaks import (
     pseudo_voigt, pseudo_voigt_area, mad_sigma, detect_peaks,
     fit_pattern, fit_dataset, FLAG_OK,
     resolve_sensitivity, winsorize_excess, auto_fit_range, build_fit_source,
-    SENSITIVITY_PRESETS)
+    SENSITIVITY_PRESETS, _seed_frame_orders, _predict_seed_centers)
 
 
 def main() -> None:
@@ -81,6 +81,7 @@ def main() -> None:
     _test_auto_fit_range()
     _test_esd_columns()
     _test_group_size_cap()
+    _test_seed_tracking_order()
     print("PEAKS TEST OK")
 
 
@@ -104,6 +105,19 @@ def _test_group_size_cap():
               + [{"center": 1.5 + 0.02 * i, "amplitude": 1, "fwhm": 0.05} for i in range(8)])
     gs = _group_peaks(uneven, window_factor=3.0, max_group_size=10)
     assert len(gs) == 2 and len(gs[0]) == 8 and len(gs[1]) == 8
+
+
+def _test_seed_tracking_order():
+    """Peak seed propagation follows independent scan paths and pressure order."""
+    axis = np.array([2.0, 1.0, 2.0, 1.0, np.nan])
+    groups = np.array([0, 0, 1, 1, 1])
+    pressure_orders = [o.tolist() for o in _seed_frame_orders(5, axis, "pressure", groups)]
+    assert pressure_orders == [[1, 0], [3, 2], [4]], pressure_orders
+    frame_orders = [o.tolist() for o in _seed_frame_orders(5, axis, "frame", groups)]
+    assert frame_orders == [[0, 1], [2, 3, 4]], frame_orders
+
+    pred = _predict_seed_centers((2.0, [2.8, 3.8]), (1.0, [2.9, 3.9]), 3.0, True)
+    assert np.allclose(pred, [2.7, 3.7])
 
 
 def _test_esd_columns():

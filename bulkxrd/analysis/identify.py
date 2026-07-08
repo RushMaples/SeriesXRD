@@ -741,6 +741,7 @@ def run_identification(
     pressure_window: float = 2.0,
     pressure_sigma_k: float = 2.0,
     min_matched: int = DEFAULT_MIN_MATCHED,
+    seen_conf: float = 0.5,
     marker_prior: bool = False,
     intensity_k: float = 0.3,
     use_frame_temperature: bool = True,
@@ -1023,6 +1024,7 @@ def run_identification(
                 "pressure_window": float(pressure_window),
                 "pressure_sigma_k": float(pressure_sigma_k),
                 "min_matched": int(min_matched),
+                "seen_conf": float(seen_conf),
                 "n_pressure_prior": int(n_prior),
                 "intensity_k": float(intensity_k),
                 "n_temperature": int(np.sum(np.isfinite(frame_temperature))
@@ -1064,7 +1066,7 @@ def run_identification(
     # (≥ min_matched one-to-one matches), so a phase can't be called present off
     # one or two coincidental peaks. The richer stats let the user judge partial
     # matches instead of collapsing them to a single 0.
-    SEEN_CONF = 0.5
+    SEEN_CONF = max(0.0, min(1.0, float(seen_conf)))
     summary = {}
     live = ~excluded
     for ph in phases:

@@ -142,14 +142,22 @@ def run_residual(
     *,
     seen_conf: float = 0.5,
     rel_tol: float = 0.01,
-    min_snr: float = 5.0,
+    min_snr: "Optional[float]" = None,
+    window_factor: "Optional[float]" = None,
+    max_chi2: "Optional[float]" = None,
+    min_prominence_snr: "Optional[float]" = None,
+    edge_bins: "Optional[int]" = None,
+    fit_min: "Optional[float]" = None,
+    fit_max: "Optional[float]" = None,
+    min_fwhm_bins: "Optional[float]" = None,
+    local_baseline_bins: "Optional[int]" = None,
     min_matched: int = DEFAULT_MIN_MATCHED,
     allow_sparse: bool = False,
     out_h5: "Optional[str | Path]" = None,
 ) -> Dict[str, Any]:
     """Subtract identified phases per frame and write the residual + attribution.
 
-        /residual  attrs: schema_version, seen_conf, rel_tol, min_snr,
+        /residual  attrs: schema_version, seen_conf, rel_tol, peak-fit knobs,
                           min_matched, allow_sparse, source, phases
         /residual/clean             (N, N_bins)  fit source minus explained-phase
                                                  peaks (source = /peaks.attrs source)
@@ -196,6 +204,46 @@ def run_residual(
         pkg = h5.get("peaks")
         want_source = str(pkg.attrs.get("source", "clean")) if pkg is not None else "clean"
         hybrid_spike_bins = int(pkg.attrs.get("hybrid_spike_bins", 5)) if pkg is not None else 5
+
+        def _attr_float(name: str, fallback: "Optional[float]") -> "Optional[float]":
+            val = pkg.attrs.get(name, fallback) if pkg is not None else fallback
+            if val is None:
+                return None
+            try:
+                f = float(val)
+            except Exception:
+                return fallback
+            return f if np.isfinite(f) else None
+
+        def _attr_int(name: str, fallback: "Optional[int]") -> "Optional[int]":
+            val = pkg.attrs.get(name, fallback) if pkg is not None else fallback
+            if val is None:
+                return None
+            try:
+                return int(val)
+            except Exception:
+                return fallback
+
+        r_min_snr = float(min_snr if min_snr is not None
+                          else (_attr_float("min_snr", 5.0) or 5.0))
+        r_window = float(window_factor if window_factor is not None
+                         else (_attr_float("window_factor", 3.0) or 3.0))
+        r_chi2 = float(max_chi2 if max_chi2 is not None
+                       else (_attr_float("max_chi2", 25.0) or 25.0))
+        r_prom = (float(min_prominence_snr) if min_prominence_snr is not None
+                  else _attr_float("min_prominence_snr", None))
+        r_edge = int(edge_bins if edge_bins is not None
+                     else (_attr_int("edge_bins", 0) or 0))
+        r_fit_min = (float(fit_min) if fit_min is not None
+                     else _attr_float("fit_min", None))
+        r_fit_max = (float(fit_max) if fit_max is not None
+                     else _attr_float("fit_max", None))
+        r_fwhm = float(min_fwhm_bins if min_fwhm_bins is not None
+                       else (_attr_float("min_fwhm_bins", 0.0) or 0.0))
+        # Step 2's local-baseline detrend is useful for weak-peak detection, but
+        # applying it again during residual re-fitting is very expensive on large
+        # frame stacks. Keep the residual pass undetrended unless a caller opts in.
+        r_detrend = int(local_baseline_bins if local_baseline_bins is not None else 0)
         spot_res = np.asarray(bg["spot_residual"][:], dtype=float) if "spot_residual" in bg else None
         sc_res = np.asarray(bg["sigmaclip_residual"][:], dtype=float) if "sigmaclip_residual" in bg else None
         idg = h5.get("identify")
@@ -298,7 +346,20 @@ def run_residual(
         # local-maxima detection) so the surfaced unknowns carry real fitted
         # profiles — the proper input for Step 3c unknown-clustering. Keep only
         # good (unflagged) peaks.
-        cands = fit_pattern(radial, residual[i], min_snr=min_snr, keep_flagged=False)
+        cands = fit_pattern(
+            radial,
+            residual[i],
+            min_snr=r_min_snr,
+            window_factor=r_window,
+            max_chi2=r_chi2,
+            min_prominence_snr=r_prom,
+            edge_bins=r_edge,
+            fit_min=r_fit_min,
+            fit_max=r_fit_max,
+            min_fwhm_bins=r_fwhm,
+            local_baseline_bins=r_detrend,
+            keep_flagged=False,
+        )
         rd_counts[i] = len(cands)
         for c in cands:
             rd_frame.append(i); rd_center.append(c["center"])
@@ -314,7 +375,14 @@ def run_residual(
             g = o.create_group("residual")
             g.attrs.update({
                 "schema_version": SCHEMA_VERSION, "seen_conf": float(seen_conf),
-                "rel_tol": float(rel_tol), "min_snr": float(min_snr),
+                "rel_tol": float(rel_tol), "min_snr": float(r_min_snr),
+                "window_factor": float(r_window), "max_chi2": float(r_chi2),
+                "min_prominence_snr": float(r_prom) if r_prom is not None else np.nan,
+                "edge_bins": int(r_edge),
+                "fit_min": float(r_fit_min) if r_fit_min is not None else np.nan,
+                "fit_max": float(r_fit_max) if r_fit_max is not None else np.nan,
+                "min_fwhm_bins": float(r_fwhm),
+                "local_baseline_bins": int(r_detrend),
                 "min_matched": int(min_matched), "allow_sparse": bool(allow_sparse),
                 "source": str(used_source), "phases": ", ".join(by_name),
             })
@@ -346,7 +414,14 @@ def run_residual(
     manifest = {
         "tool_version": SCHEMA_VERSION, "source": str(src), "out_h5": str(dst),
         "n_frames": int(n), "seen_conf": float(seen_conf), "rel_tol": float(rel_tol),
-        "fit_source": str(used_source),
+        "fit_source": str(used_source), "min_snr": float(r_min_snr),
+        "min_prominence_snr": float(r_prom) if r_prom is not None else None,
+        "window_factor": float(r_window), "max_chi2": float(r_chi2),
+        "edge_bins": int(r_edge),
+        "fit_min": float(r_fit_min) if r_fit_min is not None else None,
+        "fit_max": float(r_fit_max) if r_fit_max is not None else None,
+        "min_fwhm_bins": float(r_fwhm),
+        "local_baseline_bins": int(r_detrend),
         "n_explained": n_explained, "n_unexplained": n_unexplained,
         "n_residual_peaks": int(len(rd_frame)),
         "phases": list(by_name),

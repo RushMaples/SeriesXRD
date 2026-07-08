@@ -78,9 +78,13 @@ def inspect_analysis(h5_path: "str | Path") -> Dict[str, Any]:
         "unit": "", "radial": None, "n_frames": 0, "n_bins": 0,
         "source_reduced": "", "filenames": None,
         "has_background": False, "has_peaks": False,
+        "has_residual": False, "has_unknowns": False,
         "contamination": None, "flagged": None,
         "n_peaks": 0, "n_good": 0, "n_flagged_peaks": 0,
+        "n_residual_peaks": 0, "n_unknown_obs": 0,
+        "n_unknown_tracks": 0, "n_unknown_clusters": 0,
         "peaks_per_frame_mean": 0.0, "peak_attrs": {},
+        "residual_attrs": {}, "unknowns_attrs": {},
         "anomalies": [],
     }
     if not p.is_file():
@@ -129,6 +133,28 @@ def inspect_analysis(h5_path: "str | Path") -> Dict[str, Any]:
                 if "counts" in pk and out["n_frames"]:
                     counts = np.asarray(pk["counts"][:], dtype=float)
                     out["peaks_per_frame_mean"] = float(counts.mean()) if counts.size else 0.0
+
+            rg = h5.get("residual")
+            if rg is not None:
+                out["has_residual"] = "clean" in rg
+                out["residual_attrs"] = {k: _attr_str(v) for k, v in rg.attrs.items()}
+                rpk = rg.get("peaks")
+                if rpk is not None and "center" in rpk:
+                    out["n_residual_peaks"] = int(rpk["center"].shape[0])
+
+            unk = h5.get("unknowns")
+            if unk is not None:
+                out["has_unknowns"] = True
+                out["unknowns_attrs"] = {k: _attr_str(v) for k, v in unk.attrs.items()}
+                obs = unk.get("obs")
+                if obs is not None and "center" in obs:
+                    out["n_unknown_obs"] = int(obs["center"].shape[0])
+                tracks = unk.get("tracks")
+                if tracks is not None and "id" in tracks:
+                    out["n_unknown_tracks"] = int(tracks["id"].shape[0])
+                clusters = unk.get("clusters")
+                if clusters is not None and "id" in clusters:
+                    out["n_unknown_clusters"] = int(clusters["id"].shape[0])
 
             out["anomalies"] = _detect_anomalies(out)
     except Exception as e:
@@ -204,17 +230,19 @@ def frame_data(h5_path: "str | Path", frame_index: int) -> Dict[str, Any]:
     """Reconstruct everything needed to plot one frame.
 
     Returns ``{ok, error, index, filename, unit, radial, clean, baseline,
-    spot_residual, robust, mean, hybrid, sigmaclip, contamination, peaks}`` where
-    ``peaks`` is a list of per-peak dicts (the columns of ``/peaks`` for this
-    frame) or []. ``hybrid``/``sigmaclip`` are None when their inputs are absent.
+    spot_residual, robust, mean, hybrid, sigmaclip, residual, contamination,
+    peaks, residual_peaks, unknown_obs}`` where each peak/unknown list contains
+    per-frame rows from the corresponding HDF5 group. ``hybrid``/``sigmaclip``
+    are None when their inputs are absent.
     """
     p = Path(h5_path).expanduser()
     out: Dict[str, Any] = {
         "ok": False, "error": "", "index": int(frame_index), "filename": "",
         "unit": "", "radial": None, "clean": None, "baseline": None,
         "spot_residual": None, "robust": None, "mean": None,
-        "sigmaclip": None, "hybrid": None,
-        "contamination": None, "peaks": [],
+        "sigmaclip": None, "hybrid": None, "residual": None,
+        "contamination": None, "peaks": [], "residual_peaks": [],
+        "unknown_obs": [],
     }
     if not p.is_file():
         out["error"] = f"File does not exist: {p}"
@@ -255,6 +283,12 @@ def frame_data(h5_path: "str | Path", frame_index: int) -> Dict[str, Any]:
             if sigres is not None:                               # reduce-side trimmed mean
                 out["sigmaclip"] = clean + sigres
 
+            rg = h5.get("residual")
+            if rg is not None and "clean" in rg:
+                rclean = rg["clean"]
+                if i < rclean.shape[0]:
+                    out["residual"] = np.asarray(rclean[i], dtype=float)
+
             frames = h5.get("frames")
             names = _read_names(frames)
             if names is not None and i < len(names):
@@ -273,6 +307,49 @@ def frame_data(h5_path: "str | Path", frame_index: int) -> Dict[str, Any]:
                     for j in sel:
                         out["peaks"].append({c: (float(cols[c][j]) if c != "flag" else int(cols[c][j]))
                                              for c in cols})
+            if rg is not None and "peaks" in rg:
+                rpk = rg["peaks"]
+                if "frame" in rpk and "center" in rpk:
+                    fr = np.asarray(rpk["frame"][:], dtype=int)
+                    sel = np.where(fr == i)[0]
+                    if sel.size:
+                        cols = {c: np.asarray(rpk[c][:]) for c in _PEAK_COLS if c in rpk}
+                        for j in sel:
+                            out["residual_peaks"].append({
+                                c: (float(cols[c][j]) if c != "flag" else int(cols[c][j]))
+                                for c in cols
+                            })
+
+            unk = h5.get("unknowns")
+            obs = unk.get("obs") if unk is not None else None
+            if obs is not None and "frame" in obs and "center" in obs:
+                fr = np.asarray(obs["frame"][:], dtype=int)
+                sel = np.where(fr == i)[0]
+                if sel.size:
+                    track = (np.asarray(obs["track"][:], dtype=int)
+                             if "track" in obs else np.full(fr.size, -1, int))
+                    center = np.asarray(obs["center"][:], dtype=float)
+                    amp = (np.asarray(obs["amplitude"][:], dtype=float)
+                           if "amplitude" in obs else np.full(fr.size, np.nan))
+                    fwhm = (np.asarray(obs["fwhm"][:], dtype=float)
+                            if "fwhm" in obs else np.full(fr.size, np.nan))
+                    cluster_of_track: Dict[int, int] = {}
+                    tr = unk.get("tracks") if unk is not None else None
+                    if tr is not None and "id" in tr and "cluster" in tr:
+                        ids = np.asarray(tr["id"][:], dtype=int)
+                        clusters = np.asarray(tr["cluster"][:], dtype=int)
+                        cluster_of_track = {
+                            int(t): int(c) for t, c in zip(ids, clusters)
+                        }
+                    for j in sel:
+                        tid = int(track[j])
+                        out["unknown_obs"].append({
+                            "track": tid,
+                            "cluster": cluster_of_track.get(tid, -1),
+                            "center": float(center[j]),
+                            "amplitude": float(amp[j]),
+                            "fwhm": float(fwhm[j]),
+                        })
             out["ok"] = True
     except Exception as e:
         out["error"] = f"Failed to read HDF5: {e!r}"
@@ -400,10 +477,18 @@ def structure_report(review: Dict[str, Any]) -> str:
              f"Unit: {review.get('unit') or '?'}")
     L.append(f"Step 1 background: {'yes' if review['has_background'] else 'no'}    "
              f"Step 2 peaks: {'yes' if review['has_peaks'] else 'no'}")
+    L.append(f"Residual: {'yes' if review.get('has_residual') else 'no'}    "
+             f"Unknowns: {'yes' if review.get('has_unknowns') else 'no'}")
     if review.get("has_peaks"):
         L.append(f"Peaks: {review['n_good']} good / {review['n_peaks']} total "
                  f"({review['n_flagged_peaks']} flagged)    "
                  f"mean {review['peaks_per_frame_mean']:.1f}/frame")
+    if review.get("has_residual"):
+        L.append(f"Residual peaks: {review.get('n_residual_peaks', 0)}")
+    if review.get("has_unknowns"):
+        L.append(f"Unknowns: {review.get('n_unknown_tracks', 0)} track(s), "
+                 f"{review.get('n_unknown_clusters', 0)} cluster(s), "
+                 f"{review.get('n_unknown_obs', 0)} observation(s)")
     if review.get("source_reduced"):
         L.append(f"Source reduced file: {review['source_reduced']}")
     L.append("")
@@ -419,6 +504,16 @@ def structure_report(review: Dict[str, Any]) -> str:
         L.append("")
         L.append("Peak-fit parameters:")
         for k, v in review["peak_attrs"].items():
+            L.append(f"  {k}: {v}")
+    if review.get("residual_attrs"):
+        L.append("")
+        L.append("Residual parameters:")
+        for k, v in review["residual_attrs"].items():
+            L.append(f"  {k}: {v}")
+    if review.get("unknowns_attrs"):
+        L.append("")
+        L.append("Unknown-clustering parameters:")
+        for k, v in review["unknowns_attrs"].items():
             L.append(f"  {k}: {v}")
     L.append("")
     L.append("Anomalies:")

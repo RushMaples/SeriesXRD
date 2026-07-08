@@ -107,7 +107,8 @@ Reduction**, **3 Analysis**.
    output path, tick "Run Step 1"/"Run Step 2" (on by default), optionally
    enable Step 3a on the **6 Identify** tab with candidate phases picked on
    the **4 Phases** tab, then **7 Run** → "Run analysis". Inspect results on
-   **8 Review** / **9 Peak map** / **10 Pattern map** / **11 Grid map**.
+   **8 Review** / **9 Peak map** / **10 Pattern map** / **11 Unknowns** /
+   **12 Grid map**.
 
 ### CLI route
 
@@ -240,17 +241,18 @@ Eleven tabs. 1–6 configure a run, 7 runs it, 8–11 inspect the results.
     axis), any background-derived source, optional reflection-track overlays
     for enabled phases and per-phase intensity layers (needs Step 3a). Also
     the launch point for "Export ML dataset…" and "Export simulated set…".
-11. **11 Grid map** — for mapping runs: refolds the frame series onto its 2D
-    scan grid. See [§6.4](#64-grid-map).
+11. **11 Unknowns** — stacked Step-3c unknown-cluster diagram vs.
+    frame/pressure/temperature/time, plus CSV and frame-bundle exports. See
+    [§6.4](#64-unknowns).
+12. **12 Grid map** — for mapping runs: refolds the frame series onto its 2D
+    scan grid. See [§6.5](#65-grid-map).
 
 Step 3c (unknown-phase clustering, writing `/unknowns`) and the
 Williamson-Hall microstructure module (`analysis/microstructure.py`) both run
-without a dedicated GUI tab: Step 3c fires automatically in the worker/CLI
-after the residual step (as long as it left peaks behind) and its output is
-only inspectable via `bulkxrd-inspect` or the HDF5 directly; microstructure
-analysis is a Python-API-only module you call yourself on the peak-fit
-output (size/strain per frame from FWHM vs. q). Neither is wired into
-Pattern map or Grid map.
+after the main fit/identify path. Step 3c fires automatically in the worker/CLI
+after the residual step (as long as it left peaks behind) and is inspected on
+the Unknowns tab. Microstructure analysis is still a Python-API-only module you
+call yourself on the peak-fit output (size/strain per frame from FWHM vs. q).
 
 ### 3.4 Headless driving of calibration/reduction
 
@@ -333,14 +335,16 @@ bundle (patterns as `.xy`, phase CIFs, GSAS-II `instrument.instprm`, README
 with a GSASIIscriptable snippet). Narrow it to specific frames with
 `--frames 0,5,10` (default: all non-excluded frames), pick which pattern
 channel to export with `--source` (default `fit` — the channel Step 2
-actually fitted; `clean`/`mean`/`hybrid`/`sigmaclip`/`robust` also available),
+actually fitted; `clean`/`mean`/`hybrid`/`sigmaclip`/`robust` also available;
+for frame export, `residual` writes `/residual/clean`),
 and add `--peaks` to also write `peaks.csv` — every fitted peak of the
 exported frames (center/amplitude/fwhm ± esd, eta, area, chi2, flag, and the
 Step-3a attributed phase when present). The same frame export is on the
 Analysis GUI: "Export selected…" on the Frame metadata editor (multi-select
 rows) and "Export frame…" on the Review tab (current frame) both write the
 chosen channel's `.xy` (native q always, plus 2θ when the wavelength is
-known) and an optional `peaks.csv`. `bulkxrd-analyze --fractions` adds
+known) and optional CSVs: `peaks.csv`, `residual_peaks.csv`, and
+`unknowns.csv` when those data exist. `bulkxrd-analyze --fractions` adds
 semi-quantitative intensity-share phase fractions (`/fractions`) after the
 residual step — see `analysis/fractions.py`'s docstring for what those
 fractions do and do not correct.
@@ -430,6 +434,17 @@ table follows each stage's knobs.
 | `intensity_k` | `0.3` | Weight of the soft intensity-agreement factor folded into confidence. `0` = position-only (recommended if DAC texture/preferred orientation is scrambling relative intensities, which is common). Raise toward `1` only if you trust measured intensities in this dataset. |
 | `use_frame_temperature` | on | Applies `/frames/temperature` through each phase's thermal-expansion coefficient (`Phase.thermal`), the ambient-pressure analog of the pressure prior. Turn off to treat every frame as ambient temperature (e.g. if your temperature column is unreliable). |
 | `run_ml_rank` / `ml_rank_top_k` / `ml_rank_source` / `ml_scorer` | off / `5` / `auto` / blank (cosine) | Turn on for candidate-free identification: ranks the *whole* library per frame by similarity to a simulated pattern at that frame's pressure, and only the top-K get verified by the deterministic matcher above. `ml_rank_source=auto` picks the residual if present else the fit source. `ml_scorer` stays blank/`cosine` unless you've trained and validated a scorer per `docs/ml-training.md` — the deterministic cosine baseline is the default everywhere, and whatever the scorer proposes, Step 3a still verifies it against the physics. |
+| `unknown_tracking_axis` | `frame` | Step 3c track-linking order for residual peaks. Use `pressure` for pressure-series scans, `temperature` for thermal ramps, or `time` for time-resolved data. Physical-axis modes sort frames by that metadata and predict smooth center drift along the axis. |
+| `unknown_group_by` | `none` | Keeps independent unknown tracks separate. Use `scan` for datasets whose filenames contain `scan001`/`scan034`-style tokens; use `folder` when each scan is in its own directory. For many pressure scans in one file, `unknown_tracking_axis=pressure` plus `unknown_group_by=scan` is usually the right starting point. |
+| `unknown_link_tol_fwhm` / `unknown_max_gap` / `unknown_max_axis_gap` | `1.5` / `2` / blank | Track-linking tolerance in peak widths, missing ordered samples tolerated, and optional physical-axis jump cap (GPa/K/s). Raise the tolerance or gap if real lines split into short tracks; lower them if unrelated nearby peaks merge. |
+| `unknown_min_frames` / `unknown_jaccard` | `3` / `0.6` | Minimum observations to keep a residual-peak track, and co-occurrence threshold for merging tracks into one unknown cluster. |
+
+The residual re-fit that feeds Step 3c inherits Step 2's fitted source and
+peak-detection guardrails (`fit_min`/`fit_max`, edge bins, prominence, and
+minimum FWHM). It does not repeat the Step-2 local detrend by default because
+that is expensive on large frame stacks. Unknown clustering should therefore
+inspect the same radial domain you chose for the main peak table, not a wider
+detector tail.
 
 **Troubleshooting — identification**
 
@@ -507,7 +522,7 @@ message. Point "Frames folder" at the dataset directory when the stored
 filenames are bare names rather than full paths. The Python API is
 `frame_metadata.import_positions_from_headers(analysis_h5, key_x, key_y,
 search_dir=...)`. Once positions exist, the Grid map's `coordinates` layout
-(§6.4) places frames automatically.
+(§6.5) places frames automatically.
 
 **Manual editing.** The per-frame table on the Frame meta tab lets you
 select one or more rows and type a P/σ/T value into the editor row above
@@ -538,12 +553,14 @@ be picked as the x-axis on the Peak map, Pattern map, and (for `pressure`/
 ### 6.1 Review (analysis tab 8)
 
 Single-frame QC. Scrub through frames with the slider/spinbox; toggle which
-traces are drawn (mean, robust, baseline, clean, spot_residual, fitted
-peaks, and the 2D cake for that frame — pulled from the *reduced* file, since
-cakes don't live in the analysis HDF5). Fitted peaks are marked as vertical
-lines, colored by their flag (good vs. rejected). A contamination-vs-frame
-strip along the bottom always shows where the current frame sits relative to
-the whole series' diamond-spot contamination.
+traces are drawn (mean, robust, baseline, clean, spot_residual, residual,
+fitted peaks, residual peaks, unknown peaks, and the 2D cake for that frame —
+pulled from the *reduced* file, since cakes don't live in the analysis HDF5).
+`residual` is `/residual/clean`: the Step-2 fit source after identified-phase
+peaks were subtracted. Residual peaks are the peaks re-fit on that residual;
+unknown peaks are the Step-3c track observations that survived clustering.
+A contamination-vs-frame strip along the bottom always shows where the current
+frame sits relative to the whole series' diamond-spot contamination.
 
 ### 6.2 Peak map (analysis tab 9)
 
@@ -556,9 +573,10 @@ attribution, just what Step 2 found.
 
 The Hrubiak/XDI-style full pattern waterfall: radial axis on one axis, the
 chosen independent variable on the other, intensity as color. Source is any
-of `clean`/`hybrid`/`robust`/`mean`/`sigmaclip`/`baseline`/`spot_residual`
-(all reconstructed on demand from the stored `clean`+residual channels, no
-extra disk cost). "Overlay reflection tracks" draws each enabled phase's
+of `clean`/`hybrid`/`robust`/`mean`/`sigmaclip`/`baseline`/`spot_residual`/
+`residual`; the first seven are reconstructed on demand from the stored
+background channels, while `residual` reads `/residual/clean` after Step 3a
+removal. "Overlay reflection tracks" draws each enabled phase's
 predicted line positions (using its Step-3a pressure track, or the raw frame
 metadata if 3a hasn't run) across the frame axis only — tracks don't draw on
 a physical (pressure/temperature/time) x-axis because a non-uniform axis
@@ -572,7 +590,43 @@ installed; the waterfall itself needs neither.
 points into the Step 3b tooling documented in
 [`docs/ml-training.md`](ml-training.md).
 
-### 6.4 Grid map (analysis tab 11)
+### 6.4 Unknowns (analysis tab 11)
+
+The Unknowns tab turns Step-3c output into a stacked phase diagram: each row is
+an unknown cluster, and each point is one `/unknowns/obs` observation at the
+chosen independent variable (`frame`, `pressure`, `temperature`, or `time`).
+The horizontal line behind each row spans the cluster's first-to-last observed
+position on that axis. Color by `center` to see whether each unknown reflection
+drifts smoothly, or by `amplitude` to find frames where the unknown is strongest.
+`Min obs/cluster` hides clusters with too few residual-peak observations.
+`Min frames/cluster` is the more physical persistence filter: it hides short
+bursts that contain many leftover peaks but only appear in a small number of
+frames. Both filters apply to the plot, diagram CSV export, and frame-export
+button.
+
+Exports:
+
+- **Diagram CSV…** writes the currently filtered view as
+  `unknown_observations.csv` (one row per unknown observation) and
+  `unknown_clusters.csv` (one row per cluster, including frame span, x-axis
+  span, center span, total amplitude, and d-fingerprint values).
+- **Frames with unknowns…** mass-exports the currently plotted unknown frames
+  with `source=residual`, plus `peaks.csv`, `residual_peaks.csv`, and
+  `unknowns.csv`. This is the quickest way to gather the subset of a large
+  corpus that carries coherent unexplained features.
+
+Use `/unknowns/obs/frame` for coherent unknown-substance candidates. Use
+`/residual/peaks/frame` only when you deliberately want every leftover residual
+peak, including isolated noise and one-frame events.
+
+For datasets made of repeated pressure scans, do not track all frames as one
+global pressure series. Set Step 3c unknown tracking to `track by = pressure`
+and `group by = scan` so peaks are linked along pressure within each scan
+independently. The scan grouping is inferred from filename tokens such as
+`scan001`, `scan034`; if your scans are separated by folders instead, use
+`group by = folder`.
+
+### 6.5 Grid map (analysis tab 12)
 
 For mapping runs: refolds the linear frame series back onto the 2D grid it
 was physically collected on, colored by a per-frame scalar.

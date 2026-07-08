@@ -81,6 +81,11 @@ def _pattern_source(h5, source: str) -> "Tuple[np.ndarray, str]":
         pk = h5.get("peaks")
         label = str(pk.attrs.get("source", "clean")) if pk is not None else "clean"
         return _peaks_fit_source(h5), f"fit:{label}"
+    if s == "residual":
+        rg = h5.get("residual")
+        if rg is None or "clean" not in rg:
+            raise ValueError("No /residual/clean — run Step 3a (+ residual) first.")
+        return np.asarray(rg["clean"][:], dtype=float), "residual"
     bg = h5.get("background")
     if bg is None or "clean" not in bg:
         raise ValueError("No /background/clean — run Step 1 first.")
@@ -279,9 +284,100 @@ def _write_peaks_csv(h5, csv_path: Path, frame_idx: "Sequence[int]",
     return n_rows
 
 
+def _write_residual_peaks_csv(h5, csv_path: Path, frame_idx: "Sequence[int]",
+                              filenames: "Sequence[str]") -> "Optional[int]":
+    """CSV of peaks re-fitted on ``/residual/clean`` for the selected frames."""
+    import csv as _csv
+    rg = h5.get("residual")
+    pk = rg.get("peaks") if rg is not None else None
+    if pk is None or "center" not in pk or "frame" not in pk:
+        return None
+    want = set(int(i) for i in frame_idx)
+    pk_frame = np.asarray(pk["frame"][:], dtype=int)
+
+    def _col(name, default=np.nan):
+        if name in pk:
+            return np.asarray(pk[name][:])
+        return np.full(pk_frame.size, default)
+
+    cols = {
+        "center": _col("center"),
+        "amplitude": _col("amplitude"),
+        "fwhm": _col("fwhm"),
+        "eta": _col("eta"),
+        "area": _col("area"),
+        "chi2": _col("chi2"),
+        "flag": (np.asarray(pk["flag"][:], dtype=int)
+                 if "flag" in pk else np.zeros(pk_frame.size, int)),
+    }
+    n_rows = 0
+    with Path(csv_path).open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["frame", "filename"] + list(cols.keys()))
+        for j in range(pk_frame.size):
+            fi = int(pk_frame[j])
+            if fi not in want:
+                continue
+            row = [fi, filenames[fi] if fi < len(filenames) else ""]
+            row += [cols[k][j] for k in cols]
+            w.writerow(row)
+            n_rows += 1
+    return n_rows
+
+
+def _write_unknowns_csv(h5, csv_path: Path, frame_idx: "Sequence[int]",
+                        filenames: "Sequence[str]") -> "Optional[int]":
+    """CSV of Step-3c unknown-track observations for the selected frames."""
+    import csv as _csv
+    unk = h5.get("unknowns")
+    obs = unk.get("obs") if unk is not None else None
+    if obs is None or "frame" not in obs or "center" not in obs:
+        return None
+    want = set(int(i) for i in frame_idx)
+    frame = np.asarray(obs["frame"][:], dtype=int)
+    track = (np.asarray(obs["track"][:], dtype=int)
+             if "track" in obs else np.full(frame.size, -1, int))
+    center = np.asarray(obs["center"][:], dtype=float)
+    amp = (np.asarray(obs["amplitude"][:], dtype=float)
+           if "amplitude" in obs else np.full(frame.size, np.nan))
+    fwhm = (np.asarray(obs["fwhm"][:], dtype=float)
+            if "fwhm" in obs else np.full(frame.size, np.nan))
+
+    cluster_of_track: Dict[int, int] = {}
+    tr = unk.get("tracks") if unk is not None else None
+    if tr is not None and "id" in tr and "cluster" in tr:
+        ids = np.asarray(tr["id"][:], dtype=int)
+        clusters = np.asarray(tr["cluster"][:], dtype=int)
+        cluster_of_track = {int(t): int(c) for t, c in zip(ids, clusters)}
+
+    n_rows = 0
+    with Path(csv_path).open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["frame", "filename", "cluster", "track", "center",
+                    "amplitude", "fwhm"])
+        for j in range(frame.size):
+            fi = int(frame[j])
+            if fi not in want:
+                continue
+            tid = int(track[j])
+            w.writerow([
+                fi,
+                filenames[fi] if fi < len(filenames) else "",
+                cluster_of_track.get(tid, -1),
+                tid,
+                center[j],
+                amp[j],
+                fwhm[j],
+            ])
+            n_rows += 1
+    return n_rows
+
+
 def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
                   frames: "Optional[Sequence[int]]" = None,
-                  source: str = "fit", peaks: bool = True) -> Dict[str, Any]:
+                  source: str = "fit", peaks: bool = True,
+                  residual_peaks: "Optional[bool]" = None,
+                  unknowns: "Optional[bool]" = None) -> Dict[str, Any]:
     """Export selected frames' REDUCTION/FIT patterns and peak-fitting results.
 
     The light sibling of :func:`export_refinement_bundle` for everyday
@@ -294,19 +390,29 @@ def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
     Flagged peaks are included with their flag value so nothing is silently
     dropped; filter on the ``flag`` column for good-only.
 
-    ``source``: "fit" (what Step 2 actually fitted, default) or any of
-    "clean"/"mean"/"hybrid"/"sigmaclip"/"auto"/"robust" — the reduction-side
-    channels reconstructed exactly as the pipeline does. ``frames=None``
-    exports every non-excluded frame. Returns a manifest.
+    ``source``: "fit" (what Step 2 actually fitted, default), "residual"
+    (``/residual/clean``), or any of "clean"/"mean"/"hybrid"/"sigmaclip"/
+    "auto"/"robust" — the reduction-side channels reconstructed exactly as
+    the pipeline does. ``frames=None`` exports every non-excluded frame.
+    ``residual_peaks`` writes ``residual_peaks.csv`` when Step 3a-removal has
+    re-fit the leftover peaks; ``unknowns`` writes ``unknowns.csv`` when Step
+    3c clustered those residual peaks. Returns a manifest.
     """
     import h5py  # type: ignore
+
+    if residual_peaks is None:
+        residual_peaks = bool(peaks)
+    if unknowns is None:
+        unknowns = bool(peaks)
 
     src = Path(analysis_h5).expanduser()
     out = Path(out_dir).expanduser()
     patterns_dir = out / "patterns"
     patterns_dir.mkdir(parents=True, exist_ok=True)
     manifest: Dict[str, Any] = {"n_frames": 0, "files_written": [],
-                                "n_peaks": 0, "unit": "", "wavelength": None,
+                                "n_peaks": 0, "n_residual_peaks": 0,
+                                "n_unknown_obs": 0,
+                                "unit": "", "wavelength": None,
                                 "source": source}
 
     with h5py.File(str(src), "r") as h5:
@@ -356,10 +462,24 @@ def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
             if n_rows is not None:
                 manifest["n_peaks"] = n_rows
                 manifest["files_written"].append(str(csv_path))
+        if residual_peaks:
+            csv_path = out / "residual_peaks.csv"
+            n_rows = _write_residual_peaks_csv(h5, csv_path, frame_idx, filenames)
+            if n_rows is not None:
+                manifest["n_residual_peaks"] = n_rows
+                manifest["files_written"].append(str(csv_path))
+        if unknowns:
+            csv_path = out / "unknowns.csv"
+            n_rows = _write_unknowns_csv(h5, csv_path, frame_idx, filenames)
+            if n_rows is not None:
+                manifest["n_unknown_obs"] = n_rows
+                manifest["files_written"].append(str(csv_path))
 
     manifest["n_frames"] = len(frame_idx)
     print(f"[EXPORT] {manifest['n_frames']} frame pattern(s) "
-          f"({source_label}) + {manifest['n_peaks']} peak row(s) -> {out}",
+          f"({source_label}) + {manifest['n_peaks']} peak row(s), "
+          f"{manifest['n_residual_peaks']} residual peak row(s), "
+          f"{manifest['n_unknown_obs']} unknown row(s) -> {out}",
           flush=True)
     return manifest
 
@@ -539,9 +659,9 @@ def main(argv: "list[str] | None" = None) -> int:
                         "(default: beside the analysis file).")
     p.add_argument("--source", default="fit",
                    choices=["fit", "clean", "mean", "hybrid", "sigmaclip",
-                            "auto", "robust"],
+                            "auto", "robust", "residual"],
                    help="Pattern channel to export. Default fit (what Step 2 "
-                        "actually fitted).")
+                        "actually fitted); residual reads /residual/clean.")
     p.add_argument("--peaks", action="store_true",
                    help="Also write peaks.csv: every fitted peak of the "
                         "exported frames (center/amplitude/fwhm ± esd, eta, "

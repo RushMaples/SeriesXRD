@@ -40,7 +40,10 @@ from .identify import radial_to_d, phase_reflections, predicted_d, _parse_hkl
 #   robust = clean + baseline,  mean = robust + spot_residual,
 #   sigmaclip = clean + sigmaclip_residual,  hybrid = clean + winsorized(spot_residual).
 _DIRECT = ("clean", "baseline", "spot_residual")
-SOURCES = ("clean", "hybrid", "robust", "mean", "sigmaclip", "baseline", "spot_residual")
+SOURCES = (
+    "clean", "hybrid", "robust", "mean", "sigmaclip", "baseline",
+    "spot_residual", "residual",
+)
 
 
 def _open(path):
@@ -188,6 +191,276 @@ def series_axis(analysis_h5: "str | Path", kind: str = "frame", *,
     except Exception as e:
         out["error"] = f"Failed to read HDF5: {e!r}"
     return out
+
+
+# ---------------------------------------------------------------------------
+# Unknown-phase stacked diagrams (Step 3c)
+# ---------------------------------------------------------------------------
+
+def _n_frames_from_file(h5) -> int:
+    bg = h5.get("background")
+    if bg is not None and "clean" in bg:
+        return int(bg["clean"].shape[0])
+    rg = h5.get("residual")
+    if rg is not None and "clean" in rg:
+        return int(rg["clean"].shape[0])
+    if rg is not None and "peaks" in rg and "counts" in rg["peaks"]:
+        return int(rg["peaks/counts"].shape[0])
+    fr = h5.get("frames")
+    if fr is not None and "filename" in fr:
+        return int(fr["filename"].shape[0])
+    obs = h5.get("unknowns/obs")
+    if obs is not None and "frame" in obs and obs["frame"].shape[0]:
+        return int(np.max(np.asarray(obs["frame"][:], dtype=int))) + 1
+    return 0
+
+
+def unknown_diagram(analysis_h5: "str | Path", *, x_axis: str = "frame"
+                    ) -> Dict[str, Any]:
+    """Step-3c unknown-cluster observations as a stacked phase diagram.
+
+    Returns ``{ok, error, frame, x, cluster, track, center, amplitude, fwhm,
+    clusters, cluster_ids, x_label, n_frames, n_obs, n_frames_with_unknowns}``.
+    Each observation row is one ``/unknowns/obs`` entry; ``cluster`` is joined
+    through ``/unknowns/tracks/{id,cluster}`` when available. ``clusters`` is a
+    compact per-cluster summary for tables/CSV export.
+    """
+    p = Path(analysis_h5).expanduser()
+    out: Dict[str, Any] = {
+        "ok": False, "error": "", "frame": None, "x": None, "cluster": None,
+        "group": None, "track": None, "center": None, "amplitude": None, "fwhm": None,
+        "clusters": [], "cluster_ids": [], "x_label": "frame index",
+        "x_axis": x_axis, "n_frames": 0, "n_obs": 0,
+        "n_frames_with_unknowns": 0,
+    }
+    if not p.is_file():
+        out["error"] = f"File does not exist: {p}"
+        return out
+    try:
+        with _open(p) as h5:
+            unk = h5.get("unknowns")
+            obs = unk.get("obs") if unk is not None else None
+            if obs is None or "frame" not in obs or "center" not in obs:
+                out["error"] = "No /unknowns/obs — run Step 3a residual + Step 3c first."
+                return out
+
+            frame = np.asarray(obs["frame"][:], dtype=int)
+            center = np.asarray(obs["center"][:], dtype=float)
+            track = (np.asarray(obs["track"][:], dtype=int)
+                     if "track" in obs else np.full(frame.size, -1, dtype=int))
+            obs_group = (np.asarray(obs["group"][:], dtype=int)
+                         if "group" in obs else np.full(frame.size, 0, dtype=int))
+            amplitude = (np.asarray(obs["amplitude"][:], dtype=float)
+                         if "amplitude" in obs else np.full(frame.size, np.nan))
+            fwhm = (np.asarray(obs["fwhm"][:], dtype=float)
+                    if "fwhm" in obs else np.full(frame.size, np.nan))
+
+            n = _n_frames_from_file(h5)
+            if n <= 0 and frame.size:
+                n = int(np.max(frame)) + 1
+            try:
+                x_all, x_label = _series_x(h5, x_axis, n=n)
+            except ValueError as e:
+                out["error"] = str(e)
+                return out
+            x_all = np.asarray(x_all, dtype=float)
+            x = np.full(frame.size, np.nan)
+            ok_frame = (frame >= 0) & (frame < x_all.size)
+            x[ok_frame] = x_all[frame[ok_frame]]
+
+            cluster_of_track: Dict[int, int] = {}
+            group_of_track: Dict[int, int] = {}
+            tr = unk.get("tracks") if unk is not None else None
+            if tr is not None and "id" in tr and "cluster" in tr:
+                ids = np.asarray(tr["id"][:], dtype=int)
+                clusters = np.asarray(tr["cluster"][:], dtype=int)
+                cluster_of_track = {int(t): int(c) for t, c in zip(ids, clusters)}
+                if "group" in tr:
+                    groups = np.asarray(tr["group"][:], dtype=int)
+                    group_of_track = {int(t): int(g) for t, g in zip(ids, groups)}
+            cluster = np.array([cluster_of_track.get(int(t), -1) for t in track],
+                               dtype=int)
+            if "group" not in obs and group_of_track:
+                obs_group = np.array([group_of_track.get(int(t), 0) for t in track],
+                                     dtype=int)
+
+            # Prefer the stored cluster table for stable ordering, then fill in
+            # any observed cluster ids not represented there.
+            stored_ids: List[int] = []
+            cluster_meta: Dict[int, Dict[str, Any]] = {}
+            group_labels: Dict[int, str] = {}
+            gg = unk.get("groups") if unk is not None else None
+            if gg is not None and "id" in gg and "label" in gg:
+                gids = np.asarray(gg["id"][:], dtype=int)
+                labels = [
+                    s.decode("utf-8", "replace") if isinstance(s, (bytes, bytearray)) else str(s)
+                    for s in gg["label"][:]
+                ]
+                group_labels = {int(g): str(label) for g, label in zip(gids, labels)}
+            gc = unk.get("clusters") if unk is not None else None
+            if gc is not None and "id" in gc:
+                stored_ids = [int(c) for c in np.asarray(gc["id"][:], dtype=int)]
+                for ci in stored_ids:
+                    cluster_meta[ci] = {"cluster": ci}
+                for name in ("n_tracks", "first_frame", "last_frame", "ref_frame", "group"):
+                    if name in gc:
+                        vals = np.asarray(gc[name][:])
+                        for ci, val in zip(stored_ids, vals):
+                            cluster_meta.setdefault(ci, {"cluster": ci})[name] = int(val)
+            observed_ids = sorted(int(c) for c in set(cluster.tolist()) if int(c) >= 0)
+            cluster_ids = stored_ids + [c for c in observed_ids if c not in set(stored_ids)]
+
+            # Optional d-fingerprints from /unknowns/fingerprint.
+            fp: Dict[int, List[float]] = {}
+            gf = unk.get("fingerprint") if unk is not None else None
+            if gf is not None and "cluster" in gf and "d" in gf:
+                fp_cluster = np.asarray(gf["cluster"][:], dtype=int)
+                fp_d = np.asarray(gf["d"][:], dtype=float)
+                for ci, dval in zip(fp_cluster, fp_d):
+                    fp.setdefault(int(ci), []).append(float(dval))
+
+            summaries: List[Dict[str, Any]] = []
+            for ci in cluster_ids:
+                rows = np.where(cluster == int(ci))[0]
+                if rows.size:
+                    frames_ci = frame[rows]
+                    x_ci = x[rows]
+                    centers_ci = center[rows]
+                    amps_ci = amplitude[rows]
+                    finite_x = x_ci[np.isfinite(x_ci)]
+                    finite_c = centers_ci[np.isfinite(centers_ci)]
+                    meta = dict(cluster_meta.get(int(ci), {"cluster": int(ci)}))
+                    group_id = int(meta.get("group", -1))
+                    meta.update({
+                        "cluster": int(ci),
+                        "group": group_id,
+                        "group_label": group_labels.get(group_id, ""),
+                        "n_obs": int(rows.size),
+                        "n_frames_observed": int(np.unique(frames_ci).size),
+                        "first_frame": int(meta.get("first_frame", np.min(frames_ci))),
+                        "last_frame": int(meta.get("last_frame", np.max(frames_ci))),
+                        "x_min": float(np.min(finite_x)) if finite_x.size else np.nan,
+                        "x_max": float(np.max(finite_x)) if finite_x.size else np.nan,
+                        "center_min": float(np.min(finite_c)) if finite_c.size else np.nan,
+                        "center_max": float(np.max(finite_c)) if finite_c.size else np.nan,
+                        "amplitude_sum": float(np.nansum(amps_ci)),
+                        "d_fingerprint": fp.get(int(ci), []),
+                    })
+                    summaries.append(meta)
+                else:
+                    meta = dict(cluster_meta.get(int(ci), {"cluster": int(ci)}))
+                    group_id = int(meta.get("group", -1))
+                    meta.update({
+                        "cluster": int(ci), "group": group_id,
+                        "group_label": group_labels.get(group_id, ""),
+                        "n_obs": 0, "n_frames_observed": 0,
+                        "x_min": np.nan, "x_max": np.nan,
+                        "center_min": np.nan, "center_max": np.nan,
+                        "amplitude_sum": 0.0, "d_fingerprint": fp.get(int(ci), []),
+                    })
+                    summaries.append(meta)
+
+            out.update({
+                "ok": True,
+                "frame": frame,
+                "x": x,
+                "cluster": cluster,
+                "group": obs_group,
+                "track": track,
+                "center": center,
+                "amplitude": amplitude,
+                "fwhm": fwhm,
+                "clusters": summaries,
+                "cluster_ids": cluster_ids,
+                "x_label": x_label,
+                "n_frames": int(n),
+                "n_obs": int(frame.size),
+                "n_frames_with_unknowns": int(np.unique(frame).size) if frame.size else 0,
+            })
+    except Exception as e:
+        out["error"] = f"Failed to read unknowns: {e!r}"
+    return out
+
+
+def write_unknown_diagram_csv(analysis_h5: "str | Path", out_dir: "str | Path",
+                              *, x_axis: str = "frame",
+                              min_obs_per_cluster: int = 1,
+                              min_frames_per_cluster: int = 1) -> Dict[str, Any]:
+    """Write ``unknown_observations.csv`` and ``unknown_clusters.csv``."""
+    import csv
+    data = unknown_diagram(analysis_h5, x_axis=x_axis)
+    if not data.get("ok"):
+        raise ValueError(data.get("error", "unknown diagram unavailable"))
+
+    out = Path(out_dir).expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+    obs_path = out / "unknown_observations.csv"
+    clusters_path = out / "unknown_clusters.csv"
+
+    frame = np.asarray(data["frame"], dtype=int)
+    x = np.asarray(data["x"], dtype=float)
+    cluster = np.asarray(data["cluster"], dtype=int)
+    group = np.asarray(data.get("group", np.zeros(frame.size, dtype=int)), dtype=int)
+    track = np.asarray(data["track"], dtype=int)
+    center = np.asarray(data["center"], dtype=float)
+    amp = np.asarray(data["amplitude"], dtype=float)
+    fwhm = np.asarray(data["fwhm"], dtype=float)
+    min_obs = max(1, int(min_obs_per_cluster))
+    min_frames = max(1, int(min_frames_per_cluster))
+    clusters = [
+        rec for rec in data["clusters"]
+        if int(rec.get("n_obs", 0)) >= min_obs
+        and int(rec.get("n_frames_observed", 0)) >= min_frames
+    ]
+    keep_ids = {int(rec.get("cluster", -1)) for rec in clusters}
+    keep_obs = np.array([int(c) in keep_ids for c in cluster], dtype=bool)
+
+    with obs_path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["frame", "x", "x_axis", "cluster", "group", "track",
+                    "center", "amplitude", "fwhm"])
+        for row in np.nonzero(keep_obs)[0]:
+            w.writerow([frame[row], x[row], data["x_label"], cluster[row], group[row],
+                        track[row], center[row], amp[row], fwhm[row]])
+
+    with clusters_path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["cluster", "group", "group_label", "n_obs",
+                    "n_frames_observed", "first_frame", "last_frame",
+                    "ref_frame", "x_min", "x_max", "center_min", "center_max",
+                    "amplitude_sum", "d_fingerprint"])
+        for rec in clusters:
+            dvals = rec.get("d_fingerprint") or []
+            w.writerow([
+                rec.get("cluster"),
+                rec.get("group", ""),
+                rec.get("group_label", ""),
+                rec.get("n_obs", 0),
+                rec.get("n_frames_observed", 0),
+                rec.get("first_frame", ""),
+                rec.get("last_frame", ""),
+                rec.get("ref_frame", ""),
+                rec.get("x_min", ""),
+                rec.get("x_max", ""),
+                rec.get("center_min", ""),
+                rec.get("center_max", ""),
+                rec.get("amplitude_sum", 0.0),
+                ";".join(f"{float(v):.8g}" for v in dvals),
+            ])
+
+    return {
+        "ok": True,
+        "out_dir": str(out),
+        "files_written": [str(obs_path), str(clusters_path)],
+        "n_obs": int(np.sum(keep_obs)),
+        "n_clusters": len(clusters),
+        "n_total_obs": int(data["n_obs"]),
+        "n_total_clusters": len(data["clusters"]),
+        "n_frames_with_unknowns": int(np.unique(frame[keep_obs]).size) if keep_obs.any() else 0,
+        "min_obs_per_cluster": min_obs,
+        "min_frames_per_cluster": min_frames,
+        "x_label": data["x_label"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +745,7 @@ def pattern_image(analysis_h5: "str | Path", *, source: str = "clean",
     Step-3a track is given. An unavailable variable is an error, not a silent
     fallback.
     """
+    source = (source or "clean").strip().lower()
     p = Path(analysis_h5).expanduser()
     out: Dict[str, Any] = {"ok": False, "error": "", "Z": None, "radial": None,
                            "x": None, "x_label": "frame index", "unit": "",
@@ -490,35 +764,42 @@ def pattern_image(analysis_h5: "str | Path", *, source: str = "clean",
     try:
         with _open(p) as h5:
             out["unit"] = str(h5.attrs.get("unit", ""))
-            bg = h5.get("background")
-            if bg is None or "clean" not in bg:
-                out["error"] = "No /background/clean — run Step 1 first."
-                return out
-            clean = np.asarray(bg["clean"][:], dtype=float)
-            if source == "clean":
-                data = clean
-            elif source in ("baseline", "spot_residual"):
-                if source not in bg:
-                    out["error"] = f"/background/{source} not present."
+            if source == "residual":
+                rg = h5.get("residual")
+                if rg is None or "clean" not in rg:
+                    out["error"] = "No /residual/clean — run Step 3a (+ residual) first."
                     return out
-                data = np.asarray(bg[source][:], dtype=float)
-            elif source == "robust":
-                data = clean + np.asarray(bg["baseline"][:], dtype=float)
-            elif source == "mean":  # mean = robust + spot_residual
-                data = clean + np.asarray(bg["baseline"][:], dtype=float) \
-                    + np.asarray(bg["spot_residual"][:], dtype=float)
-            elif source == "hybrid":  # clean + winsorized mean-excess (fit default)
-                from .peaks import winsorize_excess
-                if "spot_residual" not in bg:
-                    out["error"] = "/background/spot_residual not present."
+                data = np.asarray(rg["clean"][:], dtype=float)
+            else:
+                bg = h5.get("background")
+                if bg is None or "clean" not in bg:
+                    out["error"] = "No /background/clean — run Step 1 first."
                     return out
-                data = clean + winsorize_excess(np.asarray(bg["spot_residual"][:], dtype=float))
-            else:  # sigmaclip = clean + sigmaclip_residual (reduce-side trimmed mean)
-                if "sigmaclip_residual" not in bg:
-                    out["error"] = ("/background/sigmaclip_residual not present — re-run "
-                                    "reduction with the sigma-clip channel, then Step 1.")
-                    return out
-                data = clean + np.asarray(bg["sigmaclip_residual"][:], dtype=float)
+                clean = np.asarray(bg["clean"][:], dtype=float)
+                if source == "clean":
+                    data = clean
+                elif source in ("baseline", "spot_residual"):
+                    if source not in bg:
+                        out["error"] = f"/background/{source} not present."
+                        return out
+                    data = np.asarray(bg[source][:], dtype=float)
+                elif source == "robust":
+                    data = clean + np.asarray(bg["baseline"][:], dtype=float)
+                elif source == "mean":  # mean = robust + spot_residual
+                    data = clean + np.asarray(bg["baseline"][:], dtype=float) \
+                        + np.asarray(bg["spot_residual"][:], dtype=float)
+                elif source == "hybrid":  # clean + winsorized mean-excess (fit default)
+                    from .peaks import winsorize_excess
+                    if "spot_residual" not in bg:
+                        out["error"] = "/background/spot_residual not present."
+                        return out
+                    data = clean + winsorize_excess(np.asarray(bg["spot_residual"][:], dtype=float))
+                else:  # sigmaclip = clean + sigmaclip_residual (reduce-side trimmed mean)
+                    if "sigmaclip_residual" not in bg:
+                        out["error"] = ("/background/sigmaclip_residual not present — re-run "
+                                        "reduction with the sigma-clip channel, then Step 1.")
+                        return out
+                    data = clean + np.asarray(bg["sigmaclip_residual"][:], dtype=float)
             n = data.shape[0]
             radial = np.asarray(h5["radial"][:], dtype=float) if "radial" in h5 \
                 else np.arange(data.shape[1], dtype=float)

@@ -664,6 +664,149 @@ def auto_fit_range(radial, signal, *, max_trim_frac: float = 0.15,
 SCHEMA_VERSION = "1"
 _PEAK_COLS = ("center", "amplitude", "fwhm", "eta", "area", "chi2", "flag",
               "center_err", "amplitude_err", "fwhm_err")
+SEED_TRACKING_AXES = ("frame", "pressure", "temperature", "time")
+SEED_GROUPS = ("none", "scan", "folder")
+
+
+def _normalize_seed_axis(axis: "Optional[str]") -> str:
+    key = (axis or "frame").strip().lower()
+    if key in ("", "index", "same", "unknown", "unknowns"):
+        key = "frame"
+    if key not in SEED_TRACKING_AXES:
+        raise ValueError(f"Unknown peak-seed tracking axis {axis!r} "
+                         f"(choose from {', '.join(SEED_TRACKING_AXES)}).")
+    return key
+
+
+def _normalize_seed_group(group_by: "Optional[str]") -> str:
+    key = (group_by or "none").strip().lower()
+    if key in ("", "all", "same", "unknown", "unknowns"):
+        key = "none"
+    if key not in SEED_GROUPS:
+        raise ValueError(f"Unknown peak-seed group {group_by!r} "
+                         f"(choose from {', '.join(SEED_GROUPS)}).")
+    return key
+
+
+def _seed_frame_orders(n_frames: int, axis_values: np.ndarray, axis_key: str,
+                       group_values: np.ndarray) -> List[np.ndarray]:
+    """Frame orders used for seed propagation.
+
+    Each returned order is one independent propagation path. Physical axes are
+    sorted within their scan/folder group; frames with missing physical metadata
+    are still fitted, but as one-frame paths so stale seeds are not carried into
+    unknown conditions.
+    """
+    n = int(n_frames)
+    if n <= 0:
+        return []
+    axis = np.asarray(axis_values, dtype=float)
+    groups = np.asarray(group_values)
+    if axis.size != n or groups.size != n:
+        raise ValueError("Seed tracking metadata length must match frame count.")
+
+    group_order: List[Any] = []
+    seen = set()
+    for raw in groups.tolist():
+        if raw not in seen:
+            seen.add(raw)
+            group_order.append(raw)
+
+    orders: List[np.ndarray] = []
+    for group_id in group_order:
+        frames = np.where(groups == group_id)[0].astype(int)
+        if not frames.size:
+            continue
+        if axis_key == "frame":
+            orders.append(frames)
+            continue
+        finite = frames[np.isfinite(axis[frames])]
+        if finite.size:
+            ordered = np.asarray(
+                sorted((int(f) for f in finite), key=lambda f: (float(axis[f]), f)),
+                dtype=int,
+            )
+            orders.append(ordered)
+        for f in frames[~np.isfinite(axis[frames])]:
+            orders.append(np.asarray([int(f)], dtype=int))
+    return orders
+
+
+def _predict_seed_centers(prev_good, prev2_good, axis_now: float,
+                          use_axis_predictor: bool) -> "Optional[List[float]]":
+    if prev_good is None:
+        return None
+    axis_prev, centers_prev = prev_good
+    centers = np.asarray(centers_prev, dtype=float)
+    if not centers.size:
+        return None
+    if (not use_axis_predictor or prev2_good is None
+            or len(prev2_good[1]) != centers.size):
+        return centers.tolist()
+    axis_prev2, centers_prev2 = prev2_good
+    if not (np.isfinite(axis_now) and np.isfinite(axis_prev)
+            and np.isfinite(axis_prev2)):
+        return centers.tolist()
+    da = float(axis_prev) - float(axis_prev2)
+    if abs(da) <= 1e-12:
+        return centers.tolist()
+    c0 = np.sort(np.asarray(centers_prev2, dtype=float))
+    c1 = np.sort(centers)
+    pred = c1 + (c1 - c0) / da * (float(axis_now) - float(axis_prev))
+    pred = pred[np.isfinite(pred)]
+    return pred.tolist() if pred.size else centers.tolist()
+
+
+def _fit_ordered_rows(radial: np.ndarray, clean_rows: np.ndarray,
+                      excluded_rows: np.ndarray, row_order: np.ndarray,
+                      axis_values: np.ndarray, *,
+                      min_snr: float, window_factor: float, max_chi2: float,
+                      propagate: bool,
+                      min_prominence_snr: "Optional[float]",
+                      edge_bins: int, fit_min: "Optional[float]",
+                      fit_max: "Optional[float]", min_fwhm_bins: float,
+                      local_baseline_bins: int,
+                      seed_max_axis_gap: "Optional[float]",
+                      seed_axis_predictor: bool):
+    m = clean_rows.shape[0]
+    counts = [0] * m
+    frames_local: List[int] = []
+    cols: Dict[str, list] = {c: [] for c in _PEAK_COLS}
+    prev_good = None
+    prev2_good = None
+    last_axis: "Optional[float]" = None
+
+    for jj in np.asarray(row_order, dtype=int):
+        if excluded_rows[jj]:
+            continue
+        axis_now = float(axis_values[jj]) if axis_values.size else float(jj)
+        if (propagate and seed_max_axis_gap is not None and last_axis is not None
+                and np.isfinite(axis_now) and np.isfinite(last_axis)
+                and abs(axis_now - last_axis) > float(seed_max_axis_gap)):
+            prev_good = None
+            prev2_good = None
+        seeds = (_predict_seed_centers(prev_good, prev2_good, axis_now,
+                                       bool(seed_axis_predictor))
+                 if propagate else None)
+        peaks = fit_pattern(radial, clean_rows[jj], min_snr=min_snr,
+                            window_factor=window_factor, max_chi2=max_chi2,
+                            min_prominence_snr=min_prominence_snr,
+                            edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
+                            min_fwhm_bins=min_fwhm_bins,
+                            local_baseline_bins=local_baseline_bins,
+                            seed_centers=seeds, keep_flagged=True)
+        counts[jj] = len(peaks)
+        for p in peaks:
+            frames_local.append(int(jj))
+            for c in _PEAK_COLS:
+                cols[c].append(p[c])
+        if propagate:
+            good = [p["center"] for p in peaks if p["flag"] == FLAG_OK]
+            if good:
+                prev2_good = prev_good
+                prev_good = (axis_now, good)
+            last_axis = axis_now
+    return counts, frames_local, cols
 
 
 def _peaks_chunk(payload):
@@ -675,31 +818,40 @@ def _peaks_chunk(payload):
     """
     (radial, clean_c, excluded_c, min_snr, window_factor, max_chi2,
      propagate, min_prominence_snr, edge_bins, fit_min, fit_max, min_fwhm_bins,
-     local_baseline_bins) = payload
+     local_baseline_bins, seed_max_axis_gap, seed_axis_predictor) = payload
     m = clean_c.shape[0]
-    counts = [0] * m
-    frames_local: List[int] = []
-    cols: Dict[str, list] = {c: [] for c in _PEAK_COLS}
-    seeds: Optional[List[float]] = None
-    for j in range(m):
-        if excluded_c[j]:
-            continue
-        peaks = fit_pattern(radial, clean_c[j], min_snr=min_snr,
-                            window_factor=window_factor, max_chi2=max_chi2,
-                            min_prominence_snr=min_prominence_snr,
-                            edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
-                            min_fwhm_bins=min_fwhm_bins,
-                            local_baseline_bins=local_baseline_bins,
-                            seed_centers=seeds, keep_flagged=True)
-        counts[j] = len(peaks)
-        for p in peaks:
-            frames_local.append(j)
-            for c in _PEAK_COLS:
-                cols[c].append(p[c])
-        if propagate:
-            good = [p["center"] for p in peaks if p["flag"] == FLAG_OK]
-            seeds = good if good else seeds
-    return counts, frames_local, cols
+    return _fit_ordered_rows(
+        radial, clean_c, excluded_c, np.arange(m, dtype=int),
+        np.arange(m, dtype=float),
+        min_snr=min_snr, window_factor=window_factor, max_chi2=max_chi2,
+        propagate=propagate, min_prominence_snr=min_prominence_snr,
+        edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
+        min_fwhm_bins=min_fwhm_bins, local_baseline_bins=local_baseline_bins,
+        seed_max_axis_gap=seed_max_axis_gap,
+        seed_axis_predictor=seed_axis_predictor,
+    )
+
+
+def _peaks_order_chunk(payload):
+    """Worker: fit one explicit propagation path and return global frame ids."""
+    (radial, clean_c, excluded_c, global_order, axis_values,
+     min_snr, window_factor, max_chi2, propagate, min_prominence_snr,
+     edge_bins, fit_min, fit_max, min_fwhm_bins, local_baseline_bins,
+     seed_max_axis_gap, seed_axis_predictor) = payload
+    m = clean_c.shape[0]
+    counts, frames_local, cols = _fit_ordered_rows(
+        radial, clean_c, excluded_c, np.arange(m, dtype=int),
+        np.asarray(axis_values, dtype=float),
+        min_snr=min_snr, window_factor=window_factor, max_chi2=max_chi2,
+        propagate=propagate, min_prominence_snr=min_prominence_snr,
+        edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
+        min_fwhm_bins=min_fwhm_bins, local_baseline_bins=local_baseline_bins,
+        seed_max_axis_gap=seed_max_axis_gap,
+        seed_axis_predictor=seed_axis_predictor,
+    )
+    order = np.asarray(global_order, dtype=int)
+    frames_global = [int(order[j]) for j in frames_local]
+    return order, counts, frames_global, cols
 
 
 def run_peak_fitting(
@@ -720,6 +872,10 @@ def run_peak_fitting(
     min_fwhm_bins: "Optional[float]" = None,
     local_baseline_bins: int = 0,
     propagate_seeds: bool = True,
+    seed_tracking_axis: str = "frame",
+    seed_group_by: str = "none",
+    seed_max_axis_gap: "Optional[float]" = None,
+    seed_axis_predictor: bool = True,
     num_workers: int = 1,
 ) -> Dict[str, Any]:
     """Fit peaks for every frame of a Step-1 analysis HDF5 and store the result.
@@ -737,6 +893,12 @@ def run_peak_fitting(
     as ``None``; pass it ``None`` to keep the historical explicit defaults.
     ``auto_range`` fills a blank ``fit_min``/``fit_max`` from
     :func:`auto_fit_range`.
+
+    Seed propagation defaults to historical frame order. For multi-scan series,
+    ``seed_tracking_axis="pressure"`` plus ``seed_group_by="scan"`` propagates
+    seeds along pressure within each scan and never across independent scans.
+    Physical-axis propagation can also predict the next seed center from the
+    previous local drift, matching the unknown-track logic used later in Step 3c.
 
     Writes a ``/peaks`` group with a flat, ragged layout so the per-frame peak
     count can vary:
@@ -767,6 +929,12 @@ def run_peak_fitting(
         raise FileNotFoundError(f"Analysis HDF5 not found: {src}")
     dst = Path(out_h5).expanduser().resolve() if out_h5 else src
 
+    seed_axis_key = _normalize_seed_axis(seed_tracking_axis)
+    seed_group_key = _normalize_seed_group(seed_group_by)
+    seed_axis_values: "Optional[np.ndarray]" = None
+    seed_group_values: "Optional[np.ndarray]" = None
+    seed_group_labels: List[str] = ["all"]
+
     with h5py.File(str(src), "r") as h5:
         bg = h5.get("background")
         if bg is None or "clean" not in bg:
@@ -785,6 +953,17 @@ def run_peak_fitting(
         frames = h5.get("frames")
         excluded = (np.asarray(frames["excluded"][:], dtype=bool)
                     if frames is not None and "excluded" in frames else None)
+        if propagate_seeds:
+            seed_axis_values = np.arange(clean_raw.shape[0], dtype=float)
+            seed_group_values = np.zeros(clean_raw.shape[0], dtype=int)
+            if seed_axis_key != "frame" or seed_group_key != "none":
+                from .unknowns import _tracking_groups, _tracking_values
+                if seed_axis_key != "frame":
+                    seed_axis_key, seed_axis_values, _ = _tracking_values(
+                        h5, seed_axis_key, clean_raw.shape[0])
+                if seed_group_key != "none":
+                    seed_group_key, seed_group_values, seed_group_labels = _tracking_groups(
+                        h5, seed_group_key, clean_raw.shape[0])
 
     # Pick the channel to fit on. "auto" is DATA-driven: when Step 1 diagnosed a
     # spotty/coarse-grained sample (the median-based channels rejected the sample
@@ -804,6 +983,10 @@ def run_peak_fitting(
     n = clean.shape[0]
     if excluded is None or excluded.size != n:
         excluded = np.zeros(n, dtype=bool)
+    if seed_axis_values is None or seed_axis_values.size != n:
+        seed_axis_values = np.arange(n, dtype=float)
+    if seed_group_values is None or seed_group_values.size != n:
+        seed_group_values = np.zeros(n, dtype=int)
 
     # Detection knobs: a sensitivity preset fills any left unset; explicit values
     # win. sensitivity=None keeps the historical defaults (prominence coupled to
@@ -846,11 +1029,19 @@ def run_peak_fitting(
           f"radial[{radial.size}] unit={unit or '?'} source={used_source} "
           f"preset={preset or 'off'} min_snr={r_min_snr} min_prom={prom_txt} "
           f"window={window_factor} fit_win={win_txt}{auto_txt} "
-          f"workers={workers}", flush=True)
+          f"workers={workers} seed_order={seed_axis_key}/{seed_group_key}"
+          f"{' predict' if propagate_seeds and seed_axis_key != 'frame' and seed_axis_predictor else ''}",
+          flush=True)
 
     counts = np.zeros(n, dtype="i4")
     cols: Dict[str, list] = {c: [] for c in _PEAK_COLS}
     frame_idx: list = []
+    ordered_seed_mode = bool(
+        propagate_seeds and (
+            seed_axis_key != "frame" or seed_group_key != "none"
+            or seed_max_axis_gap is not None
+        )
+    )
 
     def _absorb(a, result):
         cc, fl, cols_c = result
@@ -859,12 +1050,42 @@ def run_peak_fitting(
         for c in _PEAK_COLS:
             cols[c].extend(cols_c[c])
 
-    if workers > 1 and n > 1:
+    def _absorb_order(result):
+        order, cc, fl, cols_c = result
+        counts[np.asarray(order, dtype=int)] = np.asarray(cc, dtype="i4")
+        frame_idx.extend(int(x) for x in fl)
+        for c in _PEAK_COLS:
+            cols[c].extend(cols_c[c])
+
+    if ordered_seed_mode:
+        seed_orders = _seed_frame_orders(n, seed_axis_values, seed_axis_key, seed_group_values)
+        payloads = [
+            (radial, clean[order], excluded[order], order, seed_axis_values[order],
+             r_min_snr, window_factor, max_chi2, propagate_seeds, r_prom,
+             r_edge, fit_min, fit_max, r_fwhm, local_baseline_bins,
+             seed_max_axis_gap, bool(seed_axis_predictor and seed_axis_key != "frame"))
+            for order in seed_orders if len(order)
+        ]
+        done = 0
+        if workers > 1 and len(payloads) > 1:
+            with ProcessPoolExecutor(max_workers=workers) as ex:
+                for payload, result in zip(payloads, ex.map(_peaks_order_chunk, payloads)):
+                    _absorb_order(result)
+                    done += int(payload[3].size)
+                    print(f"[PEAKS] {done} {n}", flush=True)
+        else:
+            for payload in payloads:
+                _absorb_order(_peaks_order_chunk(payload))
+                done += int(payload[3].size)
+                print(f"[PEAKS] {done} {n}", flush=True)
+    elif workers > 1 and n > 1:
         ranges = chunk_ranges(n, workers)
         payloads = [(radial, clean[a:b], excluded[a:b], r_min_snr, window_factor,
                      max_chi2, propagate_seeds, r_prom,
                      r_edge, fit_min, fit_max, r_fwhm,
-                     local_baseline_bins) for a, b in ranges]
+                     local_baseline_bins, seed_max_axis_gap,
+                     bool(seed_axis_predictor and seed_axis_key != "frame"))
+                    for a, b in ranges]
         done = 0
         with ProcessPoolExecutor(max_workers=workers) as ex:
             for (a, b), result in zip(ranges, ex.map(_peaks_chunk, payloads)):
@@ -875,8 +1096,18 @@ def run_peak_fitting(
         _absorb(0, _peaks_chunk((radial, clean, excluded, r_min_snr, window_factor,
                                  max_chi2, propagate_seeds, r_prom,
                                  r_edge, fit_min, fit_max, r_fwhm,
-                                 local_baseline_bins)))
+                                 local_baseline_bins, seed_max_axis_gap,
+                                 bool(seed_axis_predictor and seed_axis_key != "frame"))))
         print(f"[PEAKS] {n} {n}", flush=True)
+
+    if frame_idx:
+        frame_arr = np.asarray(frame_idx, dtype="i4")
+        center_arr = np.asarray(cols["center"], dtype=float)
+        row_order = np.lexsort((center_arr, frame_arr))
+        frame_idx = frame_arr[row_order].astype("i4").tolist()
+        for c in _PEAK_COLS:
+            dtype = "i4" if c == "flag" else "f8"
+            cols[c] = np.asarray(cols[c], dtype=dtype)[row_order].tolist()
 
     P = int(counts.sum())
     tmp = dst.with_name(dst.name + ".tmp")
@@ -902,7 +1133,14 @@ def run_peak_fitting(
                              "auto_range": bool(auto_range),
                              "min_fwhm_bins": float(r_fwhm),
                              "local_baseline_bins": int(local_baseline_bins),
-                             "propagate_seeds": bool(propagate_seeds)})
+                             "propagate_seeds": bool(propagate_seeds),
+                             "seed_tracking_axis": str(seed_axis_key),
+                             "seed_group_by": str(seed_group_key),
+                             "seed_group_count": int(len(seed_group_labels)),
+                             "seed_axis_predictor": bool(seed_axis_predictor),
+                             "seed_max_axis_gap": (
+                                 float(seed_max_axis_gap)
+                                 if seed_max_axis_gap is not None else np.nan)})
             gp.create_dataset("counts", data=counts)
             gp.create_dataset("frame", data=np.asarray(frame_idx, dtype="i4"))
             for c in _PEAK_COLS:
@@ -948,6 +1186,11 @@ def run_peak_fitting(
         "fit_max": float(fit_max) if fit_max is not None else None,
         "min_snr": float(r_min_snr), "window_factor": float(window_factor),
         "max_chi2": float(max_chi2),
+        "seed_tracking_axis": str(seed_axis_key),
+        "seed_group_by": str(seed_group_key),
+        "seed_axis_predictor": bool(seed_axis_predictor),
+        "seed_max_axis_gap": (
+            float(seed_max_axis_gap) if seed_max_axis_gap is not None else None),
         "peaks_per_frame_mean": float(counts.mean()) if n else 0.0,
         "median_fwhm_bins": median_fwhm_bins,
         "npt_recommended": npt_recommended,

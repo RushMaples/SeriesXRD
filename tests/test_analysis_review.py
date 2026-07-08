@@ -104,6 +104,7 @@ def main() -> None:
         assert np.all(pm_good["flag"] == 0)
 
     _test_cake_for_frame()
+    _test_frame_data_residual_unknowns()
     print("ANALYSIS REVIEW TEST OK")
 
 
@@ -129,6 +130,56 @@ def _test_cake_for_frame():
         miss = cake_for_frame(red, 3)          # no cake stored for frame 3
         assert not miss["ok"] and "frame 3" in miss["error"]
         assert not cake_for_frame(Path(td) / "nope.h5", 0)["ok"]
+
+
+def _test_frame_data_residual_unknowns():
+    """frame_data exposes /residual/clean, /residual/peaks, and /unknowns/obs."""
+    import h5py
+    from bulkxrd.analysis.review import frame_data, inspect_analysis, structure_report
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "analysis.h5"
+        radial = np.linspace(1.0, 5.0, 20)
+        clean = np.vstack([radial, radial + 10]).astype("f4")
+        with h5py.File(str(p), "w") as h:
+            h.attrs["unit"] = "q_A^-1"
+            h.create_dataset("radial", data=radial)
+            bg = h.create_group("background")
+            bg.create_dataset("clean", data=clean)
+            bg.create_dataset("baseline", data=np.zeros_like(clean))
+            bg.create_dataset("spot_residual", data=np.zeros_like(clean))
+            rg = h.create_group("residual")
+            rg.create_dataset("clean", data=clean * 0.5)
+            rpk = rg.create_group("peaks")
+            rpk.create_dataset("counts", data=np.array([1, 1], "i4"))
+            rpk.create_dataset("frame", data=np.array([0, 1], "i4"))
+            rpk.create_dataset("center", data=np.array([2.0, 3.0]))
+            rpk.create_dataset("amplitude", data=np.array([12.0, 14.0]))
+            rpk.create_dataset("fwhm", data=np.array([0.05, 0.06]))
+            un = h.create_group("unknowns")
+            obs = un.create_group("obs")
+            obs.create_dataset("track", data=np.array([7], "i4"))
+            obs.create_dataset("frame", data=np.array([1], "i4"))
+            obs.create_dataset("center", data=np.array([3.0]))
+            obs.create_dataset("amplitude", data=np.array([14.0]))
+            obs.create_dataset("fwhm", data=np.array([0.06]))
+            tr = un.create_group("tracks")
+            tr.create_dataset("id", data=np.array([7], "i4"))
+            tr.create_dataset("cluster", data=np.array([2], "i4"))
+            cl = un.create_group("clusters")
+            cl.create_dataset("id", data=np.array([2], "i4"))
+
+        info = inspect_analysis(p)
+        assert info["has_residual"] and info["has_unknowns"]
+        assert info["n_residual_peaks"] == 2
+        assert info["n_unknown_obs"] == 1
+        assert "Residual: yes" in structure_report(info)
+
+        fd = frame_data(p, 1)
+        assert fd["ok"]
+        assert np.allclose(fd["residual"], clean[1] * 0.5)
+        assert fd["residual_peaks"][0]["center"] == 3.0
+        assert fd["unknown_obs"][0]["track"] == 7
+        assert fd["unknown_obs"][0]["cluster"] == 2
 
 
 if __name__ == "__main__":
