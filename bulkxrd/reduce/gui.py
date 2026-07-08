@@ -28,6 +28,7 @@ import threading
 from ..core.config import TOOL_NAME, read_json, write_json, ensure_dir, now_iso, now_timestamp, output_base
 from ..core.handoff import load_handoff
 from ..core.naming import next_available_path
+from ..core.processes import terminate_process_tree, worker_popen
 from ..guikit.theme import BG, BG2, FG, ACCENT, ACCENT2, WARN, MUTED, ENTRY_BG
 from ..guikit.tkstyle import apply_dark_theme
 from ..guikit.tooltip import ToolTip as _ToolTip
@@ -644,25 +645,29 @@ class ReductionApp:
         self.cancel_btn.configure(state="normal")
         self.progress.configure(value=0)
         self.progress_label.configure(text="Starting worker ...")
+        self._cancel_requested = False
         self._worker_status = "running"
         self._update_status_bar()
 
         def _worker_thread():
             try:
-                proc = subprocess.Popen(cmd, cwd=backend_dir, stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT, text=True, bufsize=1)
+                proc = worker_popen(cmd, cwd=backend_dir, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, bufsize=1)
                 self._run_proc = proc
                 assert proc.stdout is not None
-                for line in proc.stdout:
-                    line = line.rstrip()
-                    if line.startswith("[PROGRESS]"):
-                        try:
-                            _, done, total = line.split()
-                            self.root.after(0, self._update_progress, int(done), int(total))
-                        except Exception:
-                            pass
-                    else:
-                        self.log(line)
+                try:
+                    for line in proc.stdout:
+                        line = line.rstrip()
+                        if line.startswith("[PROGRESS]"):
+                            try:
+                                _, done, total = line.split()
+                                self.root.after(0, self._update_progress, int(done), int(total))
+                            except Exception:
+                                pass
+                        else:
+                            self.log(line)
+                except (ValueError, OSError):
+                    pass
                 rc = int(proc.wait())
                 self.root.after(0, self._run_done, rc, out_json)
             except Exception as e:
@@ -678,6 +683,15 @@ class ReductionApp:
         self.run_btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
         if returncode != 0:
+            if getattr(self, "_cancel_requested", False):
+                self._cancel_requested = False
+                self._worker_status = "cancelled"
+                self._update_status_bar()
+                self.progress_label.configure(
+                    text="Cancelled — partial output was discarded; run reduction again to write a fresh HDF5.",
+                    foreground=MUTED)
+                self.log("Reduction cancelled by user.", "WARN")
+                return
             self._worker_status = "failed"
             self._update_status_bar()
             self.progress_label.configure(text=f"Failed (return code {returncode})", foreground=WARN)
@@ -726,8 +740,11 @@ class ReductionApp:
     def cancel_reduction(self):
         proc = self._run_proc
         if proc is not None and proc.poll() is None:
-            proc.terminate()
-            self.log("Cancel requested — terminating worker", "WARN")
+            self._cancel_requested = True
+            self.cancel_btn.configure(state="disabled")
+            self.progress_label.configure(text="Cancelling ...", foreground=MUTED)
+            terminate_process_tree(proc)
+            self.log("Cancel requested — stopped worker process tree", "WARN")
 
     # ------------------------------------------------------------------
     # Live watch mode (bulkxrd-watch as a supervised subprocess)
@@ -774,10 +791,10 @@ class ReductionApp:
 
         def _watch_thread():
             try:
-                proc = subprocess.Popen(cmd, cwd=backend_dir,
-                                        stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT,
-                                        text=True, bufsize=1)
+                proc = worker_popen(cmd, cwd=backend_dir,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT,
+                                    text=True, bufsize=1)
                 self._watch_proc = proc
                 assert proc.stdout is not None
                 for line in proc.stdout:
@@ -1454,7 +1471,7 @@ class ReductionApp:
             if confirm and not self.messagebox.askyesno(
                     "Reduction running", "A reduction is still running. Terminate it and exit?"):
                 return False
-            self._run_proc.terminate()
+            terminate_process_tree(self._run_proc)
         wp = getattr(self, "_watch_proc", None)
         if wp is not None and wp.poll() is None:
             if confirm and not self.messagebox.askyesno(

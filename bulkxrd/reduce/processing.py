@@ -142,7 +142,8 @@ def _robust_integrate(ai, image, npt: int, mask, unit: str,
     Fallback chain (pyFAI version differences): ``medfilt1d_ng`` with
     ``quant_min/quant_max`` or a ``quantile=(lo, hi)`` tuple — dispatched by
     *signature inspection*, because pyFAI ignores unknown kwargs instead of
-    raising → legacy ``medfilt1d`` with a percentile tuple → plain median
+    raising → ``medfilt1d_ng`` median when the _ng signature is opaque →
+    legacy ``medfilt1d`` only on old pyFAI with no _ng → plain median
     (estimator ``median(band_unsupported)`` so the caller can warn).
     ``quant_halfwidth<=0`` requests the pure median explicitly.
     """
@@ -167,15 +168,21 @@ def _robust_integrate(ai, image, npt: int, mask, unit: str,
                                quantile=(lo, hi), **extra), band)
                 except TypeError:
                     pass
-        mf = getattr(ai, "medfilt1d", None)
-        if mf is not None:
             try:
-                pct = (round(100.0 * lo, 4), round(100.0 * hi, 4))
-                return (mf(image, npt, mask=mask, unit=unit, percentile=pct,
-                           **extra),
-                        f"percentile_band({pct[0]:.0f}-{pct[1]:.0f})")
+                return (ng(image, npt, mask=mask, unit=unit, **extra),
+                        "median(band_unsupported_ng)")
             except TypeError:
                 pass
+        else:
+            mf = getattr(ai, "medfilt1d", None)
+            if mf is not None:
+                try:
+                    pct = (round(100.0 * lo, 4), round(100.0 * hi, 4))
+                    return (mf(image, npt, mask=mask, unit=unit, percentile=pct,
+                               **extra),
+                            f"percentile_band({pct[0]:.0f}-{pct[1]:.0f})")
+                except TypeError:
+                    pass
     medfilt = ng or ai.medfilt1d
     est = "median" if h <= 0 else "median(band_unsupported)"
     return medfilt(image, npt, mask=mask, unit=unit, **extra), est

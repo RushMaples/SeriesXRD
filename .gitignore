@@ -32,6 +32,7 @@ figures/
 metadata/
 logs/
 previews/
+outputs/
 
 # Logs and editor settings
 *.log

@@ -182,11 +182,67 @@ def test_default_phases_from_identify_group():
         assert names == {"Fe"}, man
 
 
+def test_export_frames_patterns_and_peaks_csv():
+    """The frame-selection export: chosen frames only, chosen channel, and a
+    combined peaks.csv restricted to those frames (flagged rows kept with
+    their flag; phase column present when the attribution exists)."""
+    import csv
+    from bulkxrd.analysis.refine_export import export_frames
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        an = td / "an.h5"
+        _analysis_file(an)
+        # Add a Step-2 peaks table: 2 peaks on frame 0, 1 on frame 1 (flagged),
+        # 1 on frame 3 — with the Step-3a attribution column.
+        with h5py.File(str(an), "r+") as h:
+            gp = h.create_group("peaks")
+            gp.create_dataset("counts", data=np.array([2, 1, 0, 1, 0], "i4"))
+            gp.create_dataset("frame", data=np.array([0, 0, 1, 3], "i4"))
+            gp.create_dataset("center", data=np.array([2.0, 3.0, 2.5, 3.5]))
+            gp.create_dataset("center_err", data=np.full(4, 0.01))
+            gp.create_dataset("amplitude", data=np.array([50.0, 80.0, 20.0, 30.0]))
+            gp.create_dataset("fwhm", data=np.full(4, 0.05))
+            gp.create_dataset("eta", data=np.full(4, 0.3))
+            gp.create_dataset("area", data=np.full(4, 4.0))
+            gp.create_dataset("chi2", data=np.full(4, 1.1))
+            gp.create_dataset("flag", data=np.array([0, 0, 2, 0], "i4"))
+            gp.create_dataset("phase",
+                              data=np.array(["Fe", "", "Fe", "Fe"], dtype=object),
+                              dtype=h5py.string_dtype(encoding="utf-8"))
+
+        out = td / "sel"
+        man = export_frames(an, out, frames=[0, 1], source="clean")
+        assert man["n_frames"] == 2
+        pats = sorted(p.name for p in (out / "patterns").iterdir())
+        # native q + 2θ for exactly frames 0 and 1
+        assert pats == ["frame_0000.xy", "frame_0000_q.xy",
+                        "frame_0001.xy", "frame_0001_q.xy"], pats
+        with (out / "peaks.csv").open() as fh:
+            rows = list(csv.DictReader(fh))
+        assert man["n_peaks"] == 3 == len(rows)          # frame 3 excluded
+        assert {r["frame"] for r in rows} == {"0", "1"}
+        flagged = [r for r in rows if r["frame"] == "1"]
+        assert flagged[0]["flag"] == "2"                  # kept, not dropped
+        assert flagged[0]["phase"] == "Fe"
+        assert rows[0]["filename"] == "frame_0000.tif"
+
+        # channel provenance lands in the .xy header
+        head = (out / "patterns" / "frame_0000_q.xy").read_text().splitlines()[:6]
+        assert any("clean" in ln for ln in head), head
+
+        # peaks=False -> no CSV; frames=None -> non-excluded frames only
+        out2 = td / "all"
+        man2 = export_frames(an, out2, peaks=False)
+        assert man2["n_peaks"] == 0 and not (out2 / "peaks.csv").exists()
+        assert man2["n_frames"] == N_FRAMES - 1           # one excluded frame
+
+
 def main() -> None:
     test_export_patterns_and_instprm()
     test_export_explicit_frames_bypass_excluded()
     test_export_phases_written_and_skipped()
     test_default_phases_from_identify_group()
+    test_export_frames_patterns_and_peaks_csv()
     print("REFINE EXPORT TEST OK")
 
 

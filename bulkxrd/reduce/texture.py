@@ -26,6 +26,14 @@ Same ``/cakes`` layout and ring auto-pick heuristic as
 
 Pure numpy + scipy (ring auto-pick uses ``scipy.signal.find_peaks``); h5py
 only in :func:`run_texture`.
+
+References: H.-R. Wenk & S. Grigull, J. Appl. Cryst. 36 (2003) 1040
+(quantitative texture from synchrotron area-detector images — the azimuthal
+intensity variation this module measures); A. K. Singh, C. Balasingh, H.-K.
+Mao, R. J. Hemley & J. Shu, J. Appl. Phys. 83 (1998) 7567 (lattice strains
+under nonhydrostatic DAC compression — the stress-driven 2-fold analogue;
+note Singh's theory modulates peak POSITION with azimuth, while texture
+modulates INTENSITY, which is one practical way to tell them apart).
 """
 from __future__ import annotations
 

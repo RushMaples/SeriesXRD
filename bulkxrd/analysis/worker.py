@@ -14,9 +14,26 @@ import sys
 from pathlib import Path
 import traceback
 
+
+def _remove_direct_script_dir() -> None:
+    """Prevent sibling modules from shadowing the standard library in script mode."""
+    script_dir = Path(__file__).resolve().parent
+    keep = []
+    for entry in sys.path:
+        try:
+            resolved = (Path(entry).resolve() if entry else Path.cwd().resolve())
+        except (OSError, RuntimeError):
+            keep.append(entry)
+            continue
+        if resolved != script_dir:
+            keep.append(entry)
+    sys.path[:] = keep
+
+
 # Works both as a package module (python -m bulkxrd.analysis.worker) and as a
 # directly-launched script (the GUI runs this file by path in a subprocess).
 if __package__ in (None, ""):
+    _remove_direct_script_dir()
     _pkg_parent = str(Path(__file__).resolve().parents[2])
     if _pkg_parent not in sys.path:
         sys.path.insert(0, _pkg_parent)
@@ -28,6 +45,7 @@ if __package__ in (None, ""):
     from bulkxrd.analysis.phases import load_library, pymatgen_available
     from bulkxrd.analysis.frame_metadata import import_csv_to_analysis
     from bulkxrd.analysis.ml_rank import rank_candidates
+    from bulkxrd.analysis.unknowns import run_unknowns
 else:
     from ..core.config import read_json, write_json, print_status, make_stdio_robust
     from .background import run_background_separation
@@ -37,6 +55,7 @@ else:
     from .phases import load_library, pymatgen_available
     from .frame_metadata import import_csv_to_analysis
     from .ml_rank import rank_candidates
+    from .unknowns import run_unknowns
 
 
 def _as_bool(v, default=False) -> bool:
@@ -264,7 +283,6 @@ def run_analysis(cfg: dict) -> dict:
         # Step 3c: cluster the residual peaks into coherent unknown-phase
         # candidates (cheap; skipped when the residual left nothing behind).
         if _as_bool(cfg.get("run_step3c", True), True) and m3r.get("n_residual_peaks"):
-            from .unknowns import run_unknowns   # local: keeps script-mode bootstrap simple
             m3c = run_unknowns(
                 out_path,
                 min_track_frames=_as_int(cfg.get("unknown_min_frames"), 3),

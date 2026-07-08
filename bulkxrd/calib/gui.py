@@ -26,6 +26,7 @@ from ..core.env import check_dependencies, package_install_command, run_install_
 from ..core.io import read_detector_image
 from ..core.masks import automatic_mask, save_mask_npz, save_mask_preview_png, load_mask_npz, polygon_to_mask
 from ..core.naming import next_available_path
+from ..core.processes import terminate_process_tree, worker_popen
 from ..guikit.theme import BG, BG2, FG, ACCENT, ACCENT2, WARN, BORDER, ENTRY_BG, BTN_BG, BTN_ACT, MUTED
 from ..guikit.tooltip import ToolTip as _ToolTip
 from .dioptas import launch_dioptas, dioptas_manual_instructions
@@ -896,13 +897,16 @@ class CalibrationApp:
 
         def _worker_thread():
             try:
-                proc = subprocess.Popen(
+                proc = worker_popen(
                     cmd, cwd=backend_dir, env=worker_env,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1,
                 )
-                for line in proc.stdout:
-                    self.log(line.rstrip())
+                try:
+                    for line in proc.stdout:
+                        self.log(line.rstrip())
+                except (ValueError, OSError):
+                    pass
                 rc = proc.wait()
                 self.log(f"Preview worker returncode={rc}")
                 self.root.after(0, lambda: self._preview_done(rc, out_json))
@@ -2319,14 +2323,17 @@ class CalibrationApp:
         def _worker_thread():
             try:
                 # FIX A3: stream stdout line-by-line into the log.
-                proc = subprocess.Popen(
+                proc = worker_popen(
                     cmd, cwd=backend_dir, env=worker_env,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1,
                 )
                 self._qa_proc = proc  # retained so shutdown() can terminate it
-                for line in proc.stdout:
-                    self.log(line.rstrip())
+                try:
+                    for line in proc.stdout:
+                        self.log(line.rstrip())
+                except (ValueError, OSError):
+                    pass
                 rc = proc.wait()
                 self.log(f"Worker gen{gen_idx:03d} returncode={rc}")
                 self.root.after(0, lambda: self._qa_worker_done(rc, out_json, gen_idx))
@@ -2669,10 +2676,7 @@ class CalibrationApp:
         # Don't orphan the pyFAI worker: terminate it if still alive.
         proc = getattr(self, "_qa_proc", None)
         if proc is not None and proc.poll() is None:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+            terminate_process_tree(proc)
         self._closing = True  # stop the log-drain poller from rescheduling
         self.save_config(silent=True)
         self.log("Calibration pane closed")

@@ -468,6 +468,11 @@ No JAX installed. No GPU required.
 
 ## Agent skills
 
+### Next-session worklist
+
+Prioritized fixes/features + verification gates + conventions-that-bite for
+the next AI session: `docs/agents/next-session.md`. Read it after this file.
+
 ### Issue tracker
 
 Issues are tracked in GitHub Issues (`rmaples3/BulkXRD`) via the `gh` CLI. See `docs/agents/issue-tracker.md`.

@@ -25,6 +25,12 @@ hand. This module packages everything that step needs into one directory:
   * ``README.md``                 what's in the bundle + a runnable
                                    GSASIIscriptable snippet to load it.
 
+References: B. H. Toby & R. B. Von Dreele, J. Appl. Cryst. 46 (2013) 544
+(GSAS-II; the ``instrument.instprm`` here follows its documented CW powder
+instrument-parameter file layout, with placeholder Caglioti U/V/W meant to be
+refined — see G. Caglioti, A. Paoletti & F. P. Ricci, Nucl. Instrum. 3 (1958)
+223 for the resolution form).
+
 The pattern channel mirrors the Step-2 fit-source reconstruction used
 elsewhere in the analysis stage (see ``heatmap._peaks_fit_source`` /
 ``heatmap.pattern_image``) so the exported pattern is exactly what Step 2 (and
@@ -224,6 +230,140 @@ def _safe_filename(name: str) -> str:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _write_peaks_csv(h5, csv_path: Path, frame_idx: "Sequence[int]",
+                     filenames: "Sequence[str]") -> "Optional[int]":
+    """One combined CSV of every fitted peak in ``frame_idx`` (flagged peaks
+    included with their flag value; the ``phase`` column appears when the
+    Step-3a-removal attribution exists). Returns the row count, or None when
+    the file has no /peaks (Step 2 not run)."""
+    import csv as _csv
+    pk = h5.get("peaks")
+    if pk is None or "center" not in pk:
+        return None
+    want = set(int(i) for i in frame_idx)
+    pk_frame = np.asarray(pk["frame"][:], dtype=int)
+
+    def _col(name, default=np.nan):
+        if name in pk:
+            return np.asarray(pk[name][:])
+        return np.full(pk_frame.size, default)
+    cols = {
+        "center": _col("center"), "center_err": _col("center_err"),
+        "amplitude": _col("amplitude"), "amplitude_err": _col("amplitude_err"),
+        "fwhm": _col("fwhm"), "fwhm_err": _col("fwhm_err"),
+        "eta": _col("eta"), "area": _col("area"), "chi2": _col("chi2"),
+        "flag": (np.asarray(pk["flag"][:], dtype=int)
+                 if "flag" in pk else np.zeros(pk_frame.size, int)),
+    }
+    phase_col = None
+    if "phase" in pk:
+        phase_col = [
+            (s.decode("utf-8", "replace")
+             if isinstance(s, (bytes, bytearray)) else str(s))
+            for s in pk["phase"][:]]
+    n_rows = 0
+    with Path(csv_path).open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["frame", "filename"] + list(cols.keys())
+                   + (["phase"] if phase_col is not None else []))
+        for j in range(pk_frame.size):
+            fi = int(pk_frame[j])
+            if fi not in want:
+                continue
+            row = [fi, filenames[fi] if fi < len(filenames) else ""]
+            row += [cols[k][j] for k in cols]
+            if phase_col is not None:
+                row.append(phase_col[j])
+            w.writerow(row)
+            n_rows += 1
+    return n_rows
+
+
+def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
+                  frames: "Optional[Sequence[int]]" = None,
+                  source: str = "fit", peaks: bool = True) -> Dict[str, Any]:
+    """Export selected frames' REDUCTION/FIT patterns and peak-fitting results.
+
+    The light sibling of :func:`export_refinement_bundle` for everyday
+    "give me these frames" use: per selected frame a two-column ``.xy``
+    pattern of the chosen channel (``frame_####_q.xy`` on the native axis
+    always; ``frame_####.xy`` in 2θ additionally when the wavelength is
+    known), and — with ``peaks=True`` — one combined ``peaks.csv`` holding
+    every fitted peak of those frames (frame, filename, center ± esd,
+    amplitude ± esd, fwhm ± esd, eta, area, chi2, flag, attributed phase).
+    Flagged peaks are included with their flag value so nothing is silently
+    dropped; filter on the ``flag`` column for good-only.
+
+    ``source``: "fit" (what Step 2 actually fitted, default) or any of
+    "clean"/"mean"/"hybrid"/"sigmaclip"/"auto"/"robust" — the reduction-side
+    channels reconstructed exactly as the pipeline does. ``frames=None``
+    exports every non-excluded frame. Returns a manifest.
+    """
+    import h5py  # type: ignore
+
+    src = Path(analysis_h5).expanduser()
+    out = Path(out_dir).expanduser()
+    patterns_dir = out / "patterns"
+    patterns_dir.mkdir(parents=True, exist_ok=True)
+    manifest: Dict[str, Any] = {"n_frames": 0, "files_written": [],
+                                "n_peaks": 0, "unit": "", "wavelength": None,
+                                "source": source}
+
+    with h5py.File(str(src), "r") as h5:
+        unit = str(h5.attrs.get("unit", ""))
+        wl_raw = float(h5.attrs.get("wavelength", 0.0) or 0.0)
+        wavelength = wl_raw if wl_raw > 0 else None
+        manifest["unit"] = unit
+        manifest["wavelength"] = wavelength
+
+        data, source_label = _pattern_source(h5, source)
+        n_total = int(data.shape[0])
+        radial = (np.asarray(h5["radial"][:], dtype=float) if "radial" in h5
+                  else np.arange(data.shape[1], dtype=float))
+        fr = h5.get("frames")
+        filenames: "List[str]" = []
+        if fr is not None and "filename" in fr:
+            filenames = [
+                (s.decode("utf-8", "replace") if isinstance(s, (bytes, bytearray)) else str(s))
+                for s in fr["filename"][:]]
+        excluded = (np.asarray(fr["excluded"][:], dtype=bool)
+                    if (fr is not None and "excluded" in fr
+                        and fr["excluded"].shape[0] == n_total)
+                    else np.zeros(n_total, dtype=bool))
+        if frames is None:
+            frame_idx = [i for i in range(n_total) if not excluded[i]]
+        else:
+            frame_idx = sorted({int(i) for i in frames if 0 <= int(i) < n_total})
+
+        for i in frame_idx:
+            fname = filenames[i] if i < len(filenames) else ""
+            p_native = patterns_dir / f"frame_{i:04d}_q.xy"
+            _write_xy(p_native, radial, data[i], header=_xy_header(
+                axis=unit or "native", native_unit=unit, wavelength=wavelength,
+                source_label=source_label, filename=fname))
+            manifest["files_written"].append(str(p_native))
+            tth = _to_two_theta_deg(radial, unit, wavelength)
+            if tth is not None:
+                p_tth = patterns_dir / f"frame_{i:04d}.xy"
+                _write_xy(p_tth, tth, data[i], header=_xy_header(
+                    axis="2th_deg", native_unit=unit, wavelength=wavelength,
+                    source_label=source_label, filename=fname))
+                manifest["files_written"].append(str(p_tth))
+
+        if peaks:
+            csv_path = out / "peaks.csv"
+            n_rows = _write_peaks_csv(h5, csv_path, frame_idx, filenames)
+            if n_rows is not None:
+                manifest["n_peaks"] = n_rows
+                manifest["files_written"].append(str(csv_path))
+
+    manifest["n_frames"] = len(frame_idx)
+    print(f"[EXPORT] {manifest['n_frames']} frame pattern(s) "
+          f"({source_label}) + {manifest['n_peaks']} peak row(s) -> {out}",
+          flush=True)
+    return manifest
+
+
 def export_refinement_bundle(
     analysis_h5: "str | Path", out_dir: "str | Path", *,
     frames: "Optional[Sequence[int]]" = None,
@@ -402,6 +542,10 @@ def main(argv: "list[str] | None" = None) -> int:
                             "auto", "robust"],
                    help="Pattern channel to export. Default fit (what Step 2 "
                         "actually fitted).")
+    p.add_argument("--peaks", action="store_true",
+                   help="Also write peaks.csv: every fitted peak of the "
+                        "exported frames (center/amplitude/fwhm ± esd, eta, "
+                        "area, chi2, flag, attributed phase).")
     args = p.parse_args(argv)
     frames = ([int(s) for s in args.frames.split(",") if s.strip()]
               if args.frames.strip() else None)
@@ -411,6 +555,25 @@ def main(argv: "list[str] | None" = None) -> int:
         man = export_refinement_bundle(
             args.analysis, args.out_dir, frames=frames, phases=names,
             workspace=(args.workspace or None), source=args.source)
+        if args.peaks:
+            import h5py  # type: ignore
+            with h5py.File(str(Path(args.analysis).expanduser()), "r") as h5:
+                fr = h5.get("frames")
+                fnames = ([s.decode("utf-8", "replace")
+                           if isinstance(s, (bytes, bytearray)) else str(s)
+                           for s in fr["filename"][:]]
+                          if fr is not None and "filename" in fr else [])
+                n_total = (h5["background/clean"].shape[0]
+                           if "background" in h5 else len(fnames))
+                idx = (frames if frames is not None
+                       else list(range(int(n_total))))
+                n_rows = _write_peaks_csv(
+                    h5, Path(args.out_dir) / "peaks.csv", idx, fnames)
+            if n_rows is None:
+                print("[EXPORT] --peaks skipped: no /peaks (run Step 2 first).",
+                      flush=True)
+            else:
+                print(f"[EXPORT] peaks.csv: {n_rows} row(s)", flush=True)
     except (OSError, ValueError, KeyError) as e:
         print(f"[ERROR] {e}", flush=True)
         return 1

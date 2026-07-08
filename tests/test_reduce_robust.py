@@ -6,6 +6,7 @@ patterns at low intensity, inherited by clean = robust − baseline). Stub
 integrators emulate the three pyFAI generations the fallback chain spans.
 """
 import sys
+import warnings
 from pathlib import Path
 import numpy as np
 
@@ -39,15 +40,16 @@ class _SwallowKwargsAI:
     """The observed real-world failure: medfilt1d_ng LOGS AND IGNORES unknown
     kwargs ('Got unknown argument quant_min ...') instead of raising TypeError —
     a naive try/except chain silently returns a pure median. The signature-based
-    dispatch must skip _ng and use the legacy percentile-tuple path."""
+    dispatch must call _ng without quantile kwargs and report that the requested
+    band is unsupported, rather than falling through to deprecated medfilt1d."""
     def medfilt1d_ng(self, image, npt, mask=None, unit=None, **kwargs):
         assert not any(k.startswith("quant") for k in kwargs), \
             "quant kwargs must not be passed to a **kwargs-only _ng"
         return _Res("ng_median")                 # silently a pure median
 
     def medfilt1d(self, image, npt, mask=None, unit=None, percentile=50):
-        if isinstance(percentile, tuple):
-            r = _Res("legacy_band"); r.percentile = percentile; return r
+        warnings.warn("medfilt1d_legacy is deprecated; use medfilt1d_ng",
+                      DeprecationWarning)
         return _Res("legacy_median")
 
 
@@ -76,10 +78,13 @@ def test_quantile_band_preferred():
     assert res.tag == "ng_tuple" and res.quant == (0.45, 0.55)
     assert est.startswith("quantile_band")
 
-    # kwargs-swallowing pyFAI: never a silent median — route to percentile band.
-    res, est = _robust_integrate(_SwallowKwargsAI(), None, 100, None, "q_A^-1", 0.05)
-    assert res.tag == "legacy_band" and res.percentile == (45.0, 55.0)
-    assert est.startswith("percentile_band")
+    # kwargs-swallowing pyFAI: do not call the deprecated legacy medfilt1d path
+    # every frame; use _ng and make the unsupported band explicit.
+    with warnings.catch_warnings(record=True) as got:
+        warnings.simplefilter("always")
+        res, est = _robust_integrate(_SwallowKwargsAI(), None, 100, None, "q_A^-1", 0.05)
+    assert res.tag == "ng_median" and est == "median(band_unsupported_ng)"
+    assert got == []
 
     res, est = _robust_integrate(_LegacyBandAI(), None, 100, None, "q_A^-1", 0.05)
     assert res.tag == "legacy_band" and res.percentile == (45.0, 55.0)
