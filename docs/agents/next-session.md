@@ -30,22 +30,18 @@ from `main` per the repo's operational rules.
 
 ## High-value fixes (small, do early)
 
-1. **`hdf5plugin` is not declared anywhere.** Eiger stacks are usually
-   bitshuffle/LZ4-compressed; `core/io._import_hdf5_plugins()` soft-imports
-   it. Add a pyproject extra (e.g. `stacks = ["hdf5plugin"]`) and mention it
-   in `docs/workflow.md` §3.2 and the README install section.
-2. **CSV `filename` matching vs stack specs.** `frame_metadata._name_keys`
+1. **CSV `filename` matching vs stack specs.** `frame_metadata._name_keys`
    derives basename/stem keys designed for plain files; for stack frames the
    stored name is `run.h5::entry/data/data#000123`, so only an exact-string
    CSV match works. Add spec-aware keys (`run.h5#000123`, index-only within
    one container) + tests in `tests/test_frame_metadata.py`.
-3. **Live watch analysis cost grows linearly.** Each `--analyze-every` cycle
+2. **Live watch analysis cost grows linearly.** Each `--analyze-every` cycle
    re-runs Steps 1-2 over the WHOLE live file (atomic rebuild). Fine to ~1k
    frames; beyond that either thin the cadence automatically (batches since
    last run × file size heuristic) or implement incremental Step-1/2 (append
    to /background & /peaks for new frames only — breaks the atomicity
    convention, so gate it behind the live file's `live_mode` attr only).
-4. **Pytest/CI migration** (README chore): the 25 test modules are
+3. **Pytest/CI migration** (README chore): the 25 test modules are
    main()-runnable; add a thin pytest collector + GitHub Actions workflow
    (no display: skip Xvfb smokes or apt-install xvfb + python3-tk).
    LICENSE and CITATION.cff need the user's input — ask, don't guess.

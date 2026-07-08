@@ -177,7 +177,9 @@ Six tabs, in order:
    `.h5`) are expanded automatically — the scan preview shows the true frame
    count, and "HDF5 data path" pins the frame dataset when the auto-detection
    (NeXus `entry/data/data` first, else the largest 3D image dataset) doesn't
-   match an unusual layout.
+   match an unusual layout. If those stacks are bitshuffle/LZ4-compressed,
+   install `hdf5plugin` first: the conda environment includes it, and pip users
+   can run `pip install -e ".[stacks]"`.
 3. **3 Settings** — integration parameters (binning, unit, channels, cakes,
    thumbnails, workers). See [§4.2](#42-reduction) for the ones that matter.
 4. **4 Run** — launch the crash-isolated worker subprocess, watch a progress

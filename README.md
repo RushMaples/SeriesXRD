@@ -103,8 +103,9 @@ conda activate bulkxrd
 Or with pip (pyFAI wheels are available for most platforms):
 
 ```bash
-pip install -e .          # core dependencies
-pip install -e ".[io]"    # + optional tifffile/imageio/h5py readers
+pip install -e .              # core dependencies, including h5py
+pip install -e ".[io]"        # + optional tifffile reader
+pip install -e ".[stacks]"    # + hdf5plugin for compressed Eiger/HDF5 stacks
 ```
 
 `tkinter` must be available in your Python (it ships with python.org and
@@ -206,6 +207,9 @@ suite would also fix this one file's plain-`python` no-op.
 ## Documentation
 
 - [`docs/workflow.md`](docs/workflow.md) — end-to-end analysis workflow.
+- [`docs/group-meeting-workflow.md`](docs/group-meeting-workflow.md) —
+  compact presenter notes, live-demo path, and result slots for a group
+  meeting workflow presentation.
 - [`docs/ml-training.md`](docs/ml-training.md) — training, validating, and
   deploying the Step-3b learned scorer (cluster-agnostic — works on any
   cluster or workstation).

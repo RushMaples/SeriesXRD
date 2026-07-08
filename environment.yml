@@ -15,9 +15,10 @@ dependencies:
   - pyfai
   - fabio
   - tk
-  # optional image-format readers
+  # optional image/stack readers
   - tifffile
   - imageio
   - h5py
+  - hdf5plugin
   # notebook front-end
   - jupyterlab

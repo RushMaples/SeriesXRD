@@ -34,6 +34,7 @@ from ..core.config import (
     now_iso, now_timestamp, output_base,
 )
 from ..core.naming import next_available_path
+from ..core.processes import terminate_process_tree, worker_popen
 from ..guikit.theme import (
     BG, BG2, FG, ACCENT, ACCENT2, WARN, MUTED, ENTRY_BG,
     CLR_RAW, CLR_MSKD, CLR_SMTH, CLR_DIFF,
@@ -885,7 +886,7 @@ class AnalysisApp:
 
         def _worker_thread():
             try:
-                proc = subprocess.Popen(
+                proc = worker_popen(
                     cmd, cwd=backend_dir,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1,
@@ -1047,8 +1048,8 @@ class AnalysisApp:
             self._cancel_requested = True
             self.cancel_btn.configure(state="disabled")
             self.progress_label.configure(text="Cancelling ...", foreground=MUTED)
-            proc.terminate()
-            self.log("Cancel requested — terminating worker", "WARN")
+            terminate_process_tree(proc)
+            self.log("Cancel requested — stopped worker process tree", "WARN")
 
     # ------------------------------------------------------------------
     # Tab 5 — Review (single-frame QC)
@@ -3887,7 +3888,7 @@ class AnalysisApp:
                     "Analysis running",
                     "An analysis is still running. Terminate it and exit?"):
                 return False
-            self._run_proc.terminate()
+            terminate_process_tree(self._run_proc)
         self._closing = True  # stop the log-drain poller from rescheduling
         self.save_config(silent=True)
         return True

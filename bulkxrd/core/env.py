@@ -20,6 +20,7 @@ REQUIRED_IMPORTS = {
 OPTIONAL_IMPORTS = {
     "tifffile": "tifffile",
     "h5py": "h5py",
+    "hdf5plugin": "hdf5plugin",
 }
 
 @dataclass
@@ -175,6 +176,7 @@ def package_install_command(missing: List[str], python_exe: str, conda_exe: str 
         "fabio": "fabio",
         "tifffile": "tifffile",
         "h5py": "h5py",
+        "hdf5plugin": "hdf5plugin",
     }
     missing = [m for m in missing if m != "tkinter"]
     if conda_exe and conda_env_name:
