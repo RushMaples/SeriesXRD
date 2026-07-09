@@ -4,11 +4,13 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import bulkxrd.analysis.peaks as peaks_mod
 from bulkxrd.analysis.peaks import (
-    pseudo_voigt, pseudo_voigt_area, mad_sigma, detect_peaks,
+    pseudo_voigt, pseudo_voigt_area, pseudo_voigt_jac, mad_sigma, detect_peaks,
     fit_pattern, fit_dataset, FLAG_OK,
     resolve_sensitivity, winsorize_excess, auto_fit_range, build_fit_source,
-    SENSITIVITY_PRESETS, _seed_frame_orders, _predict_seed_centers)
+    SENSITIVITY_PRESETS, _seed_frame_orders, _predict_seed_centers,
+    _fit_ordered_rows)
 
 
 def main() -> None:
@@ -82,7 +84,86 @@ def main() -> None:
     _test_esd_columns()
     _test_group_size_cap()
     _test_seed_tracking_order()
+    _test_pseudo_voigt_jac()
+    _test_seeds_dont_cross_scans()
     print("PEAKS TEST OK")
+
+
+def _test_seeds_dont_cross_scans():
+    """The seed_group_by='scan' setting must keep propagation inside a scan:
+    the first frame of scan B gets NO seed carried from scan A. With grouping
+    off ('none') the same border DOES carry seeds — the behaviour the setting
+    exists to prevent. Exercises the exact seam the driver uses (per-scan orders
+    from _seed_frame_orders, each an independent _fit_ordered_rows pass)."""
+    n_bins = 400
+    radial = np.linspace(1.0, 8.0, n_bins)
+    # 8 frames, 2 scans (A=frames 0-3, B=frames 4-7). Encode each frame's peak
+    # center in its data so the recording stub can report what it was seeded with.
+    centers = np.array([10., 11., 12., 13., 20., 21., 22., 23.])
+    clean = np.repeat(centers[:, None], n_bins, axis=1)      # row i is constant = center_i
+    excluded = np.zeros(8, dtype=bool)
+    scan_ids = np.array([0, 0, 0, 0, 1, 1, 1, 1])            # what _tracking_groups('scan') yields
+    axis = np.arange(8, dtype=float)
+
+    recorded: dict = {}
+
+    def _stub(radial_, y, **kw):                              # stand in for a real fit
+        seeds = kw.get("seed_centers")
+        c = float(y[0])
+        recorded[c] = None if seeds is None else [round(s, 3) for s in seeds]
+        return [{"center": c, "amplitude": 100.0, "fwhm": 0.05, "eta": 0.5,
+                 "area": 1.0, "chi2": 1.0, "flag": FLAG_OK,
+                 "center_err": 0.01, "amplitude_err": 1.0, "fwhm_err": 0.01}]
+
+    def _run(orders):
+        recorded.clear()
+        for order in orders:
+            _fit_ordered_rows(
+                radial, clean[order], excluded[order], np.arange(len(order)),
+                axis[order], min_snr=5.0, window_factor=3.0, max_chi2=25.0,
+                propagate=True, min_prominence_snr=None, edge_bins=0,
+                fit_min=None, fit_max=None, min_fwhm_bins=0.0,
+                local_baseline_bins=0, seed_max_axis_gap=None,
+                seed_axis_predictor=False)
+        return dict(recorded)
+
+    orig = peaks_mod.fit_pattern
+    peaks_mod.fit_pattern = _stub
+    try:
+        scan_orders = _seed_frame_orders(8, axis, "frame", scan_ids)
+        assert [o.tolist() for o in scan_orders] == [[0, 1, 2, 3], [4, 5, 6, 7]]
+        scan_seen = _run(scan_orders)
+        none_seen = _run([np.arange(8)])
+    finally:
+        peaks_mod.fit_pattern = orig
+
+    # scan mode: frame 4 (scan B, center 20) starts a fresh path -> no seed.
+    assert scan_seen[20.0] is None, scan_seen[20.0]
+    assert scan_seen[10.0] is None                         # scan A also starts fresh
+    assert scan_seen[13.0] == [12.0]                       # but propagates WITHIN scan A
+    # grouping off: frame 4 inherits scan A's last good center (13) — cross-border.
+    assert none_seen[20.0] == [13.0], none_seen[20.0]
+
+
+def _test_pseudo_voigt_jac():
+    """The closed-form Jacobian (used to accelerate the least-squares fit) must
+    match central finite differences of :func:`pseudo_voigt` — a wrong sign or
+    factor would silently slow convergence or corrupt the covariance esd's."""
+    x = np.linspace(1.0, 8.0, 400)
+    for c, a, w, e in [(4.0, 300.0, 0.06, 0.4), (2.5, 120.0, 0.03, 0.0),
+                       (6.1, 80.0, 0.09, 1.0)]:
+        d_c, d_a, d_w, d_e = pseudo_voigt_jac(x, c, a, w, e)
+        f = lambda cc, aa, ww, ee: pseudo_voigt(x, cc, aa, ww, ee)
+        num = {
+            "c": (f(c + 1e-6, a, w, e) - f(c - 1e-6, a, w, e)) / 2e-6,
+            "a": (f(c, a + 1e-3, w, e) - f(c, a - 1e-3, w, e)) / 2e-3,
+            "w": (f(c, a, w + 1e-7, e) - f(c, a, w - 1e-7, e)) / 2e-7,
+            "e": (f(c, a, w, e + 1e-6) - f(c, a, w, e - 1e-6)) / 2e-6,
+        }
+        for key, ana in (("c", d_c), ("a", d_a), ("w", d_w), ("e", d_e)):
+            scale = max(np.abs(num[key]).max(), 1e-9)
+            assert np.allclose(ana, num[key], atol=1e-4 * scale, rtol=1e-4), \
+                (c, a, w, e, key, np.abs(ana - num[key]).max(), scale)
 
 
 def _test_group_size_cap():

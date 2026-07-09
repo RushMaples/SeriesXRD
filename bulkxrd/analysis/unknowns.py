@@ -66,7 +66,7 @@ def _elapsed_seconds(raw: np.ndarray) -> np.ndarray:
 def _tracking_values(h5, axis: str, n_frames: int) -> "Tuple[str, np.ndarray, str]":
     """Return per-frame values for the requested tracking axis on an open HDF5."""
     key = (axis or "frame").strip().lower()
-    if key in ("index", ""):
+    if key in ("index", "", "same"):   # "same" = mirror seed order; resolved upstream
         key = "frame"
     if key not in TRACKING_AXES:
         raise ValueError(f"Unknown unknown-tracking axis {axis!r} "
@@ -129,7 +129,7 @@ def _folder_label(name: str) -> str:
 def _tracking_groups(h5, group_by: str, n_frames: int) -> "Tuple[str, np.ndarray, List[str]]":
     """Return per-frame integer group ids plus their display labels."""
     key = (group_by or "none").strip().lower()
-    if key in ("", "all"):
+    if key in ("", "all", "same"):   # "same" = mirror seed grouping; resolved upstream
         key = "none"
     if key not in TRACKING_GROUPS:
         raise ValueError(f"Unknown unknown-tracking group {group_by!r} "

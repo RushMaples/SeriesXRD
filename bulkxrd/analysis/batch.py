@@ -76,11 +76,9 @@ def _run(args) -> int:
             min_fwhm_bins=args.min_fwhm_bins,
             local_baseline_bins=args.detrend_bins,
             propagate_seeds=not args.no_seeds,
-            seed_tracking_axis=args.seed_tracking_axis or args.unknown_tracking_axis,
-            seed_group_by=args.seed_group_by or args.unknown_group_by,
-            seed_max_axis_gap=(
-                args.seed_max_axis_gap
-                if args.seed_max_axis_gap is not None else args.unknown_max_axis_gap),
+            seed_tracking_axis=args.seed_tracking_axis,
+            seed_group_by=args.seed_group_by,
+            seed_max_axis_gap=args.seed_max_axis_gap,
             seed_axis_predictor=not args.no_seed_axis_predictor,
             num_workers=args.workers)
 
@@ -157,9 +155,12 @@ def _run(args) -> int:
                 max_gap=args.unknown_max_gap,
                 min_track_frames=args.unknown_min_frames,
                 jaccard_threshold=args.unknown_jaccard,
-                tracking_axis=args.unknown_tracking_axis,
-                group_by=args.unknown_group_by,
-                max_axis_gap=args.unknown_max_axis_gap,
+                # Mirror the peak-seed order/grouping unless given explicitly.
+                tracking_axis=args.unknown_tracking_axis or args.seed_tracking_axis,
+                group_by=args.unknown_group_by or args.seed_group_by,
+                max_axis_gap=(args.unknown_max_axis_gap
+                              if args.unknown_max_axis_gap is not None
+                              else args.seed_max_axis_gap),
                 axis_predictor=not args.no_unknown_axis_predictor,
             )
 
@@ -241,17 +242,17 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="Detection-only local-baseline window (bins); 0 = off. "
                         "Default 81, same as the GUI.")
     p.add_argument("--no-seeds", action="store_true", help="Disable seed propagation.")
-    p.add_argument("--seed-tracking-axis", default=None,
+    p.add_argument("--seed-tracking-axis", default="frame",
                    choices=["frame", "pressure", "temperature", "time"],
-                   help="Order for peak-seed propagation. Default: follow "
-                        "--unknown-tracking-axis.")
-    p.add_argument("--seed-group-by", default=None,
+                   help="Order for peak-seed propagation (primary; Step 3c can mirror "
+                        "it). Default frame.")
+    p.add_argument("--seed-group-by", default="none",
                    choices=["none", "scan", "folder"],
-                   help="Keep peak-seed propagation inside each group. Default: follow "
-                        "--unknown-group-by.")
+                   help="Keep peak-seed propagation inside each group (primary; Step 3c "
+                        "can mirror it). Default none.")
     p.add_argument("--seed-max-axis-gap", type=float, default=None,
                    help="Optional physical-axis jump that resets peak-seed memory "
-                        "(GPa, K, or seconds). Default: follow --unknown-max-axis-gap.")
+                        "(GPa, K, or seconds). Blank = no cap.")
     p.add_argument("--no-seed-axis-predictor", action="store_true",
                    help="Disable local drift prediction for pressure/temp/time peak seeds.")
     # Step 3a
@@ -287,14 +288,15 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="Permit phases below --min-matched to be subtracted in the residual.")
     p.add_argument("--no-unknowns", action="store_true",
                    help="Skip Step 3c (co-occurrence clustering of residual peaks).")
-    p.add_argument("--unknown-tracking-axis", default="frame",
+    p.add_argument("--unknown-tracking-axis", default=None,
                    choices=["frame", "pressure", "temperature", "time"],
                    help="Axis used to link residual peaks into unknown tracks. "
-                        "Use pressure for pressure-series scans. Default frame.")
-    p.add_argument("--unknown-group-by", default="none",
+                        "Use pressure for pressure-series scans. "
+                        "Default: mirror --seed-tracking-axis.")
+    p.add_argument("--unknown-group-by", default=None,
                    choices=["none", "scan", "folder"],
                    help="Keep independent unknown tracks separate by scanNNN token "
-                        "or parent folder. Default none.")
+                        "or parent folder. Default: mirror --seed-group-by.")
     p.add_argument("--unknown-link-tol-fwhm", type=float, default=1.5,
                    help="Unknown track linking tolerance in fitted FWHM units. Default 1.5.")
     p.add_argument("--unknown-max-gap", type=int, default=2,
