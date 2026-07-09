@@ -56,10 +56,10 @@ _DEFAULTS = {
                                  # noise floor reflects real noise and small peaks aren't
                                  # lost under an inflated global threshold.
     "propagate_seeds": True,
-    "seed_tracking_axis": "same",  # same = follow unknown_tracking_axis; else frame|pressure|temperature|time
-    "seed_group_by": "same",       # same = follow unknown_group_by; else none|scan|folder
-    "seed_axis_predictor": True,   # for physical axes, shift seeds by recent local drift
-    "seed_max_axis_gap": "",       # optional GPa/K/s cap before seed memory resets
+    "seed_tracking_axis": "frame",  # primary seed order; frame|pressure|temperature|time (Step-3c may mirror it)
+    "seed_group_by": "none",        # primary seed grouping; none|scan|folder (Step-3c may mirror it)
+    "seed_axis_predictor": True,    # for physical axes, shift seeds by recent local drift
+    "seed_max_axis_gap": "",        # optional GPa/K/s cap before seed memory resets
     # Step 3 prep — candidate phases (names from the reference-phase library)
     # enabled for compound identification. Edited on the GUI's Phases tab.
     "candidate_phases": [],
@@ -97,10 +97,11 @@ _DEFAULTS = {
     "ml_rank_top_k": "5",
     "ml_rank_source": "auto",      # auto|residual|fit — what to rank against
     "ml_scorer": "",               # ''/'cosine' = deterministic; 'torch:<model.pt>' = trained
-    # Step 3c unknown tracking: frame-order by default; pressure/temperature/time
-    # sort residual peaks by that metadata axis and predict smooth center drift.
-    "unknown_tracking_axis": "frame",  # frame|pressure|temperature|time
-    "unknown_group_by": "none",        # none|scan|folder — keep independent scans separate
+    # Step 3c unknown tracking: mirrors the peak-seed order by default (same =
+    # follow seed_tracking_axis/seed_group_by). Override to sort residual peaks by
+    # a different metadata axis / grouping than the peak seeds used.
+    "unknown_tracking_axis": "same",  # same = follow seed_tracking_axis; else frame|pressure|temperature|time
+    "unknown_group_by": "same",       # same = follow seed_group_by; else none|scan|folder
     "unknown_axis_predictor": True,
     "unknown_link_tol_fwhm": "1.5",
     "unknown_max_gap": "2",          # missing ordered samples tolerated

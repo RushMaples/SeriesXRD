@@ -45,10 +45,15 @@ SCHEMA_VERSION = "1"
 # The window is derived from a d_min cutoff (see phase_reflections): simulating
 # far beyond the instrument's d-range is pure waste — the old fixed 90° window
 # (d >= 0.14 Å) took SECONDS per phase even for cubic cells and minutes for
-# low-symmetry polymorphs, while everything the pipeline consumes lives at
-# d >= ~1 Å (reduce q <= ~6.3 Å⁻¹; the ML d-grid starts at 1.199 Å).
+# low-symmetry polymorphs. The 1.0 Å default is only a fallback: run_identification
+# derives d_min from the reduction's actual q-range (a short-λ beamline reaches
+# q≈11 Å⁻¹ ⇒ d≈0.55 Å, well below 1.0), so higher-order lines are modelled rather
+# than mistaken for unknown phases.
 _SIM_WAVELENGTH = 0.2
 _SIM_D_MIN_DEFAULT = 1.0
+# Strongest-N reflection cap at the reference d_min=1.0; run_identification scales
+# it up with the reciprocal-space volume for wider q-ranges (see sim_max_refl).
+_REFL_CAP_BASE = 40
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +130,7 @@ def wavelength_from_reduced(reduced_path: "str | Path") -> "Optional[float]":
 # Reflections & pressure scaling
 # ---------------------------------------------------------------------------
 
-def phase_reflections(phase: Phase, *, max_reflections: int = 40,
+def phase_reflections(phase: Phase, *, max_reflections: int = _REFL_CAP_BASE,
                       min_rel_intensity: float = 0.01,
                       d_min: float = _SIM_D_MIN_DEFAULT
                       ) -> "Tuple[np.ndarray, np.ndarray, List[str]]":
@@ -133,12 +138,13 @@ def phase_reflections(phase: Phase, *, max_reflections: int = 40,
 
     ``weight`` is the relative intensity normalised to its max. Keeps the
     strongest ``max_reflections`` lines above ``min_rel_intensity`` with
-    d ≥ ``d_min`` (Å). The default 1.0 Å covers the reduce stage's q-range and
-    the ML d-grid; lower it for very high-q instruments. Restricting the
-    simulation window this way also keeps pymatgen fast for low-symmetry
-    cells, and stops sub-Å lines the detector can never see from crowding real
-    lines out of the strongest-``max_reflections`` selection. Requires pymatgen
-    (via :func:`phases.simulate_pattern`).
+    d ≥ ``d_min`` (Å). The 1.0 Å default is a conservative fallback; callers with
+    data should pass a ``d_min`` matched to the reduction's q_max
+    (``run_identification`` does this) so high-q higher-order lines are modelled.
+    Restricting the simulation window this way also keeps pymatgen fast for
+    low-symmetry cells, and stops sub-Å lines the detector can never see from
+    crowding real lines out of the strongest-``max_reflections`` selection.
+    Requires pymatgen (via :func:`phases.simulate_pattern`).
     """
     tt_max = 2.0 * math.degrees(math.asin(
         min(1.0, _SIM_WAVELENGTH / (2.0 * max(float(d_min), 0.05)))))
@@ -751,7 +757,7 @@ def run_identification(
 
         /identify  attrs: schema_version, unit, wavelength, p_min, p_max, rel_tol,
                           phases, pressure_window, pressure_sigma_k, min_matched,
-                          intensity_k, n_temperature
+                          intensity_k, sim_d_min, sim_max_refl, n_temperature
         /identify/<phase>/pressure    (N,)  best-fit pressure (GPa)
         /identify/<phase>/score       (N,)  match score
         /identify/<phase>/confidence  (N,)  conservative confidence (see
@@ -819,6 +825,8 @@ def run_identification(
     with h5py.File(str(src), "r") as h5:
         unit = str(h5.attrs.get("unit", ""))
         stored_wl = float(h5.attrs.get("wavelength", 0.0) or 0.0)
+        radial_axis = (np.asarray(h5["radial"][:], dtype=float)
+                       if "radial" in h5 else None)
         source_reduced = h5.attrs.get("source_reduced", "")
         if isinstance(source_reduced, bytes):
             source_reduced = source_reduced.decode("utf-8", "replace")
@@ -877,6 +885,33 @@ def run_identification(
             radial_err_to_d_err(c, e, unit, wavelength) if c.size else np.zeros(0)
             for c, e in zip(peaks_by_frame, cerrs_by_frame)]
 
+    # Reflection d-range: cover THIS reduction's actual q-range instead of a
+    # fixed 1.0 Å guess. Short-wavelength (high-energy) beamlines reach q≈11 Å⁻¹
+    # (d≈0.55 Å); the old fixed d_min=1.0 (q≤6.3) left every phase's higher-order
+    # lines unmodelled, so real peaks past q≈6.3 — e.g. tungsten 321/400/422, and
+    # because W barely compresses they sit at nearly fixed q across the series —
+    # were harvested as false "unknowns". radial.max() is the detector's q_max →
+    # the smallest visible d. Take the more inclusive of the default and the data
+    # edge so low-q data never over-simulates; floor guards a corrupt axis.
+    sim_d_min = _SIM_D_MIN_DEFAULT
+    if radial_axis is not None and radial_axis.size:
+        try:
+            d_axis = radial_to_d(radial_axis, unit, wavelength)
+            finite = d_axis[np.isfinite(d_axis) & (d_axis > 0)]
+            if finite.size:
+                sim_d_min = max(0.25, min(_SIM_D_MIN_DEFAULT, float(finite.min())))
+        except Exception:
+            pass
+
+    # Strongest-N cap scales with reciprocal-space volume (∝ d_min⁻³): the 40 lines
+    # tuned for d_min=1.0 must grow with the d-range, or a low-symmetry phase's
+    # higher-order lines get crowded out of the top-N — and because the d_min fix
+    # extends the *predicted range* to q_max, an in-range-but-unmodelled observed
+    # peak counts against precision (see _score_pred). Bounded so a large cell can't
+    # explode the predicted comb (which would erode precision on wrong phases).
+    sim_max_refl = int(min(400, max(_REFL_CAP_BASE,
+                                    round(_REFL_CAP_BASE * (1.0 / sim_d_min) ** 3))))
+
     workers = resolve_workers(num_workers)
     print(f"[IDENTIFY] {len(phases)} phase(s), {n} frames "
           f"({int(excluded.sum())} excluded), unit={unit or '?'} "
@@ -894,7 +929,8 @@ def run_identification(
     kept = []
     for ph in phases:
         try:
-            refl_cache[ph.name] = phase_reflections(ph)
+            refl_cache[ph.name] = phase_reflections(
+                ph, d_min=sim_d_min, max_reflections=sim_max_refl)
             kept.append(ph)
         except Exception as e:
             print(f"[IDENTIFY] skipped {ph.name!r}: simulation failed ({e})", flush=True)
@@ -1027,6 +1063,8 @@ def run_identification(
                 "seen_conf": float(seen_conf),
                 "n_pressure_prior": int(n_prior),
                 "intensity_k": float(intensity_k),
+                "sim_d_min": float(sim_d_min),
+                "sim_max_refl": int(sim_max_refl),
                 "n_temperature": int(np.sum(np.isfinite(frame_temperature))
                                      if frame_temperature is not None else 0),
             })

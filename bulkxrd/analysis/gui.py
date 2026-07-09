@@ -103,14 +103,16 @@ HELP: Dict[str, str] = {
         "all frames as ambient temperature."
     ),
     "unknown_tracking_axis": (
-        "Axis used to link residual peaks into unknown tracks. frame preserves "
-        "collection order; pressure/temperature/time sort frames by that metadata "
-        "and allow smooth peak drift along the chosen axis."
+        "Axis used to link residual peaks into unknown tracks. same follows the "
+        "Peaks tab's seed order; frame preserves collection order; "
+        "pressure/temperature/time sort frames by that metadata and allow smooth "
+        "peak drift along the chosen axis."
     ),
     "unknown_group_by": (
-        "Keep independent series separate while tracking unknowns. Use scan for "
-        "datasets named with scan001/scan034-style tokens; use folder when each "
-        "scan lives in its own directory."
+        "Keep independent series separate while tracking unknowns. same follows "
+        "the Peaks tab's seed grouping. Use scan for datasets named with "
+        "scan001/scan034-style tokens; use folder when each scan lives in its "
+        "own directory."
     ),
     "unknown_axis_predictor": (
         "For pressure/temperature/time tracking, extrapolate the next peak center "
@@ -147,6 +149,15 @@ HELP: Dict[str, str] = {
     "contamination_threshold": (
         "Flag frames whose spot-contamination score (sum of positive "
         "spot_residual) exceeds this value. Blank = no flagging."
+    ),
+    "robust_source": (
+        "Spot-suppressed channel Step 1 builds on.\n"
+        "robust = azimuthal median (default).\n"
+        "straightened = cake de-waved median (patterns/intensity_straightened_"
+        "robust). Run the reduce stage's Review → 'Write straightened 1D' first "
+        "(needs saved cakes). Use it when the sample sat off the calibrant "
+        "position and rings arrive as double-horned peaks; cake-less frames fall "
+        "back to the ordinary median automatically."
     ),
     # Step 2
     "peak_source": (
@@ -221,14 +232,15 @@ HELP: Dict[str, str] = {
         "series (compression, heating). Keep on for series data."
     ),
     "seed_tracking_axis": (
-        "Order used for peak-seed propagation. same follows the Unknowns "
-        "tracking axis; pressure/temperature/time sort frames by metadata so "
-        "seeds move along the physical scan instead of raw file order."
+        "Order used for peak-seed propagation (Step 2). frame uses collection "
+        "order; pressure/temperature/time sort frames by metadata so seeds move "
+        "along the physical scan. Step 3c's Unknown tracking can mirror this "
+        "(its 'same')."
     ),
     "seed_group_by": (
-        "Keep seed propagation inside independent series. same follows the "
-        "Unknowns grouping. Use scan for scan001/scan034-style names, or "
-        "folder when each scan lives in its own directory."
+        "Keep seed propagation inside independent series (Step 2). Use scan for "
+        "scan001/scan034-style names, or folder when each scan lives in its own "
+        "directory. Step 3c's Unknown grouping can mirror this (its 'same')."
     ),
     "seed_axis_predictor": (
         "For pressure/temperature/time seed order, shift seed centers by their "
@@ -782,6 +794,8 @@ class AnalysisApp:
         self.checkbox(frame, "use_lls", "Use LLS transform (Log-Log-Sqrt compression)", row=4)
         self.field(frame, "contamination_threshold",
                    "Contamination threshold (blank = off)", row=6, width=14)
+        self.combo(frame, "robust_source", "Background source",
+                   ["robust", "straightened"], row=7, width=14, default="robust")
         _bg_help = ttk.Label(
             frame,
             text=(
@@ -832,19 +846,19 @@ class AnalysisApp:
         seedrow.grid(row=11, column=0, columnspan=6, sticky="w", padx=4, pady=3)
         ttk.Label(seedrow, text="Seed order", foreground=MUTED).pack(side="left", padx=(0, 4))
         self.vars["seed_tracking_axis"] = tk.StringVar(
-            value=str(self.config.get("seed_tracking_axis", "same") or "same"))
+            value=str(self.config.get("seed_tracking_axis", "frame") or "frame"))
         _seed_axis = ttk.Combobox(
             seedrow, textvariable=self.vars["seed_tracking_axis"],
-            values=["same", "frame", "pressure", "temperature", "time"],
+            values=["frame", "pressure", "temperature", "time"],
             state="readonly", width=11)
         _seed_axis.pack(side="left")
         _ToolTip(_seed_axis, HELP["seed_tracking_axis"])
         ttk.Label(seedrow, text="group by", foreground=MUTED).pack(side="left", padx=(10, 2))
         self.vars["seed_group_by"] = tk.StringVar(
-            value=str(self.config.get("seed_group_by", "same") or "same"))
+            value=str(self.config.get("seed_group_by", "none") or "none"))
         _seed_group = ttk.Combobox(
             seedrow, textvariable=self.vars["seed_group_by"],
-            values=["same", "none", "scan", "folder"], state="readonly", width=8)
+            values=["none", "scan", "folder"], state="readonly", width=8)
         _seed_group.pack(side="left")
         _ToolTip(_seed_group, HELP["seed_group_by"])
         self.vars["seed_axis_predictor"] = tk.BooleanVar(
@@ -3000,19 +3014,19 @@ class AnalysisApp:
             side="left", padx=(0, 6))
         ttk.Label(unkrow, text="track by", foreground=MUTED).pack(side="left", padx=(4, 2))
         self.vars["unknown_tracking_axis"] = tk.StringVar(
-            value=str(self.config.get("unknown_tracking_axis", "frame") or "frame"))
+            value=str(self.config.get("unknown_tracking_axis", "same") or "same"))
         _ut_axis = ttk.Combobox(
             unkrow, textvariable=self.vars["unknown_tracking_axis"],
-            values=["frame", "pressure", "temperature", "time"],
+            values=["same", "frame", "pressure", "temperature", "time"],
             state="readonly", width=11)
         _ut_axis.pack(side="left")
         _ToolTip(_ut_axis, HELP["unknown_tracking_axis"])
         ttk.Label(unkrow, text="group by", foreground=MUTED).pack(side="left", padx=(10, 2))
         self.vars["unknown_group_by"] = tk.StringVar(
-            value=str(self.config.get("unknown_group_by", "none") or "none"))
+            value=str(self.config.get("unknown_group_by", "same") or "same"))
         _ut_group = ttk.Combobox(
             unkrow, textvariable=self.vars["unknown_group_by"],
-            values=["none", "scan", "folder"], state="readonly", width=8)
+            values=["same", "none", "scan", "folder"], state="readonly", width=8)
         _ut_group.pack(side="left")
         _ToolTip(_ut_group, HELP["unknown_group_by"])
         ttk.Label(unkrow, text="tol×FWHM", foreground=MUTED).pack(side="left", padx=(10, 2))

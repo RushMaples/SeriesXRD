@@ -53,6 +53,7 @@ FLAG_NO_CONVERGE = 16   # optimizer did not converge
 
 _GAUSS_C = 4.0 * np.log(2.0)          # exp(-_GAUSS_C * (dx/fwhm)^2) has the given FWHM
 _GAUSS_AREA = np.sqrt(np.pi / _GAUSS_C)   # integral of unit-height gaussian / fwhm
+_LN2 = np.log(2.0)                    # gaussian exponent factor (see pseudo_voigt)
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +85,40 @@ def pseudo_voigt_area(amplitude, fwhm, eta) -> np.ndarray:
     lor_area = 0.5 * np.pi * w          # integral of unit-height lorentzian
     gau_area = _GAUSS_AREA * w          # integral of unit-height gaussian
     return a * (e * lor_area + (1.0 - e) * gau_area)
+
+
+def pseudo_voigt_jac(x, center, amplitude, fwhm, eta
+                     ) -> "Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]":
+    """Partial derivatives of :func:`pseudo_voigt`, in the order
+    ``(d/dcenter, d/damplitude, d/dfwhm, d/deta)``.
+
+    Each output has the broadcast shape of the inputs (so ``x[:, None]`` with
+    ``(K,)`` parameters yields (N, K) derivative stacks). This is the closed-form
+    least-squares Jacobian used by :func:`_fit_group`; supplying it to
+    ``scipy.optimize.least_squares`` replaces the finite-difference Jacobian,
+    whose ``(4K+2)`` extra model evaluations per iteration otherwise dominate the
+    whole Step-2 runtime on many-peak patterns.
+    """
+    x = np.asarray(x, float)
+    c = np.asarray(center, float)
+    a = np.asarray(amplitude, float)
+    w = np.asarray(fwhm, float)
+    e = np.asarray(eta, float)
+    dx = x - c
+    inv_w2 = 1.0 / (w * w)
+    z = 4.0 * dx * dx * inv_w2
+    lor = 1.0 / (1.0 + z)
+    gau = np.exp(-_LN2 * z)
+    # d/dcenter of each component; d/dfwhm is d/dcenter times (dx/w) — both carry
+    # the same z chain-rule factor, since z depends on center and fwhm only
+    # through dx/w.
+    dlor_dc = 8.0 * dx * lor * lor * inv_w2
+    dgau_dc = 8.0 * _LN2 * dx * gau * inv_w2
+    d_center = a * (e * dlor_dc + (1.0 - e) * dgau_dc)
+    d_amp = e * lor + (1.0 - e) * gau
+    d_fwhm = d_center * (dx / w)
+    d_eta = a * (lor - gau)
+    return d_center, d_amp, d_fwhm, d_eta
 
 
 # ---------------------------------------------------------------------------
@@ -301,16 +336,39 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
     p0 = np.clip(p0, lb, ub)
     sig = sigma if sigma > 0 else 1.0
 
+    xrel = xw - xc                                 # baseline-slope regressor, cached
+
     def model(p):
         c = p[0:4 * K:4]; a = p[1:4 * K:4]; w = p[2:4 * K:4]; e = p[3:4 * K:4]
         prof = pseudo_voigt(xw[:, None], c[None, :], a[None, :], w[None, :], e[None, :])
-        return prof.sum(axis=1) + p[-2] + p[-1] * (xw - xc)   # peaks + linear baseline
+        return prof.sum(axis=1) + p[-2] + p[-1] * xrel        # peaks + linear baseline
 
     def resid(p):
         return (model(p) - yw) / sig
 
+    # Analytic Jacobian of ``resid``. Without it, ``least_squares`` estimates the
+    # (4K+2)-column Jacobian by finite differences — (4K+2) extra ``model`` evals
+    # per iteration — which dominates the whole Step-2 runtime on many-peak
+    # patterns (the "peak fitting takes forever" cost, seed propagation included,
+    # since propagation only changes WHICH peaks are fitted, not this per-fit
+    # cost). The closed form is exact (a pseudo-Voigt is smooth in every
+    # parameter), so it also gives cleaner covariance esd's than the FD estimate.
+    def jac(p):
+        c = p[0:4 * K:4]; a = p[1:4 * K:4]; w = p[2:4 * K:4]; e = p[3:4 * K:4]
+        dc, da, dw, de = pseudo_voigt_jac(
+            xw[:, None], c[None, :], a[None, :], w[None, :], e[None, :])
+        J = np.empty((xw.size, 4 * K + 2))
+        J[:, 0:4 * K:4] = dc                                   # d/dcenter
+        J[:, 1:4 * K:4] = da                                   # d/damplitude
+        J[:, 2:4 * K:4] = dw                                   # d/dfwhm
+        J[:, 3:4 * K:4] = de                                   # d/deta
+        J[:, -2] = 1.0                                          # d/db0 (intercept)
+        J[:, -1] = xrel                                         # d/db1 (slope)
+        return J / sig
+
     try:
-        sol = least_squares(resid, p0, bounds=(lb, ub), method="trf", max_nfev=200 * (K + 1))
+        sol = least_squares(resid, p0, jac=jac, bounds=(lb, ub), method="trf",
+                            max_nfev=200 * (K + 1))
         converged = bool(sol.success)
         p = sol.x
     except Exception:
@@ -894,11 +952,14 @@ def run_peak_fitting(
     ``auto_range`` fills a blank ``fit_min``/``fit_max`` from
     :func:`auto_fit_range`.
 
-    Seed propagation defaults to historical frame order. For multi-scan series,
-    ``seed_tracking_axis="pressure"`` plus ``seed_group_by="scan"`` propagates
-    seeds along pressure within each scan and never across independent scans.
-    Physical-axis propagation can also predict the next seed center from the
-    previous local drift, matching the unknown-track logic used later in Step 3c.
+    Seed propagation defaults to historical frame order. Set
+    ``seed_group_by="scan"`` (or ``"folder"``) so seeds propagate only WITHIN a
+    scan and never across a scan border — scan identity is parsed from the frame
+    filenames, so a reflection from the end of one scan cannot seed the start of
+    the next. ``seed_tracking_axis="pressure"`` additionally orders the
+    within-group path by pressure instead of frame index. Physical-axis
+    propagation can also predict the next seed center from the previous local
+    drift, matching the unknown-track logic used later in Step 3c.
 
     Writes a ``/peaks`` group with a flat, ragged layout so the per-frame peak
     count can vary:
@@ -987,6 +1048,18 @@ def run_peak_fitting(
         seed_axis_values = np.arange(n, dtype=float)
     if seed_group_values is None or seed_group_values.size != n:
         seed_group_values = np.zeros(n, dtype=int)
+
+    # Scan/folder grouping keeps seed propagation inside one series (no seeds
+    # across a scan border). It is driven entirely by the frame filenames, so if
+    # they carry no scan/folder tag every frame lands in one group and the
+    # setting silently does nothing — warn instead of failing quietly.
+    n_seed_groups = int(np.unique(seed_group_values).size)
+    if propagate_seeds and seed_group_key in ("scan", "folder") and n_seed_groups <= 1:
+        print(f"[PEAKS] WARNING: seed_group_by='{seed_group_key}' but only one "
+              f"{seed_group_key} was found in the frame filenames — seeds will "
+              f"still propagate across the WHOLE series. Check that filenames carry "
+              f"a {seed_group_key} tag (e.g. 'scan001_00007.tif' for scan, or one "
+              f"sub-directory per scan for folder).", flush=True)
 
     # Detection knobs: a sensitivity preset fills any left unset; explicit values
     # win. sensitivity=None keeps the historical defaults (prominence coupled to

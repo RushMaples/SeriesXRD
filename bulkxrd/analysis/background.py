@@ -271,15 +271,27 @@ def run_background_separation(
     n_passes: int = 1,
     use_lls: bool = True,
     contamination_threshold: "Optional[float]" = None,
+    robust_source: str = "robust",
     num_workers: int = 1,
 ) -> Dict[str, Any]:
     """Apply Step-1 background separation to every frame of a reduced HDF5.
+
+    ``robust_source`` selects the spot-suppressed input the whole stage is built
+    on. ``"robust"`` (default) uses the reduce-side azimuthal median
+    (``patterns/intensity_robust``). ``"straightened"`` uses the cake-straightened,
+    de-waved channels written by ``reduce.straighten.straighten_reduced``
+    (``intensity_straightened_robust`` as the median, ``intensity_straightened``
+    as the mean) so a sample-off-calibrant offset no longer splits each ring into
+    a double-horned peak. Frames without a saved cake (straightened = NaN) fall
+    back per-frame to the ordinary channels, and the reduce-side sigmaclip channel
+    (still wavy) is skipped in this mode.
 
     Reads ``patterns/intensity``, ``patterns/intensity_robust``,
     ``patterns/radial`` (and ``frames/...`` for provenance). Writes a
     self-contained analysis HDF5:
 
-        /  attrs: schema_version, source_reduced, unit, wavelength, max_half_window, n_passes
+        /  attrs: schema_version, source_reduced, unit, wavelength, max_half_window,
+                  n_passes, robust_source, n_straightened
         /radial                      (N_bins,)
         /frames/filename             (N,)   copied from the reduced file
         /frames/contamination        (N,)   per-frame spot score
@@ -330,6 +342,13 @@ def run_background_separation(
         # analysis file as a residual so Step 2 can fit on it.
         sigmaclip_all = (np.asarray(pat["intensity_sigmaclip"][:], dtype=float)
                          if "intensity_sigmaclip" in pat else None)
+        # Cake-straightened, de-waved channels (reduce.straighten). The median is
+        # spot-suppressed like intensity_robust; the mean like intensity. Only
+        # consumed when robust_source="straightened" (below).
+        straight_mean_all = (np.asarray(pat["intensity_straightened"][:], dtype=float)
+                             if "intensity_straightened" in pat else None)
+        straight_median_all = (np.asarray(pat["intensity_straightened_robust"][:], dtype=float)
+                               if "intensity_straightened_robust" in pat else None)
         radial = np.asarray(pat["radial"][:], dtype=float) if "radial" in pat else None
         unit = str(h5.attrs.get("unit", ""))
         poni = h5.attrs.get("poni_text", "")
@@ -363,6 +382,36 @@ def run_background_separation(
             [x.decode("utf-8", "replace") if isinstance(x, (bytes, bytearray)) else str(x)
              for x in frames["timestamp"][:]]
             if frames is not None and "timestamp" in frames else None)
+
+    # De-waved (straightened) mode: swap the median/mean inputs for the
+    # cake-straightened channels so every downstream product (clean, baseline,
+    # spot_residual, contamination) is computed on single, un-split rings. Per
+    # frame, keep the straightened value where finite and fall back to the
+    # ordinary channel elsewhere (cake-less frames stay all-NaN in straightened →
+    # fully ordinary; NaN edge bins within a straightened row are filled too).
+    robust_source = (robust_source or "robust").strip().lower()
+    n_straightened = 0
+    if robust_source == "straightened":
+        if straight_median_all is None or straight_mean_all is None:
+            raise ValueError(
+                "robust_source='straightened' but the reduced file has no "
+                "patterns/intensity_straightened_robust. Click 'Write straightened "
+                "1D' on the reduce stage's Review tab first (it needs saved cakes).")
+        if straight_median_all.shape != robust_all.shape:
+            raise ValueError(
+                "intensity_straightened_robust shape "
+                f"{straight_median_all.shape} != intensity_robust "
+                f"{robust_all.shape}; re-run 'Write straightened 1D'.")
+        have = np.isfinite(straight_median_all).any(axis=1)
+        robust_all = np.where(np.isfinite(straight_median_all) & have[:, None],
+                              straight_median_all, robust_all)
+        mean_all = np.where(np.isfinite(straight_mean_all) & have[:, None],
+                            straight_mean_all, mean_all)
+        sigmaclip_all = None          # reduce sigmaclip is still wavy — don't mix
+        n_straightened = int(have.sum())
+        print(f"[ANALYSIS] background source = straightened "
+              f"({n_straightened}/{have.size} frames de-waved; the rest fall back "
+              f"to the azimuthal median)", flush=True)
 
     n, nb = mean_all.shape
     if excluded is None or excluded.size != n:
@@ -500,6 +549,8 @@ def run_background_separation(
                 "max_half_window": int(max_half_window), "n_passes": int(n_passes),
                 "use_lls": bool(use_lls),
                 "has_sigmaclip": bool(sigmaclip_residual is not None),
+                "robust_source": robust_source,
+                "n_straightened": int(n_straightened),
                 "signal_frac_clean": float(diag["signal_frac_clean"]),
                 "spotty_sample": bool(diag["spotty_sample"]),
             })
@@ -564,6 +615,8 @@ def run_background_separation(
         "contamination_threshold": contamination_threshold,
         "n_flagged": int(flagged.sum()) if flagged is not None else None,
         "has_sigmaclip": bool(sigmaclip_residual is not None),
+        "robust_source": robust_source,
+        "n_straightened": int(n_straightened),
         "signal_frac_clean": diag["signal_frac_clean"],
         "spotty_sample": diag["spotty_sample"],
         "contamination_min": float(np.min(contam)) if n else 0.0,

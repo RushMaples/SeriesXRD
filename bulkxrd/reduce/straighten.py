@@ -185,8 +185,15 @@ def straighten_cake(cake: np.ndarray, radial: np.ndarray,
 def straighten_reduced(reduced_h5: "str | Path", *, n_rings: int = 3
                        ) -> Dict[str, Any]:
     """Straighten every cake in a reduced HDF5 and write the corrected 1D
-    channels back (atomically): ``/patterns/intensity_straightened`` and
-    ``/frames/waviness_A1``.
+    channels back (atomically): ``/patterns/intensity_straightened`` (azimuthal
+    MEAN), ``/patterns/intensity_straightened_robust`` (azimuthal MEDIAN,
+    spot-suppressed) and ``/frames/waviness_A1``.
+
+    Two channels mirror ``intensity`` / ``intensity_robust``: the mean keeps
+    azimuthally-sparse intensity but also the diamond single-crystal spots, the
+    median rejects the spots. The analysis Step-1 ``robust_source="straightened"``
+    consumes the median (de-waved AND spot-suppressed) in place of the ordinary
+    ``intensity_robust`` so peak fitting sees single, un-split rings.
 
     The straightened pattern lives on the CAKE's radial grid internally and is
     interpolated onto ``/patterns/radial``; frames without a saved cake (a
@@ -214,7 +221,17 @@ def straighten_reduced(reduced_h5: "str | Path", *, n_rings: int = 3
         fidx = (np.asarray(g["frame_index"][:], int) if "frame_index" in g
                 else np.arange(g["intensity"].shape[0]))
         straight = np.full((n_frames, radial_1d.size), np.nan, "f4")
+        straight_med = np.full((n_frames, radial_1d.size), np.nan, "f4")
         A1 = np.full(n_frames, np.nan, "f8")
+
+        def _onto_1d(y):
+            """Interpolate a cake-grid 1D profile onto the pattern radial axis."""
+            fin = np.isfinite(y)
+            if fin.sum() <= 4:
+                return None
+            return np.interp(radial_1d, cake_radial[fin], np.asarray(y)[fin],
+                             left=np.nan, right=np.nan)
+
         for k in range(g["intensity"].shape[0]):
             fr = int(fidx[k])
             if not (0 <= fr < n_frames):
@@ -223,11 +240,14 @@ def straighten_reduced(reduced_h5: "str | Path", *, n_rings: int = 3
                                   cake_radial, az, n_rings=n_rings)
             if not res["ok"]:
                 continue
-            y = res["intensity"]
-            fin = np.isfinite(y)
-            if fin.sum() > 4:
-                straight[fr] = np.interp(radial_1d, cake_radial[fin], y[fin],
-                                         left=np.nan, right=np.nan)
+            ym = _onto_1d(res["intensity"])
+            if ym is not None:
+                straight[fr] = ym
+            ymed = res.get("intensity_median")
+            if ymed is not None:
+                yd = _onto_1d(ymed)
+                if yd is not None:
+                    straight_med[fr] = yd
             best = max((f for f in res["fits"] if f["ok"]),
                        key=lambda f: f["A1"], default=None)
             if best:
@@ -242,6 +262,10 @@ def straighten_reduced(reduced_h5: "str | Path", *, n_rings: int = 3
                 del gp["intensity_straightened"]
             gp.create_dataset("intensity_straightened", data=straight,
                               compression="gzip", compression_opts=1)
+            if "intensity_straightened_robust" in gp:
+                del gp["intensity_straightened_robust"]
+            gp.create_dataset("intensity_straightened_robust", data=straight_med,
+                              compression="gzip", compression_opts=1)
             gf = o.require_group("frames")
             if "waviness_A1" in gf:
                 del gf["waviness_A1"]
@@ -253,7 +277,7 @@ def straighten_reduced(reduced_h5: "str | Path", *, n_rings: int = 3
         raise
     done = int(np.isfinite(A1).sum())
     print(f"[STRAIGHTEN] {done}/{n_frames} frames straightened -> "
-          f"/patterns/intensity_straightened (median A1="
+          f"/patterns/intensity_straightened (+_robust) (median A1="
           f"{np.nanmedian(A1) if done else float('nan'):.4g})", flush=True)
     return {"out_h5": str(src), "n_frames": int(n_frames),
             "n_straightened": done,

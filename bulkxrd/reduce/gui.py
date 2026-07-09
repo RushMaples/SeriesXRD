@@ -885,9 +885,11 @@ class ReductionApp:
         _ToolTip(_str_btn, (
             "Rescue channel for wavy data you can't re-collect or re-reduce: "
             "aligns each cake's rings before averaging and writes the corrected "
-            "pattern to /patterns/intensity_straightened (plus /frames/"
-            "waviness_A1). Frames without a saved cake stay NaN. Lower radial "
-            "resolution than a proper re-reduction — prefer fixing the geometry."))
+            "mean + spot-suppressed median to /patterns/intensity_straightened "
+            "(+_robust) plus /frames/waviness_A1. Frames without a saved cake "
+            "stay NaN. Then in Analysis → Background set 'Background source = "
+            "straightened' to fit de-waved rings. Lower radial resolution than a "
+            "proper re-reduction — prefer fixing the geometry."))
         self._straighten_status = ttk.Label(ctrl, text="", foreground=MUTED)
         self._straighten_status.pack(side="left", padx=12)
         paned = ttk.PanedWindow(frame, orient="horizontal")

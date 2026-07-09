@@ -124,6 +124,7 @@ def run_analysis(cfg: dict) -> dict:
             n_passes=_as_int(cfg.get("n_passes"), 1),
             use_lls=_as_bool(cfg.get("use_lls", True), True),
             contamination_threshold=thr,
+            robust_source=str(cfg.get("robust_source", "robust") or "robust"),
             num_workers=num_workers,
         )
         out_path = m1["out_h5"]
@@ -184,15 +185,12 @@ def run_analysis(cfg: dict) -> dict:
             min_fwhm_bins=_opt_float(cfg.get("min_fwhm_bins")),
             local_baseline_bins=_as_int(cfg.get("detrend_bins"), 0),
             propagate_seeds=_as_bool(cfg.get("propagate_seeds", True), True),
-            seed_tracking_axis=_same_or_value(
-                cfg, "seed_tracking_axis", "unknown_tracking_axis", "frame"),
-            seed_group_by=_same_or_value(
-                cfg, "seed_group_by", "unknown_group_by", "none"),
-            seed_max_axis_gap=_opt_float(
-                cfg.get("seed_max_axis_gap", cfg.get("unknown_max_axis_gap", ""))),
-            seed_axis_predictor=_as_bool(
-                cfg.get("seed_axis_predictor", cfg.get("unknown_axis_predictor", True)),
-                True),
+            # Peak-seed order/grouping is PRIMARY (Step 3c may mirror it via
+            # "same"). run_peak_fitting normalizes a stale "same" to frame/none.
+            seed_tracking_axis=str(cfg.get("seed_tracking_axis", "frame") or "frame"),
+            seed_group_by=str(cfg.get("seed_group_by", "none") or "none"),
+            seed_max_axis_gap=_opt_float(cfg.get("seed_max_axis_gap", "")),
+            seed_axis_predictor=_as_bool(cfg.get("seed_axis_predictor", True), True),
             num_workers=num_workers,
         )
         out_path = m2["out_h5"]
@@ -313,10 +311,17 @@ def run_analysis(cfg: dict) -> dict:
                 max_gap=_as_int(cfg.get("unknown_max_gap"), 2),
                 min_track_frames=_as_int(cfg.get("unknown_min_frames"), 3),
                 jaccard_threshold=_as_float(cfg.get("unknown_jaccard"), 0.6),
-                tracking_axis=str(cfg.get("unknown_tracking_axis", "frame") or "frame"),
-                group_by=str(cfg.get("unknown_group_by", "none") or "none"),
-                max_axis_gap=_opt_float(cfg.get("unknown_max_axis_gap")),
-                axis_predictor=_as_bool(cfg.get("unknown_axis_predictor", True), True),
+                # Unknown tracking mirrors the peak-seed settings unless overridden
+                # ("same" / blank -> follow the seed_* values used in Step 2).
+                tracking_axis=_same_or_value(
+                    cfg, "unknown_tracking_axis", "seed_tracking_axis", "frame"),
+                group_by=_same_or_value(
+                    cfg, "unknown_group_by", "seed_group_by", "none"),
+                max_axis_gap=_opt_float(
+                    cfg.get("unknown_max_axis_gap", cfg.get("seed_max_axis_gap", ""))),
+                axis_predictor=_as_bool(
+                    cfg.get("unknown_axis_predictor", cfg.get("seed_axis_predictor", True)),
+                    True),
             )
             manifest["step3_unknowns"] = m3c
             manifest["steps"].append("unknowns")
