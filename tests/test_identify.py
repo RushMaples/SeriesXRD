@@ -232,6 +232,94 @@ def _synth_au():
     return au, (d0, w, hkl)
 
 
+def test_reflection_d_min_tracks_data_qrange():
+    """Regression: the reflection d_min must follow the reduction's actual q-range,
+    not the fixed 1.0 Å fallback. A short-wavelength run reaching q≈11.3 Å⁻¹ must
+    request reflections down to d≈0.55 Å, so a phase's higher-order lines (e.g.
+    tungsten 321/400/422 — which barely shift because W hardly compresses) are
+    modelled instead of surfacing as false "unknown" clusters."""
+    import h5py
+    au, au_refl = _synth_au()
+    q = np.linspace(0.02, 11.3, 1500)               # short-λ axis: d_min ≈ 0.556 Å
+    expected = 2 * np.pi / q.max()
+    with tempfile.TemporaryDirectory() as td:
+        h5p = Path(td) / "an.h5"
+        k, n_frames = 4, 2
+        centers = 2 * np.pi / au_refl[0][:k]        # ambient Au lines as q
+        with h5py.File(str(h5p), "w") as h5:
+            h5.attrs["unit"] = "q_A^-1"
+            h5.attrs["source_reduced"] = "synthetic"
+            h5.create_dataset("radial", data=q)
+            gp = h5.create_group("peaks")
+            gp.create_dataset("counts", data=np.full(n_frames, k, "i4"))
+            gp.create_dataset("frame", data=np.repeat(np.arange(n_frames), k).astype("i4"))
+            gp.create_dataset("center", data=np.tile(centers, n_frames).astype("f8"))
+            gp.create_dataset("flag", data=np.zeros(n_frames * k, "i4"))
+
+        seen = {}
+        real_avail, real_refl = idf.pymatgen_available, idf.phase_reflections
+        idf.pymatgen_available = lambda: True
+
+        def spy(phase, **kw):
+            seen["d_min"] = kw.get("d_min")
+            seen["max_reflections"] = kw.get("max_reflections")
+            return au_refl
+        idf.phase_reflections = spy
+        try:
+            idf.run_identification(h5p, [au], p_min=0, p_max=200, rel_tol=0.01)
+        finally:
+            idf.pymatgen_available, idf.phase_reflections = real_avail, real_refl
+
+        # run_identification derived d_min from the axis (well below the 1.0 fallback)
+        assert seen["d_min"] is not None
+        assert abs(seen["d_min"] - expected) < 0.02, seen["d_min"]
+        assert seen["d_min"] < 0.6
+        # ...and scaled the strongest-N cap up with the reciprocal-space volume
+        assert seen["max_reflections"] > idf._REFL_CAP_BASE
+        assert seen["max_reflections"] == int(min(400, max(
+            idf._REFL_CAP_BASE, round(idf._REFL_CAP_BASE * (1.0 / seen["d_min"]) ** 3))))
+        # ...and recorded both as provenance
+        with h5py.File(str(h5p), "r") as h5:
+            assert abs(float(h5["identify"].attrs["sim_d_min"]) - expected) < 0.02
+            assert int(h5["identify"].attrs["sim_max_refl"]) == seen["max_reflections"]
+
+
+def test_reflection_d_min_falls_back_without_axis():
+    """No /radial axis (or a low-q one) → keep the conservative 1.0 Å fallback
+    rather than truncating anything the data actually reaches."""
+    import h5py
+    au, au_refl = _synth_au()
+    with tempfile.TemporaryDirectory() as td:
+        h5p = Path(td) / "an.h5"
+        k, n_frames = 4, 2
+        centers = 2 * np.pi / au_refl[0][:k]
+        with h5py.File(str(h5p), "w") as h5:
+            h5.attrs["unit"] = "q_A^-1"
+            h5.attrs["source_reduced"] = "synthetic"
+            gp = h5.create_group("peaks")            # deliberately no /radial
+            gp.create_dataset("counts", data=np.full(n_frames, k, "i4"))
+            gp.create_dataset("frame", data=np.repeat(np.arange(n_frames), k).astype("i4"))
+            gp.create_dataset("center", data=np.tile(centers, n_frames).astype("f8"))
+            gp.create_dataset("flag", data=np.zeros(n_frames * k, "i4"))
+
+        seen = {}
+        real_avail, real_refl = idf.pymatgen_available, idf.phase_reflections
+        idf.pymatgen_available = lambda: True
+
+        def spy(phase, **kw):
+            seen["d_min"] = kw.get("d_min")
+            seen["max_reflections"] = kw.get("max_reflections")
+            return au_refl
+        idf.phase_reflections = spy
+        try:
+            idf.run_identification(h5p, [au], p_min=0, p_max=200, rel_tol=0.01)
+        finally:
+            idf.pymatgen_available, idf.phase_reflections = real_avail, real_refl
+
+        assert seen["d_min"] == idf._SIM_D_MIN_DEFAULT
+        assert seen["max_reflections"] == idf._REFL_CAP_BASE   # no range → no scale-up
+
+
 def test_conservative_confidence():
     cc = idf.conservative_confidence
     # Old max(recall,precision)=1.0 here; the balanced+evidence form is < that.
