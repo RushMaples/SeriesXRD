@@ -124,6 +124,7 @@ def run_analysis(cfg: dict) -> dict:
             n_passes=_as_int(cfg.get("n_passes"), 1),
             use_lls=_as_bool(cfg.get("use_lls", True), True),
             contamination_threshold=thr,
+            robust_source=str(cfg.get("robust_source", "robust") or "robust"),
             num_workers=num_workers,
         )
         out_path = m1["out_h5"]

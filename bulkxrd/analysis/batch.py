@@ -41,6 +41,7 @@ def _run(args) -> int:
             max_half_window=args.max_half_window, n_passes=args.n_passes,
             use_lls=not args.no_lls,
             contamination_threshold=args.contamination_threshold,
+            robust_source=args.robust_source,
             num_workers=args.workers)
         analysis_path = m1["out_h5"]
     elif not analysis_path:
@@ -199,6 +200,12 @@ def main(argv: "list[str] | None" = None) -> int:
     p.add_argument("--n-passes", type=int, default=1)
     p.add_argument("--no-lls", action="store_true", help="Disable the LLS transform.")
     p.add_argument("--contamination-threshold", type=float, default=None)
+    p.add_argument("--robust-source", default="robust",
+                   choices=["robust", "straightened"],
+                   help="Spot-suppressed channel Step 1 builds on. 'straightened' uses "
+                        "the cake de-waved patterns/intensity_straightened_robust "
+                        "(run reduce 'Write straightened 1D' first) so off-calibrant "
+                        "waviness no longer splits rings into double-horned peaks.")
     # Step 2
     p.add_argument("--source", default="auto",
                    choices=["auto", "hybrid", "sigmaclip", "clean", "mean"],

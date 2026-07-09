@@ -148,6 +148,15 @@ HELP: Dict[str, str] = {
         "Flag frames whose spot-contamination score (sum of positive "
         "spot_residual) exceeds this value. Blank = no flagging."
     ),
+    "robust_source": (
+        "Spot-suppressed channel Step 1 builds on.\n"
+        "robust = azimuthal median (default).\n"
+        "straightened = cake de-waved median (patterns/intensity_straightened_"
+        "robust). Run the reduce stage's Review → 'Write straightened 1D' first "
+        "(needs saved cakes). Use it when the sample sat off the calibrant "
+        "position and rings arrive as double-horned peaks; cake-less frames fall "
+        "back to the ordinary median automatically."
+    ),
     # Step 2
     "peak_source": (
         "Signal the peaks are fit on. auto (default) = the reduce-side sigmaclip "
@@ -782,6 +791,8 @@ class AnalysisApp:
         self.checkbox(frame, "use_lls", "Use LLS transform (Log-Log-Sqrt compression)", row=4)
         self.field(frame, "contamination_threshold",
                    "Contamination threshold (blank = off)", row=6, width=14)
+        self.combo(frame, "robust_source", "Background source",
+                   ["robust", "straightened"], row=7, width=14, default="robust")
         _bg_help = ttk.Label(
             frame,
             text=(

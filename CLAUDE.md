@@ -24,8 +24,10 @@ bulkxrd/
     session.py      config seeding
     review.py       read-only reduced-HDF5 inspector + gallery frame metadata
     straighten.py   cake-waviness diagnosis (sample-off-calibrant offset →
-                    double-horned 1D peaks) + straightened-1D rescue channel
-                    (straighten_reduced → /patterns/intensity_straightened)
+                    double-horned 1D peaks) + straightened-1D rescue channels
+                    (straighten_reduced → /patterns/intensity_straightened [mean]
+                    + intensity_straightened_robust [spot-suppressed median]);
+                    analysis Step 1 robust_source="straightened" consumes them
     texture.py      azimuthal texture metrics per saved cake (bulkxrd-texture):
                     texture index, spot fraction, PO 2nd harmonic -> /texture
     watch.py        live/during-beamtime mode (bulkxrd-watch): polls the dataset
@@ -99,6 +101,13 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
 /patterns/intensity_sigmaclip (N_frames, N_bins) azimuthal SIGMA-CLIPPED trimmed mean
                                                   (optional; keeps textured-ring peaks the
                                                   median drops while rejecting diamond spots)
+/patterns/intensity_straightened          (N_frames, N_bins)  optional; cake-de-waved
+                                                  azimuthal MEAN (reduce/straighten.py)
+/patterns/intensity_straightened_robust   (N_frames, N_bins)  optional; cake-de-waved
+                                                  spot-suppressed MEDIAN. NaN for frames
+                                                  without a saved cake. Analysis Step 1
+                                                  robust_source="straightened" fits these
+                                                  (per-frame fallback to the median)
 /patterns/radial             (N_bins,)            q or 2θ axis
 /cakes/intensity             (N_cakes, N_radial, N_azimuthal)  optional
 /cakes/radial, /cakes/azimuthal, /cakes/frame_index
@@ -124,7 +133,9 @@ comes from a normal full reduction afterwards. `--resume` continues one.
 
 ```
 /  attrs: schema_version="1", source_reduced, unit, max_half_window, n_passes, use_lls,
-          has_sigmaclip, signal_frac_clean + spotty_sample (Step-1 channel diagnosis: a
+          has_sigmaclip, robust_source (robust|straightened) + n_straightened (frames
+          de-waved when robust_source=straightened; skips sigmaclip in that mode),
+          signal_frac_clean + spotty_sample (Step-1 channel diagnosis: a
           coarse-grained sample whose Bragg signal the azimuthal median rejects →
           Step-2 source="auto" falls through to "mean"), npt_1d/npt_1d_mode/
           npt_1d_suggested (binning provenance carried from the reduced file)
