@@ -63,6 +63,14 @@ bulkxrd/
     microstructure.py  Williamson-Hall size/strain per frame (esd-weighted,
                     dq = 2piK/D + 2*eps*q; instrument profile optional and the
                     output is flagged uncorrected without one)
+    spots.py        cake-space single-crystal spot tracker (bulkxrd-spots):
+                    per-cake azimuthal-median-excess blob detection (powder
+                    rings cancel structurally; diamond lines + attributed
+                    peaks excluded), then gap-tolerant (azimuth, q) linking
+                    across the pressure ladder WITHIN each scanNNN group
+                    (one scan = one sample position; its frames step through
+                    the pressures) -> /spots with per-track d(P) + d0;
+                    matcher vs calculated reflection lists (NLC measurement)
     categorization.py  user's workflow spec (read-only notes)
   app.py         top-level launcher that embeds all stages
 tests/
@@ -308,6 +316,18 @@ truncation, noise) on the same grid.
                  (intensity_share|rir). Semi-quantitative by design.
 /microstructure  microstructure.py williamson_hall(): size_A, strain, r2 per
                  frame (flagged uncorrected without an instrument profile)
+/spots           spots.py (bulkxrd-spots): single-crystal reflections tracked
+                 in CAKE space (reads the reduced file's /cakes; target =
+                 analysis file if given, else <reduced>_spots.h5 — the big
+                 reduced file is never rewritten). obs/ per-frame blob
+                 detections with pressure + d (azimuthal-median excess;
+                 diamond lines + /peaks/phase-attributed q's excluded) — a
+                 track's obs rows ARE its d(P) table; scans/ scanNNN groups
+                 (one scan = one sample position whose frames step the
+                 pressure ladder); tracks/ within-scan pressure-ordered
+                 (azimuth, q) links with d0 (lowest-P d, for matching
+                 calculated reflection lists) and dd_dp (Å/GPa; positive =
+                 negative linear compressibility)
 ```
 
 All HDF5 writes are atomic: `.tmp` file + `os.replace` (one deliberate

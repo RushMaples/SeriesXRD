@@ -28,6 +28,7 @@ mods = [
     'bulkxrd.analysis.benchmark', 'bulkxrd.analysis.corpus',
     'bulkxrd.analysis.unknowns', 'bulkxrd.analysis.microstructure',
     'bulkxrd.analysis.fractions', 'bulkxrd.analysis.refine_export',
+    'bulkxrd.analysis.spots',
     'bulkxrd.reduce.straighten', 'bulkxrd.reduce.texture',
     'bulkxrd.reduce.watch',
 ]
