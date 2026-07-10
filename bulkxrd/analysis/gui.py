@@ -1178,6 +1178,15 @@ class AnalysisApp:
             "(channel of your choice) and optionally its fitted peaks as "
             "peaks.csv. Select several frames on the Frame meta tab to "
             "export a batch."))
+        _rev_ringless = ttk.Button(ctrl, text="Ringless cake…",
+                                   command=self.review_export_ringless_clicked)
+        _rev_ringless.pack(side="left", padx=4)
+        _ToolTip(_rev_ringless, (
+            "Export this frame's cake with the powder rings removed (each "
+            "radial column minus its azimuthal median — the W/marker rings "
+            "cancel, isolated crystallite spots survive). Writes a "
+            "quick-look PNG plus the raw .npy array, exactly the image the "
+            "spot tracker detects on. Needs cakes saved in the reduction."))
 
         # Trace toggles live on their own row: one long row of controls used
         # to run wider than the window and clip on the right.
@@ -2630,6 +2639,40 @@ class AnalysisApp:
         except (ValueError, TypeError):
             idx = 0
         self._export_frames_dialog([idx])
+
+    def review_export_ringless_clicked(self):
+        """Export the shown frame's ring-removed cake (PNG + .npy)."""
+        self.pull_vars()
+        try:
+            idx = int(self._review_idx_var.get())
+        except (ValueError, TypeError):
+            idx = 0
+        reduced = str(self.config.get("reduced_h5_file", "") or "").strip()
+        if not reduced or not Path(reduced).is_file():
+            self.log("Ringless export: no reduced HDF5 loaded.", "WARN")
+            return
+        default = str(self.config.get("export_frames_dir", "")
+                      or Path(reduced).parent)
+        dest = self.filedialog.askdirectory(
+            title=f"Export ring-removed cake of frame {idx}",
+            initialdir=default,
+        )
+        if not dest:
+            return
+        try:
+            from .spots import export_ring_removed_cakes
+            man = export_ring_removed_cakes(reduced, dest, [idx])
+        except Exception as e:
+            self.log(f"Ringless cake export failed: {e!r}", "WARN")
+            return
+        self.config["export_frames_dir"] = dest
+        self.save_config(silent=True)
+        if man["files"]:
+            self.log(f"Ringless cake of frame {idx} -> {dest} "
+                     f"({', '.join(man['files'])})")
+        else:
+            self.log(f"Frame {idx}: no cake saved in the reduction — "
+                     f"nothing exported.", "WARN")
 
     def fm_export_selected_clicked(self):
         """Export the frames selected in the Frame meta table."""
