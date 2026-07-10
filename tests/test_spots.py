@@ -292,6 +292,12 @@ def _test_end_to_end(tmp: Path):
     assert m5["n_tracks"] == 1
     assert circ_diff(m5["tracks"][0]["azim"], AZ_A) < 3.0, m5["tracks"]
 
+    # exclude_frames drops listed exposures from detection entirely (the
+    # cover-left-on seam): excluding every frame yields no tracks.
+    m6 = run_spot_tracking(reduced, exclude_frames=range(len(cakes)),
+                           min_track_points=3)
+    assert m6["n_tracks"] == 0 and m6["n_obs"] == 0, m6
+
     # group_by='scan': independent ladder per position -> 2 tracks per scan;
     # the last scan's B-track bridges its missing step (gap tolerance).
     m4 = run_spot_tracking(reduced, group_by="scan", min_track_points=3)

@@ -1022,10 +1022,16 @@ def run_spot_tracking(
     max_gap: int = 3,
     min_track_points: int = 3,
     axis_predictor: bool = True,
+    exclude_frames: "Optional[Sequence[int]]" = None,
 ) -> Dict[str, Any]:
     """Detect single-crystal spots in every cake, consolidate them per
     pressure point and link the points across the pressure ladder; append
     ``/spots`` to the target HDF5 (atomic tmp+``os.replace``).
+
+    ``exclude_frames`` drops the listed frame indices from detection entirely
+    (on top of ``/frames/excluded``/``ok``) — the seam for known-bad exposures,
+    e.g. sweeps taken with a beam cover left on, whose foreign-material spots
+    would otherwise form stationary fake tracks.
 
     All frames sharing one pressure (a mass scan sweeps beam positions over
     the same crystal) are consolidated into one observation per reflection,
@@ -1099,6 +1105,15 @@ def run_spot_tracking(
                 skip |= np.asarray(fr["excluded"][:], bool)
             if "ok" in fr:
                 skip |= ~np.asarray(fr["ok"][:], bool)
+        n_excluded_arg = 0
+        if exclude_frames is not None:
+            ef = np.asarray(sorted(set(int(f) for f in exclude_frames)), int)
+            ef = ef[(ef >= 0) & (ef < n_frames)]
+            skip[ef] = True
+            n_excluded_arg = int(ef.size)
+            if n_excluded_arg:
+                print(f"[SPOTS] excluding {n_excluded_arg} listed frame(s) "
+                      f"from detection", flush=True)
 
         # --- pressure prior: analysis file > reduced /frames/pressure > filenames
         pressure = np.full(n_frames, np.nan)
@@ -1358,6 +1373,7 @@ def run_spot_tracking(
               "max_gap": int(max_gap),
               "min_track_points": int(min_track_points),
               "axis_predictor": bool(axis_predictor),
+              "n_excluded_frames": int(n_excluded_arg),
               "n_obs": int(o_frame.size), "n_points": len(points["group"]),
               "n_tracks": len(all_tracks), "n_groups": int(n_groups)}
 
@@ -1467,6 +1483,17 @@ def _print_matches(d0, azims, table: Dict[str, Any], *, rel_tol: float,
               + "; ".join(parts), flush=True)
 
 
+def _parse_frame_list(spec: "Optional[str]") -> "Optional[List[int]]":
+    """CLI frame-list: comma-separated indices, or '@file' with one per line."""
+    if not spec:
+        return None
+    spec = spec.strip()
+    if spec.startswith("@"):
+        text = Path(spec[1:]).expanduser().read_text(encoding="utf-8")
+        spec = ",".join(text.split())
+    return [int(v) for v in spec.replace(",", " ").split()]
+
+
 def main(argv: "Optional[Sequence[str]]" = None) -> int:
     import argparse
 
@@ -1528,6 +1555,10 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
                      help="max missing consecutive pressure points inside a "
                           "track (Ewald visibility bands; default 3)")
     lnk.add_argument("--min-track-points", type=int, default=3)
+    lnk.add_argument("--exclude-frames", metavar="LIST",
+                     help="frame indices to drop from detection: a comma list "
+                          "(e.g. '3,7,12') or @FILE with one index per line — "
+                          "for known-bad exposures (cover left on, etc.)")
     mat = ap.add_argument_group("matching")
     mat.add_argument("--match", help="calculated reflection file (d/I pairs or an "
                                      "'h k l d ... I' whitespace table)")
@@ -1620,7 +1651,8 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
             exclude_d_compression=args.exclude_d_compression,
             group_by=args.group_by, q_tol=args.q_tol, azim_tol=args.azim_tol,
             link_q_rel=args.link_q_rel, link_azim_tol=args.link_azim_tol,
-            max_gap=args.max_gap, min_track_points=args.min_track_points)
+            max_gap=args.max_gap, min_track_points=args.min_track_points,
+            exclude_frames=_parse_frame_list(args.exclude_frames))
     except (FileNotFoundError, ValueError) as e:
         print(f"[ERROR] {e}", flush=True)
         return 1
