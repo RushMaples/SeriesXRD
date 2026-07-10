@@ -12,7 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bulkxrd.analysis.spots import (
     circ_diff, circ_mean, diamond_q_lines, diamond_q_windows, detect_spots,
     consolidate_spots, link_spot_tracks, run_spot_tracking,
-    load_reflection_table, match_tracks, export_spot_tracks, DIAMOND_A0)
+    load_reflection_table, match_tracks, export_spot_tracks, load_spot_tracks,
+    DIAMOND_A0)
 
 N_AZ, N_RAD = 120, 240
 RADIAL = np.linspace(0.5, 6.0, N_RAD)          # q (A^-1)
@@ -346,6 +347,19 @@ def _test_export(tmp: Path):
     # README carries provenance (source file + at least one tracker knob)
     txt = (dest / "README.txt").read_text(encoding="utf-8")
     assert str(out_h5) in txt and "min_track_points" in txt
+
+    # --- the GUI-facing loader reads the same file into a plot-ready form
+    d = load_spot_tracks(out_h5, min_points=1, match=refl)
+    assert d["ok"] and d["n_tracks_total"] == 2 and len(d["tracks"]) == 2
+    tB = min(d["tracks"], key=lambda t: abs(t["d0"] - d_b))
+    assert tB["hkl"] != "" and tB["dd_dp"] > 0            # labeled, rising
+    assert np.all(np.diff(tB["pressure"]) > 0)             # pressure-sorted
+    assert tB["pressure"].size == tB["d"].size == tB["n_points"]
+    # min_points filter drops everything when set above the track length
+    d2 = load_spot_tracks(out_h5, min_points=99)
+    assert d2["ok"] and d2["tracks"] == [] and d2["n_tracks_total"] == 2
+    # graceful errors: missing file / no /spots group
+    assert not load_spot_tracks(out_h5.with_name("nope.h5"))["ok"]
 
 
 def main() -> None:

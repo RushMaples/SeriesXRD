@@ -508,6 +508,83 @@ def match_tracks(d0, table: Dict[str, Any], *, rel_tol: float = 0.03,
     return out
 
 
+def load_spot_tracks(
+    spots_h5: "str | Path",
+    *,
+    min_points: int = 1,
+    match: "Optional[str | Path]" = None,
+    match_tol: float = 0.03,
+) -> Dict[str, Any]:
+    """Read ``/spots`` into a plot-ready structure (GUI d(P) view).
+
+    Returns ``{"ok": bool, "error": str?, "unit": str, "tracks": [...],
+    "untracked": {"pressure", "d"}, "n_tracks_total": int}`` where each track
+    dict carries pressure-sorted ``pressure``/``d``/``intensity`` arrays plus
+    ``id``, ``group_label``, ``azim``, ``dd_dp``, ``d0``, ``n_points`` and —
+    when a calculated reflection table is supplied via ``match`` — ``hkl`` (a
+    label string, "" if nothing within ``match_tol``). Tracks with fewer than
+    ``min_points`` pressure points are dropped.
+    """
+    import h5py  # type: ignore
+
+    src = Path(spots_h5).expanduser().resolve()
+    if not src.is_file():
+        return {"ok": False, "error": f"file not found: {src}"}
+    try:
+        with h5py.File(str(src), "r") as h:
+            g = h.get("spots")
+            if g is None or "tracks" not in g:
+                return {"ok": False,
+                        "error": "no /spots group — run bulkxrd-spots first"}
+            unit = str(g.attrs.get("unit", "q_A^-1"))
+            gt, gp, gg = g["tracks"], g["points"], g["groups"]
+            labels = [_decode_text(v) for v in gg["label"][:]]
+            tracks = {k: np.asarray(gt[k][:]) for k in gt.keys()}
+            points = {k: np.asarray(gp[k][:]) for k in
+                      ("track", "pressure", "d", "intensity")}
+    except Exception as e:                                  # unreadable file
+        return {"ok": False, "error": str(e)}
+
+    n_total = int(tracks["id"].size)
+    hkl_labels = [""] * n_total
+    if match and n_total:
+        try:
+            table = load_reflection_table(match)
+            for i, m in enumerate(match_tracks(tracks["d0"], table,
+                                               rel_tol=match_tol, top=1)):
+                if m and m[0]["hkl"] is not None:
+                    hkl_labels[i] = " ".join(str(v) for v in m[0]["hkl"])
+                elif m:
+                    hkl_labels[i] = f"d={m[0]['d_calc']:.3f}"
+        except Exception:
+            pass                                            # labels stay blank
+
+    out_tracks: List[Dict[str, Any]] = []
+    for i in range(n_total):
+        if int(tracks["n_points"][i]) < int(min_points):
+            continue
+        rows = np.nonzero(points["track"] == int(tracks["id"][i]))[0]
+        order = rows[np.argsort(points["pressure"][rows])]
+        gid = int(tracks["group"][i])
+        out_tracks.append({
+            "id": int(tracks["id"][i]),
+            "group_label": labels[gid] if 0 <= gid < len(labels) else "all",
+            "pressure": points["pressure"][order].astype(float),
+            "d": points["d"][order].astype(float),
+            "intensity": points["intensity"][order].astype(float),
+            "azim": float(tracks["azim"][i]),
+            "dd_dp": float(tracks["dd_dp"][i]),
+            "d0": float(tracks["d0"][i]),
+            "n_points": int(tracks["n_points"][i]),
+            "hkl": hkl_labels[i],
+        })
+    un = np.nonzero(points["track"] < 0)[0]
+    return {"ok": True, "unit": unit, "n_tracks_total": n_total,
+            "tracks": out_tracks,
+            "untracked": {"pressure": points["pressure"][un].astype(float),
+                          "d": points["d"][un].astype(float)}}
+
+
 def export_spot_tracks(
     spots_h5: "str | Path",
     out_dir: "str | Path",

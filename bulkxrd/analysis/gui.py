@@ -3856,6 +3856,26 @@ class AnalysisApp:
                    command=lambda: self._open_plot_window(
                        getattr(self, "_unknowns_fig", None), "Unknowns")
                    ).pack(side="left", padx=4)
+        ttk.Label(row1, text="Show:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        self._unk_show = ttk.Combobox(
+            row1, values=["unknown clusters", "spot tracks d(P)"],
+            state="readonly", width=16)
+        self._unk_show.set("unknown clusters")
+        self._unk_show.pack(side="left", padx=2)
+        self._unk_show.bind("<<ComboboxSelected>>", lambda e: self.load_unknowns())
+        _ToolTip(self._unk_show, (
+            "unknown clusters — the Step-3c residual-peak co-occurrence "
+            "diagram.  spot tracks d(P) — the bulkxrd-spots crystallite "
+            "reflections as d-spacing vs pressure curves (one per grain "
+            "reflection; RISING curves = d grows under pressure, negative "
+            "linear compressibility). Pick an hkl table to label the curves."))
+        _hkl_btn = ttk.Button(row1, text="hkl table…",
+                              command=self.pick_spot_match_table)
+        _hkl_btn.pack(side="left", padx=2)
+        _ToolTip(_hkl_btn, (
+            "Calculated reflection list (d/I pairs or an 'h k l d … I' table) "
+            "used to label the spot-track d(P) curves with hkl assignments. "
+            "Remembered in the session config."))
         ttk.Label(row1, text="X axis:", foreground=MUTED).pack(side="left", padx=(12, 2))
         self._unk_xaxis = ttk.Combobox(
             row1,
@@ -3996,6 +4016,11 @@ class AnalysisApp:
 
         import numpy as np
 
+        show = getattr(self._unk_show, "get", lambda: "unknown clusters")()
+        if (show or "").startswith("spot tracks"):
+            self._render_spot_tracks(path, Figure, FigureCanvasTkAgg, np)
+            return
+
         from .heatmap import unknown_diagram
         x_axis = getattr(self._unk_xaxis, "get", lambda: "frame")() or "frame"
         data = unknown_diagram(path, x_axis=x_axis)
@@ -4089,6 +4114,87 @@ class AnalysisApp:
         self._unknowns_status.configure(
             text=(f"{len(clusters)} clusters, {int(x_plot.size)}/{data['n_obs']} obs, "
                   f"{n_frames} frame(s) with unknowns"))
+        self._attach_hover(canvas, self._unknowns_status)
+
+    def pick_spot_match_table(self):
+        """Choose the calculated-reflection table used to hkl-label spot tracks."""
+        path = self.filedialog.askopenfilename(
+            title="Calculated reflection table (Cancel = clear)",
+            filetypes=[("Reflection tables", "*.txt *.csv *.dat"),
+                       ("All files", "*.*")],
+        )
+        self.config["spot_match_file"] = path or ""
+        self.save_config(silent=True)
+        if (getattr(self._unk_show, "get", lambda: "")() or "").startswith("spot"):
+            self.load_unknowns()
+
+    def _render_spot_tracks(self, path, Figure, FigureCanvasTkAgg, np):
+        """d(P) curves for the /spots crystallite tracks — the group-meeting
+        view: one polyline per grain reflection, rising curves = NLC."""
+        from .spots import load_spot_tracks
+        match = str(self.config.get("spot_match_file", "") or "").strip() or None
+        data = load_spot_tracks(path, min_points=self._unknown_min_frames_value(),
+                                match=match)
+        if not data.get("ok"):
+            err = data.get("error", "unknown error")
+            self.ttk.Label(self.unknowns_plot_frame,
+                           text=f"Spot tracks: {err}", foreground=WARN
+                           ).pack(anchor="center", expand=True)
+            self._unknowns_status.configure(text=err)
+            return
+        tracks = data["tracks"]
+
+        fig = Figure(figsize=(8, 5.5), dpi=100, layout="constrained")
+        self._unknowns_fig = fig
+        fig.patch.set_facecolor(BG)
+        ax = fig.add_subplot(1, 1, 1)
+        self._style_ax(ax)
+
+        if not tracks:
+            ax.set_title("No spot tracks pass the filter — lower 'Min "
+                         "frames/cluster' or run bulkxrd-spots", color=FG)
+        else:
+            try:
+                from matplotlib import colormaps
+                cmap = colormaps["twilight"]         # azimuth is periodic
+            except Exception:                        # older matplotlib
+                from matplotlib import cm
+                cmap = cm.get_cmap("twilight")
+            n_pts = int(sum(t["n_points"] for t in tracks))
+            n_nlc = 0
+            for t in tracks:
+                rising = t["dd_dp"] > 5e-4
+                n_nlc += int(rising)
+                color = cmap(((t["azim"] + 180.0) % 360.0) / 360.0)
+                ax.plot(t["pressure"], t["d"], "-", color=color,
+                        lw=2.2 if rising else 1.1,
+                        alpha=0.95 if rising else 0.75, zorder=3 if rising else 2)
+                ax.plot(t["pressure"], t["d"], "^" if rising else "o",
+                        color=color, ms=5.5 if rising else 3.5,
+                        mec=FG, mew=0.3, ls="none", zorder=4)
+                label = t["hkl"] or (f"az{t['azim']:+.0f}°" if len(tracks) <= 25 else "")
+                if label:
+                    ax.annotate(f" {label}", (t["pressure"][-1], t["d"][-1]),
+                                color=color, fontsize=7.5, va="center")
+            un = data["untracked"]
+            if un["pressure"].size:
+                ax.plot(un["pressure"], un["d"], "x", color=MUTED, ms=4,
+                        alpha=0.5, ls="none", zorder=1,
+                        label=f"untracked ({un['pressure'].size})")
+                ax.legend(loc="best", fontsize=8, framealpha=0.3,
+                          labelcolor=FG, facecolor=BG)
+            ax.set_xlabel("pressure (GPa)")
+            ax.set_ylabel("d-spacing (Å)")
+            ax.set_title(
+                f"Crystallite spot tracks — {len(tracks)}/{data['n_tracks_total']} "
+                f"track(s), {n_pts} points; ▲ rising = d grows with P "
+                f"({n_nlc} NLC candidate(s))", color=FG)
+
+        canvas = self._embed_figure(self.unknowns_plot_frame, fig)
+        self._unknowns_status.configure(
+            text=(f"{len(tracks)} spot track(s) shown"
+                  + (f", hkl labels from {Path(match).name}" if match
+                     else " — pick an hkl table to label curves")))
         self._attach_hover(canvas, self._unknowns_status)
 
     def export_unknown_diagram_clicked(self):
