@@ -585,6 +585,100 @@ def load_spot_tracks(
                           "d": points["d"][un].astype(float)}}
 
 
+def export_ring_removed_cakes(
+    reduced_h5: "str | Path",
+    out_dir: "str | Path",
+    frames: "Sequence[int]",
+    *,
+    write_png: bool = True,
+    write_npy: bool = True,
+    vmax_percentile: float = 99.5,
+) -> Dict[str, Any]:
+    """Export selected frames' cakes with the powder rings removed.
+
+    Writes, per frame, the exact image the spot detector works on: the cake
+    minus each radial column's azimuthal median (a ring lives at every
+    azimuth, so the median IS the ring level; subtracting it leaves only the
+    azimuthally-sparse crystallite spots). Outputs per frame:
+
+        cake_ringless_f<frame>.png   quick-look image (radial × azimuth, robust
+                                     contrast; needs matplotlib, else skipped)
+        cake_ringless_f<frame>.npy   the raw excess array (azimuth × radial),
+                                     NaN where the detector is masked
+
+    plus once: ``cake_axes.npz`` (``radial`` q values + ``azimuthal`` degrees,
+    to put physical axes on the .npy data). Returns a manifest dict.
+    """
+    import h5py  # type: ignore
+
+    src = Path(reduced_h5).expanduser().resolve()
+    if not src.is_file():
+        raise FileNotFoundError(f"Reduced HDF5 not found: {src}")
+    dest = Path(out_dir).expanduser().resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+
+    written: List[str] = []
+    with h5py.File(str(src), "r") as h:
+        cg = h.get("cakes")
+        if cg is None or "intensity" not in cg:
+            raise ValueError(f"No /cakes/intensity in {src} — re-run the "
+                             "reduction with cake saving enabled.")
+        radial = np.asarray(cg["radial"][:], float)
+        azimuthal = np.asarray(cg["azimuthal"][:], float)
+        cake_frames = (np.asarray(cg["frame_index"][:], int)
+                       if "frame_index" in cg
+                       else np.arange(cg["intensity"].shape[0]))
+        idx_of = {int(f): j for j, f in enumerate(cake_frames)}
+        np.savez(dest / "cake_axes.npz", radial=radial, azimuthal=azimuthal)
+
+        fig_mod = None
+        if write_png:
+            try:
+                import matplotlib
+                matplotlib.use("Agg", force=False)
+                from matplotlib.figure import Figure
+                fig_mod = Figure
+            except Exception:
+                fig_mod = None                      # data-only export
+
+        for fi in frames:
+            fi = int(fi)
+            j = idx_of.get(fi)
+            if j is None:
+                print(f"[SPOTS] frame {fi}: no cake saved — skipped", flush=True)
+                continue
+            cake = np.asarray(cg["intensity"][j], float)
+            med = np.nanmedian(np.where(np.isfinite(cake), cake, np.nan), axis=0)
+            excess = cake - med[None, :]
+            if write_npy:
+                np.save(dest / f"cake_ringless_f{fi:05d}.npy",
+                        excess.astype("f4"))
+                written.append(f"cake_ringless_f{fi:05d}.npy")
+            if fig_mod is not None:
+                fin = excess[np.isfinite(excess)]
+                vmax = (float(np.percentile(fin, vmax_percentile))
+                        if fin.size else 1.0) or 1.0
+                fig = fig_mod(figsize=(9, 4), dpi=110, layout="constrained")
+                ax = fig.add_subplot(1, 1, 1)
+                im = ax.imshow(
+                    np.where(np.isfinite(excess), excess, 0.0), origin="lower",
+                    aspect="auto", cmap="magma", vmin=0.0, vmax=max(vmax, 1.0),
+                    extent=(float(radial[0]), float(radial[-1]),
+                            float(azimuthal[0]), float(azimuthal[-1])))
+                fig.colorbar(im, ax=ax, label="counts above ring level")
+                ax.set_xlabel("q (Å⁻¹)" if "q" in str(h.attrs.get("unit", "q"))
+                              else "radial")
+                ax.set_ylabel("azimuth (°)")
+                ax.set_title(f"frame {fi} — rings removed "
+                             f"(azimuthal-median subtracted)")
+                fig.savefig(dest / f"cake_ringless_f{fi:05d}.png")
+                written.append(f"cake_ringless_f{fi:05d}.png")
+
+    print(f"[SPOTS] ring-removed cakes: {len(written)} file(s) -> {dest}",
+          flush=True)
+    return {"out_dir": str(dest), "files": written}
+
+
 def export_spot_tracks(
     spots_h5: "str | Path",
     out_dir: "str | Path",
@@ -928,10 +1022,16 @@ def run_spot_tracking(
     max_gap: int = 3,
     min_track_points: int = 3,
     axis_predictor: bool = True,
+    exclude_frames: "Optional[Sequence[int]]" = None,
 ) -> Dict[str, Any]:
     """Detect single-crystal spots in every cake, consolidate them per
     pressure point and link the points across the pressure ladder; append
     ``/spots`` to the target HDF5 (atomic tmp+``os.replace``).
+
+    ``exclude_frames`` drops the listed frame indices from detection entirely
+    (on top of ``/frames/excluded``/``ok``) — the seam for known-bad exposures,
+    e.g. sweeps taken with a beam cover left on, whose foreign-material spots
+    would otherwise form stationary fake tracks.
 
     All frames sharing one pressure (a mass scan sweeps beam positions over
     the same crystal) are consolidated into one observation per reflection,
@@ -1005,6 +1105,15 @@ def run_spot_tracking(
                 skip |= np.asarray(fr["excluded"][:], bool)
             if "ok" in fr:
                 skip |= ~np.asarray(fr["ok"][:], bool)
+        n_excluded_arg = 0
+        if exclude_frames is not None:
+            ef = np.asarray(sorted(set(int(f) for f in exclude_frames)), int)
+            ef = ef[(ef >= 0) & (ef < n_frames)]
+            skip[ef] = True
+            n_excluded_arg = int(ef.size)
+            if n_excluded_arg:
+                print(f"[SPOTS] excluding {n_excluded_arg} listed frame(s) "
+                      f"from detection", flush=True)
 
         # --- pressure prior: analysis file > reduced /frames/pressure > filenames
         pressure = np.full(n_frames, np.nan)
@@ -1264,6 +1373,7 @@ def run_spot_tracking(
               "max_gap": int(max_gap),
               "min_track_points": int(min_track_points),
               "axis_predictor": bool(axis_predictor),
+              "n_excluded_frames": int(n_excluded_arg),
               "n_obs": int(o_frame.size), "n_points": len(points["group"]),
               "n_tracks": len(all_tracks), "n_groups": int(n_groups)}
 
@@ -1373,6 +1483,17 @@ def _print_matches(d0, azims, table: Dict[str, Any], *, rel_tol: float,
               + "; ".join(parts), flush=True)
 
 
+def _parse_frame_list(spec: "Optional[str]") -> "Optional[List[int]]":
+    """CLI frame-list: comma-separated indices, or '@file' with one per line."""
+    if not spec:
+        return None
+    spec = spec.strip()
+    if spec.startswith("@"):
+        text = Path(spec[1:]).expanduser().read_text(encoding="utf-8")
+        spec = ",".join(text.split())
+    return [int(v) for v in spec.replace(",", " ").split()]
+
+
 def main(argv: "Optional[Sequence[str]]" = None) -> int:
     import argparse
 
@@ -1434,6 +1555,10 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
                      help="max missing consecutive pressure points inside a "
                           "track (Ewald visibility bands; default 3)")
     lnk.add_argument("--min-track-points", type=int, default=3)
+    lnk.add_argument("--exclude-frames", metavar="LIST",
+                     help="frame indices to drop from detection: a comma list "
+                          "(e.g. '3,7,12') or @FILE with one index per line — "
+                          "for known-bad exposures (cover left on, etc.)")
     mat = ap.add_argument_group("matching")
     mat.add_argument("--match", help="calculated reflection file (d/I pairs or an "
                                      "'h k l d ... I' whitespace table)")
@@ -1451,12 +1576,41 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
     exp.add_argument("--export-observations", action="store_true",
                      help="include every raw per-frame detection in the export "
                           "(spot_observations.csv)")
+    exp.add_argument("--export-cakes", metavar="FRAMES",
+                     help="comma-separated frame indices, or 'best' (each "
+                          "track's best_frame): write those frames' cakes with "
+                          "the powder rings removed (PNG + .npy) into "
+                          "<--export DIR>/ringless (or next to the input)")
     args = ap.parse_args(argv)
 
+    def _do_export_cakes(spots_path: Path, best_frames: "Sequence[int]",
+                         reduced_path: "Optional[Path]" = None) -> None:
+        """Resolve --export-cakes (frame list or 'best') and run the export."""
+        spec = (args.export_cakes or "").strip().lower()
+        if not spec:
+            return
+        frames = (sorted(set(int(f) for f in best_frames)) if spec == "best"
+                  else [int(v) for v in spec.split(",") if v.strip()])
+        if not frames:
+            print("[SPOTS] --export-cakes: no frames to export.", flush=True)
+            return
+        red = reduced_path
+        if red is None or not red.is_file():
+            import h5py  # type: ignore
+            with h5py.File(str(spots_path), "r") as h:
+                red = Path(str(h["spots"].attrs.get("source_reduced", "")))
+        if not red.is_file():
+            print(f"[ERROR] --export-cakes: reduced file with /cakes not found "
+                  f"({red}).", flush=True)
+            return
+        dest = (Path(args.export) / "ringless" if args.export
+                else spots_path.with_name(spots_path.stem + "_ringless"))
+        export_ring_removed_cakes(red, dest, frames)
+
     if args.match_only:
-        if not (args.match or args.export):
-            print("[ERROR] --match-only needs --match FILE (and/or --export DIR).",
-                  flush=True)
+        if not (args.match or args.export or args.export_cakes):
+            print("[ERROR] --match-only needs --match FILE, --export DIR "
+                  "and/or --export-cakes.", flush=True)
             return 1
         import h5py  # type: ignore
         path = Path(args.reduced).expanduser().resolve()
@@ -1467,6 +1621,7 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
                 return 1
             d0 = np.asarray(h["spots/tracks/d0"][:], float)
             az = np.asarray(h["spots/tracks/azim"][:], float)
+            best = np.asarray(h["spots/tracks/best_frame"][:], int)
         if args.match:
             _print_matches(d0, az, load_reflection_table(args.match),
                            rel_tol=args.match_tol, top=args.match_top)
@@ -1474,6 +1629,7 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
             export_spot_tracks(path, args.export, match=args.match,
                                match_tol=args.match_tol,
                                include_observations=args.export_observations)
+        _do_export_cakes(path, best.tolist())
         return 0
 
     try:
@@ -1495,7 +1651,8 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
             exclude_d_compression=args.exclude_d_compression,
             group_by=args.group_by, q_tol=args.q_tol, azim_tol=args.azim_tol,
             link_q_rel=args.link_q_rel, link_azim_tol=args.link_azim_tol,
-            max_gap=args.max_gap, min_track_points=args.min_track_points)
+            max_gap=args.max_gap, min_track_points=args.min_track_points,
+            exclude_frames=_parse_frame_list(args.exclude_frames))
     except (FileNotFoundError, ValueError) as e:
         print(f"[ERROR] {e}", flush=True)
         return 1
@@ -1509,6 +1666,9 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
         export_spot_tracks(manifest["out_h5"], args.export, match=args.match,
                            match_tol=args.match_tol,
                            include_observations=args.export_observations)
+    _do_export_cakes(Path(manifest["out_h5"]),
+                     [int(s["best_frame"]) for s in manifest["tracks"]],
+                     reduced_path=Path(args.reduced).expanduser().resolve())
     return 0
 
 
