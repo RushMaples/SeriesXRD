@@ -641,6 +641,33 @@ def export_spot_tracks(
         points = {k: np.asarray(gp[k][:]) for k in gp.keys()}
         obs = ({k: np.asarray(g["obs"][k][:]) for k in g["obs"].keys()}
                if include_observations and "obs" in g else None)
+        fr = h.get("frames")
+        frame_names = ([_decode_text(v) for v in fr["filename"][:]]
+                       if fr is not None and "filename" in fr else None)
+
+    # Frame filenames: the group needs raw-file names, not just indices. A
+    # standalone <stem>_spots.h5 has no /frames — fall back to the analysis /
+    # reduced files recorded in the /spots provenance attrs.
+    if frame_names is None:
+        for cand in (str(attrs.get("analysis_h5", "") or ""),
+                     str(attrs.get("source_reduced", "") or "")):
+            if cand and Path(cand).is_file():
+                try:
+                    with h5py.File(cand, "r") as hh:
+                        fr = hh.get("frames")
+                        if fr is not None and "filename" in fr:
+                            frame_names = [_decode_text(v) for v in fr["filename"][:]]
+                            break
+                except Exception:
+                    continue
+
+    def _fname(fi: int) -> str:
+        return (frame_names[fi]
+                if frame_names and 0 <= int(fi) < len(frame_names) else "")
+
+    def _scan(fi: int) -> str:
+        n = _fname(fi)
+        return _scan_label(n) if n else ""
 
     n_tracks = int(tracks["id"].size)
     matches = (match_tracks(tracks["d0"], table, rel_tol=match_tol, top=1)
@@ -653,7 +680,7 @@ def export_spot_tracks(
     t_path = dest / "spot_tracks.csv"
     t_cols = ("track", "group", "n_points", "n_frames", "p_min_gpa", "p_max_gpa",
               "d0_A", "d_min_A", "d_max_A", "dd_dp_A_per_gpa", "azim_deg",
-              "azim_spread_deg", "intensity_max", "best_frame")
+              "azim_spread_deg", "intensity_max", "best_frame", "best_frame_file")
     with open(t_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(list(t_cols) + (["match_hkl", "match_d_calc_A", "match_delta_pct",
@@ -667,7 +694,8 @@ def export_spot_tracks(
                    round(float(tracks["azim"][i]), 2),
                    round(float(tracks["azim_spread"][i]), 2),
                    round(float(tracks["intensity_max"][i]), 1),
-                   int(tracks["best_frame"][i])]
+                   int(tracks["best_frame"][i]),
+                   _fname(int(tracks["best_frame"][i]))]
             if table is not None:
                 m = matches[i][0] if matches[i] else None
                 row += ([("" if m["hkl"] is None else " ".join(str(v) for v in m["hkl"])),
@@ -680,7 +708,7 @@ def export_spot_tracks(
     #     untracked separately — single-band reflections still matter)
     p_cols = ("track", "group", "pressure_gpa", "d_A", "q", "azim_deg",
               "q_width", "azim_width_deg", "intensity", "area", "n_frames",
-              "best_frame")
+              "best_frame", "best_frame_file")
 
     def _point_row(j: int) -> list:
         return [int(points["track"][j]), _lab(int(points["group"][j])),
@@ -690,7 +718,8 @@ def export_spot_tracks(
                 round(float(points["azim_width"][j]), 2),
                 round(float(points["intensity"][j]), 1),
                 round(float(points["area"][j]), 1),
-                int(points["n_frames"][j]), int(points["best_frame"][j])]
+                int(points["n_frames"][j]), int(points["best_frame"][j]),
+                _fname(int(points["best_frame"][j]))]
 
     tracked = np.nonzero(points["track"] >= 0)[0]
     order = tracked[np.lexsort((points["pressure"][tracked],
@@ -713,14 +742,16 @@ def export_spot_tracks(
     n_obs_written = 0
     if obs is not None:
         o_path = dest / "spot_observations.csv"
-        o_cols = ("frame", "group", "point", "track", "pressure_gpa", "d_A", "q",
-                  "azim_deg", "intensity", "area", "snr", "q_width",
-                  "azim_width_deg", "n_pixels")
+        o_cols = ("frame", "scan", "filename", "group", "point", "track",
+                  "pressure_gpa", "d_A", "q", "azim_deg", "intensity", "area",
+                  "snr", "q_width", "azim_width_deg", "n_pixels")
         with open(o_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(o_cols)
             for j in np.argsort(obs["frame"]):
-                w.writerow([int(obs["frame"][j]), _lab(int(obs["group"][j])),
+                fi = int(obs["frame"][j])
+                w.writerow([fi, _scan(fi), _fname(fi),
+                            _lab(int(obs["group"][j])),
                             int(obs["point"][j]), int(obs["track"][j]),
                             round(float(obs["pressure"][j]), 4),
                             round(float(obs["d"][j]), 5), round(float(obs["q"][j]), 5),
@@ -773,7 +804,10 @@ dd_dp_A_per_gpa least-squares d-vs-P slope; POSITIVE = d grows under
                 pressure (negative linear compressibility along that axis)
 azim_spread_deg intensity-weighted azimuthal scatter of the track
 best_frame      frame index of the most intense observation (which cake to
-                inspect visually)
+                inspect visually); best_frame_file is its raw-image filename
+scan / filename (observations file) the scanNNN token and raw-image filename
+                of each detection — filter by track to list every raw frame
+                where that reflection is visible
 intensity/area  blob peak height / integrated counts above the ring median
 n_frames        frames contributing to the consolidated point
 

@@ -330,6 +330,15 @@ def _test_export(tmp: Path):
     with open(dest / "spot_tracks.csv", newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     assert len(rows) == 2
+    # raw-image traceability: best_frame_file resolves through the /spots
+    # provenance attrs (the standalone spots file has no /frames itself),
+    # and the observations ledger carries scan + filename per detection.
+    assert all(r["best_frame_file"].endswith(".tif") for r in rows), rows
+    with open(dest / "spot_observations.csv", newline="", encoding="utf-8") as f:
+        obs_rows = list(csv.DictReader(f))
+    assert obs_rows and all(o["filename"].endswith(".tif") for o in obs_rows)
+    assert all(o["scan"].startswith("scan") for o in obs_rows)
+    assert any(o["scan"] == "scan002" for o in obs_rows)
     # blob B's track matches the reflection table; A has no match within tol.
     rb = min(rows, key=lambda r: abs(float(r["d0_A"]) - d_b))
     ra = max(rows, key=lambda r: abs(float(r["d0_A"]) - d_b))
