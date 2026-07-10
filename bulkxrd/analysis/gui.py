@@ -167,8 +167,12 @@ HELP: Dict[str, str] = {
         "rings. hybrid = clean plus the broad part of (mean − median), rejecting "
         "narrow single-crystal spikes. sigmaclip = the reduce-side trimmed mean "
         "(best; enable it in reduction). mean keeps everything including "
-        "diamond spots — diagnostic only. If peaks you can see in the pattern "
-        "are missing from the fit, try hybrid or mean."
+        "diamond spots — diagnostic only. spots = fit (mean − median) itself: "
+        "the SINGLE-CRYSTAL SAMPLE channel — a crystal's sparse reflections are "
+        "rejected by every median-based channel exactly like diamond spots, and "
+        "this is where they end up. If peaks you can see in the pattern are "
+        "missing from the fit, try hybrid or mean; if the sample is a crystal, "
+        "run a spots pass."
     ),
     "sensitivity": (
         "Preset for the detection knobs below (any left blank). conservative = "
@@ -822,7 +826,8 @@ class AnalysisApp:
         self.checkbox(frame, "run_step2", "Run Step 2 — pseudo-Voigt peak fitting", row=0)
         # Primary controls: fit source + sensitivity preset + auto range.
         self.combo(frame, "peak_source", "Peak source",
-                   ["auto", "hybrid", "sigmaclip", "clean", "mean"], row=1, default="auto")
+                   ["auto", "hybrid", "sigmaclip", "clean", "mean", "spots"],
+                   row=1, default="auto")
         self.combo(frame, "sensitivity", "Sensitivity",
                    ["conservative", "normal", "sensitive"], row=2, default="normal")
         self.checkbox(frame, "auto_range", "Auto valid q/2θ range (blank Fit min/max)", row=3)

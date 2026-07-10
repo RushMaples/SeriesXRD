@@ -209,10 +209,11 @@ def main(argv: "list[str] | None" = None) -> int:
                         "waviness no longer splits rings into double-horned peaks.")
     # Step 2
     p.add_argument("--source", default="auto",
-                   choices=["auto", "hybrid", "sigmaclip", "clean", "mean"],
+                   choices=["auto", "hybrid", "sigmaclip", "clean", "mean", "spots"],
                    help="Peak-fit source. auto = reduce-side sigmaclip if present, else hybrid. "
                         "clean (azimuthal median) is conservative; hybrid/sigmaclip keep "
-                        "spotty/textured-ring peaks. Default auto.")
+                        "spotty/textured-ring peaks; spots fits (mean - median) itself — "
+                        "the single-crystal-sample channel. Default auto.")
     p.add_argument("--sensitivity", default="normal",
                    choices=["conservative", "normal", "sensitive"],
                    help="Detection-knob preset (fills any knob not explicitly set). Default normal.")
