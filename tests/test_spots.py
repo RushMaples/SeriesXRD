@@ -13,7 +13,7 @@ from bulkxrd.analysis.spots import (
     circ_diff, circ_mean, diamond_q_lines, diamond_q_windows, detect_spots,
     consolidate_spots, link_spot_tracks, run_spot_tracking,
     load_reflection_table, match_tracks, export_spot_tracks, load_spot_tracks,
-    DIAMOND_A0)
+    export_ring_removed_cakes, DIAMOND_A0)
 
 N_AZ, N_RAD = 120, 240
 RADIAL = np.linspace(0.5, 6.0, N_RAD)          # q (A^-1)
@@ -369,6 +369,20 @@ def _test_export(tmp: Path):
     assert d2["ok"] and d2["tracks"] == [] and d2["n_tracks_total"] == 2
     # graceful errors: missing file / no /spots group
     assert not load_spot_tracks(out_h5.with_name("nope.h5"))["ok"]
+
+    # --- ring-removed cake export: the powder ring cancels, the blob survives
+    rdest = tmp / "ringless"
+    man2 = export_ring_removed_cakes(reduced, rdest, [0], write_png=False)
+    assert "cake_ringless_f00000.npy" in man2["files"]
+    ex = np.load(rdest / "cake_ringless_f00000.npy")
+    axes = np.load(rdest / "cake_axes.npz")
+    assert ex.shape == (AZIM.size, RADIAL.size)
+    assert np.allclose(axes["radial"], RADIAL)
+    kr = int(np.argmin(np.abs(RADIAL - RING_Q)))        # powder-ring column
+    ka = int(np.argmin(np.abs(RADIAL - q_a(LADDER[0]))))  # blob A column
+    ring_med = float(np.nanmedian(ex[:, kr]))
+    assert abs(ring_med) < 1.0, ring_med                 # ring level removed
+    assert np.nanmax(ex[:, ka]) > 50.0                   # crystallite spot kept
 
 
 def main() -> None:
