@@ -3903,6 +3903,15 @@ class AnalysisApp:
                    command=self.export_unknown_diagram_clicked).pack(side="left", padx=2)
         ttk.Button(row2, text="Frames with unknowns…",
                    command=self.export_unknown_frames_clicked).pack(side="left", padx=2)
+        _spot_btn = ttk.Button(row2, text="Spot tracks…",
+                               command=self.export_spot_tracks_clicked)
+        _spot_btn.pack(side="left", padx=2)
+        _ToolTip(_spot_btn, (
+            "Export the /spots single-crystal tracks (bulkxrd-spots) as a "
+            "handoff CSV bundle: per-track summary (+ optional hkl matches "
+            "against a calculated reflection list), long-format d(P) point "
+            "tables, untracked single-band reflections, and a README with "
+            "provenance."))
         self._unknowns_status = ttk.Label(row2, text="", foreground=MUTED)
         self._unknowns_status.pack(side="left", padx=12)
 
@@ -4113,6 +4122,50 @@ class AnalysisApp:
             return
         msg = (f"Exported unknown diagram: {man['n_clusters']} clusters, "
                f"{man['n_obs']} obs -> {dest}")
+        self._unknowns_status.configure(text=msg)
+        self.log(msg)
+
+    def export_spot_tracks_clicked(self):
+        """Export /spots single-crystal tracks as the group-handoff CSV bundle."""
+        self.pull_vars()
+        path = str(self.config.get("analysis_h5_file", "") or "").strip()
+        if not path or not Path(path).is_file():
+            self._unknowns_status.configure(text="No analysis file loaded.")
+            return
+        try:
+            import h5py
+            with h5py.File(path, "r") as h:
+                has_spots = "spots" in h and "tracks" in h["spots"]
+        except Exception:
+            has_spots = False
+        if not has_spots:
+            self._unknowns_status.configure(
+                text="No /spots in the analysis file — run bulkxrd-spots first.")
+            return
+        dest = self.filedialog.askdirectory(
+            title="Export spot-track CSV bundle",
+            initialdir=str(self.config.get("export_frames_dir", "")
+                           or Path(path).parent),
+        )
+        if not dest:
+            return
+        match = self.filedialog.askopenfilename(
+            title="Calculated reflection list for hkl matching (Cancel = skip)",
+            filetypes=[("Reflection tables", "*.txt *.csv *.dat"), ("All files", "*.*")],
+        ) or None
+        try:
+            from .spots import export_spot_tracks
+            man = export_spot_tracks(path, dest, match=match,
+                                     include_observations=True)
+        except Exception as e:
+            self.log(f"Spot-track export failed: {e!r}", "WARN")
+            self._unknowns_status.configure(text=f"Export failed: {e}")
+            return
+        self.config["export_frames_dir"] = dest
+        self.save_config(silent=True)
+        msg = (f"Exported {man['n_tracks']} spot track(s), "
+               f"{man['n_track_points']} points "
+               f"(+{man['n_untracked_points']} untracked) -> {dest}")
         self._unknowns_status.configure(text=msg)
         self.log(msg)
 
