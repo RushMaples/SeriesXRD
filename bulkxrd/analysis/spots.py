@@ -1,8 +1,10 @@
-"""Cake-space single-crystal spot tracker — per-reflection d(P) curves.
+"""Cake-space crystallite spot tracker — per-reflection d(P) curves.
 
-The 1D powder pipeline is structurally blind to a single-crystal sample: its
-reflections land in a handful of azimuth bins, so the azimuthal median rejects
-them and the azimuthal mean dilutes them ~360×. But the saved cakes
+The 1D powder pipeline is structurally blind to a sample that diffracts as
+discrete grains — a coarse powder with few grains in the µm-scale DAC beam
+(spotty rings; the common case) or an outright single crystal: the reflections
+land in a handful of azimuth bins, so the azimuthal median rejects them and
+the azimuthal mean dilutes them ~360×. But the saved cakes
 (``/cakes/intensity``, one (azimuth × radial) image per frame) still hold them
 as isolated blobs. This module recovers them:
 
@@ -656,7 +658,7 @@ def export_spot_tracks(
 
     # --- README with provenance + glossary
     knob_lines = "\n".join(f"  {k} = {attrs[k]!r}" for k in sorted(attrs))
-    readme = f"""Single-crystal spot-track export (bulkxrd)
+    readme = f"""Crystallite spot-track export (bulkxrd)
 =============================================
 
 Source HDF5:      {src}
@@ -667,11 +669,17 @@ Match tolerance:  |d_obs - d_calc| / d_calc <= {match_tol} (on each track's d0)
 
 What these are
 --------------
-Reflections of a single crystal detected as azimuthal blobs in the cake images
-(powder rings cancel; the azimuthal median rejects crystal spots, so the 1D
-patterns never see them). Detections at one pressure are consolidated across
-beam positions, then linked along the pressure ladder into tracks: one track =
-one crystal reflection followed under compression. A track's rows in
+Bragg reflections of individual crystallites, detected as azimuthal blobs in
+the cake images (smooth powder rings cancel; the azimuthal median rejects
+sparse spots, so the 1D patterns never see them). They arise whenever the
+sample diffracts as discrete grains — a coarse-grained powder with few grains
+in the micron-scale DAC beam (spotty rings; the common case), or a single
+crystal. A spot's d-spacing comes from its ring radius alone, so d(P) is valid
+either way, and several tracks sharing one hkl at different azimuths are
+different grains reflecting the same plane family — independent repeats of the
+same d(P). Detections at one pressure are consolidated across beam positions,
+then linked along the pressure ladder into tracks: one track = one crystallite
+reflection followed under compression. A track's rows in
 spot_track_points.csv ARE its d(P) table.
 
 Column glossary
@@ -679,8 +687,9 @@ Column glossary
 track           track id (-1 in the untracked file = never linked)
 pressure_gpa    frame metadata pressure of the consolidated point
 d_A / q         d-spacing (Angstrom) / scattering vector at the point
-azim_deg        detector azimuth of the blob (constant per reflection —
-                fixed crystal orientation)
+azim_deg        detector azimuth of the blob (~constant per reflection: the
+                grain orientation is fixed; a few degrees of drift under
+                non-hydrostatic stress is grain rotation and does not affect d)
 d0_A            track d at its LOWEST pressure (match against calculated
                 ambient reflections)
 dd_dp_A_per_gpa least-squares d-vs-P slope; POSITIVE = d grows under
@@ -692,9 +701,9 @@ intensity/area  blob peak height / integrated counts above the ring median
 n_frames        frames contributing to the consolidated point
 
 Untracked points (spot_untracked_points.csv) are reflections seen in only one
-pressure band — a still crystal only diffracts while the Ewald condition
-holds, so short-lived spots are physical, not noise. Check them by eye at
-best_frame before discarding.
+pressure band — a fixed grain only diffracts while the Ewald condition holds,
+so short-lived spots are physical, not noise. Check them by eye at best_frame
+before discarding.
 
 Tracker parameters (as stored in /spots attrs)
 ----------------------------------------------
