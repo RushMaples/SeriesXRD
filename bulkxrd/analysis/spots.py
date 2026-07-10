@@ -506,6 +506,217 @@ def match_tracks(d0, table: Dict[str, Any], *, rel_tol: float = 0.03,
     return out
 
 
+def export_spot_tracks(
+    spots_h5: "str | Path",
+    out_dir: "str | Path",
+    *,
+    match: "Optional[str | Path]" = None,
+    match_tol: float = 0.03,
+    include_observations: bool = False,
+) -> Dict[str, Any]:
+    """Export ``/spots`` as a group-handoff CSV bundle.
+
+    Writes into ``out_dir`` (created if needed):
+
+        spot_tracks.csv          one row per track: pressure span, d0, d range,
+                                 dd/dP slope, azimuth (+ best matches against a
+                                 calculated reflection table when ``match`` is
+                                 given — the hkl assignment starting point)
+        spot_track_points.csv    long-format d(P) tables — every consolidated
+                                 pressure point of every track, ordered by
+                                 (track, pressure). THE dataset for in-depth
+                                 analysis (EOS fits, axis compressibilities).
+        spot_untracked_points.csv  consolidated reflections that never linked
+                                 into a track (visible at a single pressure
+                                 band — e.g. an (00l) spot that only satisfies
+                                 the Ewald condition once). Same columns.
+        spot_observations.csv    every raw per-frame detection (optional,
+                                 ``include_observations=True``) — recover
+                                 which exact frames/cakes to inspect.
+        README.txt               provenance: source files, every tracker knob,
+                                 column glossary, match table used.
+
+    ``match`` is a calculated-reflection file (see
+    :func:`load_reflection_table`); matching uses each track's ``d0`` (its
+    d-spacing at the lowest pressure). Returns a manifest dict.
+    """
+    import csv
+    import h5py  # type: ignore
+
+    src = Path(spots_h5).expanduser().resolve()
+    if not src.is_file():
+        raise FileNotFoundError(f"HDF5 not found: {src}")
+    dest = Path(out_dir).expanduser().resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+
+    table = load_reflection_table(match) if match else None
+
+    with h5py.File(str(src), "r") as h:
+        g = h.get("spots")
+        if g is None or "tracks" not in g:
+            raise ValueError(f"No /spots group in {src} — run bulkxrd-spots first.")
+        attrs = {k: g.attrs[k] for k in g.attrs}
+        gt, gp, gg = g["tracks"], g["points"], g["groups"]
+        labels = [_decode_text(v) for v in gg["label"][:]]
+        tracks = {k: np.asarray(gt[k][:]) for k in gt.keys()}
+        points = {k: np.asarray(gp[k][:]) for k in gp.keys()}
+        obs = ({k: np.asarray(g["obs"][k][:]) for k in g["obs"].keys()}
+               if include_observations and "obs" in g else None)
+
+    n_tracks = int(tracks["id"].size)
+    matches = (match_tracks(tracks["d0"], table, rel_tol=match_tol, top=1)
+               if table is not None and n_tracks else [[] for _ in range(n_tracks)])
+
+    def _lab(gid: int) -> str:
+        return labels[gid] if 0 <= gid < len(labels) else "all"
+
+    # --- spot_tracks.csv
+    t_path = dest / "spot_tracks.csv"
+    t_cols = ("track", "group", "n_points", "n_frames", "p_min_gpa", "p_max_gpa",
+              "d0_A", "d_min_A", "d_max_A", "dd_dp_A_per_gpa", "azim_deg",
+              "azim_spread_deg", "intensity_max", "best_frame")
+    with open(t_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(list(t_cols) + (["match_hkl", "match_d_calc_A", "match_delta_pct",
+                                    "match_intensity"] if table is not None else []))
+        for i in range(n_tracks):
+            row = [int(tracks["id"][i]), _lab(int(tracks["group"][i])),
+                   int(tracks["n_points"][i]), int(tracks["n_frames"][i]),
+                   round(float(tracks["p_min"][i]), 4), round(float(tracks["p_max"][i]), 4),
+                   round(float(tracks["d0"][i]), 5), round(float(tracks["d_min"][i]), 5),
+                   round(float(tracks["d_max"][i]), 5), round(float(tracks["dd_dp"][i]), 6),
+                   round(float(tracks["azim"][i]), 2),
+                   round(float(tracks["azim_spread"][i]), 2),
+                   round(float(tracks["intensity_max"][i]), 1),
+                   int(tracks["best_frame"][i])]
+            if table is not None:
+                m = matches[i][0] if matches[i] else None
+                row += ([("" if m["hkl"] is None else " ".join(str(v) for v in m["hkl"])),
+                         round(m["d_calc"], 5), round(100 * m["delta_rel"], 3),
+                         ("" if m["intensity"] is None else round(m["intensity"], 2))]
+                        if m else ["", "", "", ""])
+            w.writerow(row)
+
+    # --- point tables (tracked, long format, ordered by track then pressure;
+    #     untracked separately — single-band reflections still matter)
+    p_cols = ("track", "group", "pressure_gpa", "d_A", "q", "azim_deg",
+              "q_width", "azim_width_deg", "intensity", "area", "n_frames",
+              "best_frame")
+
+    def _point_row(j: int) -> list:
+        return [int(points["track"][j]), _lab(int(points["group"][j])),
+                round(float(points["pressure"][j]), 4), round(float(points["d"][j]), 5),
+                round(float(points["q"][j]), 5), round(float(points["azim"][j]), 2),
+                round(float(points["q_width"][j]), 5),
+                round(float(points["azim_width"][j]), 2),
+                round(float(points["intensity"][j]), 1),
+                round(float(points["area"][j]), 1),
+                int(points["n_frames"][j]), int(points["best_frame"][j])]
+
+    tracked = np.nonzero(points["track"] >= 0)[0]
+    order = tracked[np.lexsort((points["pressure"][tracked],
+                                points["track"][tracked]))]
+    pt_path = dest / "spot_track_points.csv"
+    with open(pt_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(p_cols)
+        for j in order:
+            w.writerow(_point_row(int(j)))
+
+    untracked = np.nonzero(points["track"] < 0)[0]
+    un_path = dest / "spot_untracked_points.csv"
+    with open(un_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(p_cols)
+        for j in untracked[np.argsort(points["pressure"][untracked])]:
+            w.writerow(_point_row(int(j)))
+
+    n_obs_written = 0
+    if obs is not None:
+        o_path = dest / "spot_observations.csv"
+        o_cols = ("frame", "group", "point", "track", "pressure_gpa", "d_A", "q",
+                  "azim_deg", "intensity", "area", "snr", "q_width",
+                  "azim_width_deg", "n_pixels")
+        with open(o_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(o_cols)
+            for j in np.argsort(obs["frame"]):
+                w.writerow([int(obs["frame"][j]), _lab(int(obs["group"][j])),
+                            int(obs["point"][j]), int(obs["track"][j]),
+                            round(float(obs["pressure"][j]), 4),
+                            round(float(obs["d"][j]), 5), round(float(obs["q"][j]), 5),
+                            round(float(obs["azim"][j]), 2),
+                            round(float(obs["intensity"][j]), 1),
+                            round(float(obs["area"][j]), 1),
+                            round(float(obs["snr"][j]), 1),
+                            round(float(obs["q_width"][j]), 5),
+                            round(float(obs["azim_width"][j]), 2),
+                            int(obs["n_pixels"][j])])
+        n_obs_written = int(obs["frame"].size)
+
+    # --- README with provenance + glossary
+    knob_lines = "\n".join(f"  {k} = {attrs[k]!r}" for k in sorted(attrs))
+    readme = f"""Single-crystal spot-track export (bulkxrd)
+=============================================
+
+Source HDF5:      {src}
+Exported:         spot_tracks.csv, spot_track_points.csv, spot_untracked_points.csv{
+    ', spot_observations.csv' if obs is not None else ''}
+Reflection table: {match or '(none — no hkl matching)'}
+Match tolerance:  |d_obs - d_calc| / d_calc <= {match_tol} (on each track's d0)
+
+What these are
+--------------
+Reflections of a single crystal detected as azimuthal blobs in the cake images
+(powder rings cancel; the azimuthal median rejects crystal spots, so the 1D
+patterns never see them). Detections at one pressure are consolidated across
+beam positions, then linked along the pressure ladder into tracks: one track =
+one crystal reflection followed under compression. A track's rows in
+spot_track_points.csv ARE its d(P) table.
+
+Column glossary
+---------------
+track           track id (-1 in the untracked file = never linked)
+pressure_gpa    frame metadata pressure of the consolidated point
+d_A / q         d-spacing (Angstrom) / scattering vector at the point
+azim_deg        detector azimuth of the blob (constant per reflection —
+                fixed crystal orientation)
+d0_A            track d at its LOWEST pressure (match against calculated
+                ambient reflections)
+dd_dp_A_per_gpa least-squares d-vs-P slope; POSITIVE = d grows under
+                pressure (negative linear compressibility along that axis)
+azim_spread_deg intensity-weighted azimuthal scatter of the track
+best_frame      frame index of the most intense observation (which cake to
+                inspect visually)
+intensity/area  blob peak height / integrated counts above the ring median
+n_frames        frames contributing to the consolidated point
+
+Untracked points (spot_untracked_points.csv) are reflections seen in only one
+pressure band — a still crystal only diffracts while the Ewald condition
+holds, so short-lived spots are physical, not noise. Check them by eye at
+best_frame before discarding.
+
+Tracker parameters (as stored in /spots attrs)
+----------------------------------------------
+{knob_lines}
+"""
+    (dest / "README.txt").write_text(readme, encoding="utf-8")
+
+    manifest = {"out_dir": str(dest), "n_tracks": n_tracks,
+                "n_track_points": int(tracked.size),
+                "n_untracked_points": int(untracked.size),
+                "n_observations": n_obs_written,
+                "matched": table is not None,
+                "files": ["spot_tracks.csv", "spot_track_points.csv",
+                          "spot_untracked_points.csv"]
+                         + (["spot_observations.csv"] if obs is not None else [])
+                         + ["README.txt"]}
+    print(f"[SPOTS] exported {n_tracks} track(s) "
+          f"({int(tracked.size)} points, {int(untracked.size)} untracked) "
+          f"-> {dest}", flush=True)
+    return manifest
+
+
 # ---------------------------------------------------------------------------
 # Dataset driver
 # ---------------------------------------------------------------------------
@@ -1112,11 +1323,20 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
     mat.add_argument("--match-only", action="store_true",
                      help="skip detection; read /spots from the given file and "
                           "just run the matcher")
+    exp = ap.add_argument_group("export")
+    exp.add_argument("--export", metavar="DIR",
+                     help="write the group-handoff CSV bundle (spot_tracks.csv + "
+                          "d(P) point tables + README) to DIR after tracking; "
+                          "with --match-only, exports the existing /spots")
+    exp.add_argument("--export-observations", action="store_true",
+                     help="include every raw per-frame detection in the export "
+                          "(spot_observations.csv)")
     args = ap.parse_args(argv)
 
     if args.match_only:
-        if not args.match:
-            print("[ERROR] --match-only needs --match FILE.", flush=True)
+        if not (args.match or args.export):
+            print("[ERROR] --match-only needs --match FILE (and/or --export DIR).",
+                  flush=True)
             return 1
         import h5py  # type: ignore
         path = Path(args.reduced).expanduser().resolve()
@@ -1127,8 +1347,13 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
                 return 1
             d0 = np.asarray(h["spots/tracks/d0"][:], float)
             az = np.asarray(h["spots/tracks/azim"][:], float)
-        _print_matches(d0, az, load_reflection_table(args.match),
-                       rel_tol=args.match_tol, top=args.match_top)
+        if args.match:
+            _print_matches(d0, az, load_reflection_table(args.match),
+                           rel_tol=args.match_tol, top=args.match_top)
+        if args.export:
+            export_spot_tracks(path, args.export, match=args.match,
+                               match_tol=args.match_tol,
+                               include_observations=args.export_observations)
         return 0
 
     try:
@@ -1160,6 +1385,10 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
         az = np.asarray([s["azim"] for s in manifest["tracks"]], float)
         _print_matches(d0, az, load_reflection_table(args.match),
                        rel_tol=args.match_tol, top=args.match_top)
+    if args.export:
+        export_spot_tracks(manifest["out_h5"], args.export, match=args.match,
+                           match_tol=args.match_tol,
+                           include_observations=args.export_observations)
     return 0
 
 

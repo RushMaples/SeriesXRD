@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bulkxrd.analysis.spots import (
     circ_diff, circ_mean, diamond_q_lines, diamond_q_windows, detect_spots,
     consolidate_spots, link_spot_tracks, run_spot_tracking,
-    load_reflection_table, match_tracks, DIAMOND_A0)
+    load_reflection_table, match_tracks, export_spot_tracks, DIAMOND_A0)
 
 N_AZ, N_RAD = 120, 240
 RADIAL = np.linspace(0.5, 6.0, N_RAD)          # q (A^-1)
@@ -302,6 +302,52 @@ def _test_end_to_end(tmp: Path):
     assert tb_gap["n_points"] == 3 and tb_gap["p_max"] == 10.0, tb_gap
 
 
+def _test_export(tmp: Path):
+    """CSV handoff bundle: track summary (+hkl matches), long-format d(P)
+    tables, untracked points, README — from a tracked file."""
+    import csv
+    cakes, names = _build_dataset()
+    reduced = tmp / "reduced_exp.h5"
+    _write_reduced(reduced, cakes, names)
+    m = run_spot_tracking(reduced, min_snr=6.0, min_intensity=20.0,
+                          min_track_points=3)
+    out_h5 = Path(m["out_h5"])
+
+    # reflection table matching blob B's ambient d (the NLC analog)
+    refl = tmp / "calc.txt"
+    d_b = 2.0 * np.pi / q_b(1.0)
+    refl.write_text(f"{d_b + 0.01:.4f} 100.0\n1.2345 50.0\n", encoding="utf-8")
+
+    dest = tmp / "handoff"
+    man = export_spot_tracks(out_h5, dest, match=refl, match_tol=0.03,
+                             include_observations=True)
+    assert man["n_tracks"] == 2 and man["n_untracked_points"] == 0, man
+    for fn in ("spot_tracks.csv", "spot_track_points.csv",
+               "spot_untracked_points.csv", "spot_observations.csv", "README.txt"):
+        assert (dest / fn).is_file(), fn
+
+    with open(dest / "spot_tracks.csv", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2
+    # blob B's track matches the reflection table; A has no match within tol.
+    rb = min(rows, key=lambda r: abs(float(r["d0_A"]) - d_b))
+    ra = max(rows, key=lambda r: abs(float(r["d0_A"]) - d_b))
+    assert rb["match_d_calc_A"] != "" and abs(
+        float(rb["match_d_calc_A"]) - (d_b + 0.01)) < 1e-4, rb   # CSV rounds to 5 dp
+    assert ra["match_d_calc_A"] == "", ra
+    assert float(rb["dd_dp_A_per_gpa"]) > 0 > float(ra["dd_dp_A_per_gpa"])
+
+    # the points file is a per-track d(P) table ordered by (track, pressure)
+    with open(dest / "spot_track_points.csv", newline="", encoding="utf-8") as f:
+        pts = list(csv.DictReader(f))
+    assert len(pts) == 8                              # 2 tracks x 4 P points
+    keys = [(int(r["track"]), float(r["pressure_gpa"])) for r in pts]
+    assert keys == sorted(keys), keys
+    # README carries provenance (source file + at least one tracker knob)
+    txt = (dest / "README.txt").read_text(encoding="utf-8")
+    assert str(out_h5) in txt and "min_track_points" in txt
+
+
 def main() -> None:
     _test_helpers()
     _test_detection()
@@ -311,6 +357,7 @@ def main() -> None:
         tmp = Path(td)
         _test_matcher_parsing(tmp)
         _test_end_to_end(tmp)
+        _test_export(tmp)
     print("test_spots: all assertions passed")
 
 
