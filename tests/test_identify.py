@@ -449,6 +449,27 @@ def test_pressure_prior_confines_search():
     assert bad["confidence"] < 0.3, bad["confidence"]
 
 
+def test_ignore_prior_frees_search_and_penalty():
+    """pressure_assumption='ignore_prior' exempts a phase from the prior
+    ENTIRELY: the pressure search covers the full [p_min, p_max] (not just
+    prior ± window) and no Gaussian penalty applies. This is the second-marker
+    seam — gasket-flank / anvil-bridged marker metal sits tens of GPa away from
+    the chamber pressure, and a prior-confined search could never reach it."""
+    import dataclasses
+    au, refl = _synth_au()
+    d0, _, _ = refl
+    obs = d0 * idf.scale_at_pressure(au, 20.0)        # material really at 20 GPa
+    exempt = dataclasses.replace(au, name="Au (gradient)",
+                                 pressure_assumption="ignore_prior")
+    # Chamber prior says 80 GPa; the exempt phase must still find 20 GPa, at
+    # full confidence (no prior penalty).
+    got = idf.fit_pressure_for_phase(obs, exempt, refl, p_min=0, p_max=200,
+                                     rel_tol=0.01, p_prior=80.0, p_window=2.0)
+    assert abs(got["pressure"] - 20.0) < 1.0, got["pressure"]
+    assert got["confidence"] > 0.8, got["confidence"]
+    assert got["prior_penalty"] == 1.0, got["prior_penalty"]
+
+
 def _run_identification_synthetic(tmp_h5, phases, refl_map, p_true, **kw):
     """Drive run_identification without pymatgen by patching the simulation."""
     import h5py

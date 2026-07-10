@@ -270,6 +270,19 @@ def _test_winsorize_and_sources():
         pass
     else:
         raise AssertionError("sigmaclip source without its channel should raise")
+    # spots = the spot_residual channel itself (single-crystal sample mode):
+    # keeps the narrow spike the hybrid source rejects, ignores clean entirely.
+    spots_src, ss = build_fit_source("spots", clean, spot_residual=spot_residual)
+    assert ss == "spots"
+    assert np.allclose(spots_src, spot_residual, equal_nan=True)
+    assert spots_src[ksp] > 1000                       # crystal spike survives
+    assert abs(spots_src[np.argmin(np.abs(q - 2.5))]) < 1.0   # powder peak absent
+    try:
+        build_fit_source("spots", clean)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("spots source without spot_residual should raise")
 
 
 def _test_auto_fit_range():

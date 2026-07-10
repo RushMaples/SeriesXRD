@@ -551,8 +551,15 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
     pressure is additionally weighed against the prior by a Gaussian penalty in
     :func:`conservative_confidence` (tolerance = ``p_window``). The penalty also
     applies to no-EOS phases (scored at ambient, so they are dragged down on a
-    high-pressure frame), EXCEPT phases whose ``pressure_assumption`` is
-    ``ignore_prior``.
+    high-pressure frame).
+
+    Phases whose ``pressure_assumption`` is ``ignore_prior`` are exempt from the
+    prior ENTIRELY — no confidence penalty AND a free pressure search over the
+    whole ``[p_min, p_max]``. This is the seam for material that is genuinely
+    NOT at the chamber pressure: e.g. a second copy of the pressure-marker/gasket
+    metal picked up at the gasket flank or bridged to an anvil, which sits tens
+    of GPa away from the sample chamber and would otherwise be unmatchable
+    (and pollute the unknowns) because the confined search can never reach it.
     """
     if refl is None:
         refl = phase_reflections(phase)
@@ -619,9 +626,12 @@ def fit_pressure_for_phase(obs_d, phase: Phase,
     # the phase's validity ceiling (eos['p_max'], e.g. a phase transition) —
     # extrapolating the EOS into a regime where the phase does not exist lets a
     # stability-limited entry "match" data it cannot physically produce.
+    # ignore_prior phases search the full range: they model material that is NOT
+    # at the chamber pressure (gasket-flank / anvil-bridged marker metal), which
+    # a prior-confined search could never reach (see the docstring).
     p_valid = valid_pressure_max(phase)
     lo_b, hi_b = float(p_min), min(float(p_max), p_valid)
-    if has_prior and p_window and p_window > 0:
+    if apply_pen and p_window and p_window > 0:
         lo_b = max(lo_b, float(p_prior) - float(p_window))
         hi_b = min(hi_b, float(p_prior) + float(p_window))
         if hi_b <= lo_b:                       # prior sits outside the valid range

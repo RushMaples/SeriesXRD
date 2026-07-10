@@ -553,7 +553,7 @@ SENSITIVITY_PRESETS: Dict[str, Dict[str, float]] = {
 }
 
 # Selectable peak-fitting source (see :func:`build_fit_source`).
-FIT_SOURCES = ("auto", "clean", "hybrid", "mean", "sigmaclip")
+FIT_SOURCES = ("auto", "clean", "hybrid", "mean", "sigmaclip", "spots")
 
 
 def resolve_sensitivity(sensitivity: "Optional[str]" = "normal", *,
@@ -616,15 +616,26 @@ def build_fit_source(source: str, clean, *, spot_residual=None,
     """Build the intensity to fit from the Step-1 channels; return ``(data,
     resolved_source)``.
 
-    Every source is ``clean`` plus an already-baseline-subtracted residual,
-    because ``clean = robust − baseline`` and the smooth background is
+    Every source except ``spots`` is ``clean`` plus an already-baseline-subtracted
+    residual, because ``clean = robust − baseline`` and the smooth background is
     azimuthally uniform (the same baseline applies to every channel):
 
         clean      robust − baseline                          (conservative)
         mean       clean + spot_residual      = mean − baseline
         hybrid     clean + winsorized(spot_residual)          (analysis-side default)
         sigmaclip  clean + sigmaclip_residual  = sigmaclip − baseline (reduce-side)
+        spots      spot_residual alone — the SINGLE-CRYSTAL SAMPLE channel
         auto       sigmaclip if its residual is present, else hybrid
+
+    ``spots`` is for the case the powder pipeline is otherwise blind to: a
+    single-crystal sample. Its reflections are azimuthally sparse blobs, so the
+    median-based channels reject them exactly like diamond spots and the mean
+    dilutes them ~N_azimuth-fold. ``spot_residual = mean − robust`` is where that
+    intensity ends up, and it is already background-free (the smooth baseline is
+    azimuthally uniform, so it cancels in the subtraction). Fitting it directly
+    surfaces the sample reflections (plus spotty-ring excess of coarse powder
+    phases, which Step 3a then attributes and removes) so their d(P) tracks reach
+    the Step-3c unknowns.
     """
     clean = np.asarray(clean, float)
     s = (source or "auto").strip().lower()
@@ -651,6 +662,10 @@ def build_fit_source(source: str, clean, *, spot_residual=None,
                 "source='sigmaclip' needs /background/sigmaclip_residual — re-run "
                 "reduction with the sigma-clip channel on, then Step 1.")
         return clean + np.asarray(sigmaclip_residual, float), s
+    if s == "spots":
+        if spot_residual is None:
+            raise ValueError("source='spots' needs /background/spot_residual.")
+        return np.asarray(spot_residual, float), s
     raise ValueError(f"Unknown fit source {source!r} (choose from {FIT_SOURCES}).")
 
 
