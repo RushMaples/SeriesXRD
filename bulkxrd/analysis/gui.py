@@ -2582,10 +2582,14 @@ class AnalysisApp:
         _src = ttk.Combobox(content, textvariable=v_src, state="readonly",
                             width=12,
                             values=["fit", "clean", "mean", "hybrid",
-                                    "sigmaclip", "robust", "residual"])
+                                    "sigmaclip", "spots", "robust",
+                                    "residual"])
         _src.grid(row=1, column=1, sticky="w")
         _ToolTip(_src, "fit = the channel Step 2 actually fitted (default). "
                        "residual = /residual/clean after phase subtraction. "
+                       "spots = spot_residual alone (mean − median): rings "
+                       "and smooth background cancel, leaving the coarse-"
+                       "grain/single-crystal sample signal. "
                        "The other entries are reduction-side channels "
                        "reconstructed exactly as the pipeline does.")
         v_peaks = tk.BooleanVar(value=True)
