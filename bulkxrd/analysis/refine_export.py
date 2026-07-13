@@ -392,8 +392,10 @@ def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
 
     ``source``: "fit" (what Step 2 actually fitted, default), "residual"
     (``/residual/clean``), or any of "clean"/"mean"/"hybrid"/"sigmaclip"/
-    "auto"/"robust" — the reduction-side channels reconstructed exactly as
-    the pipeline does. ``frames=None`` exports every non-excluded frame.
+    "spots"/"auto"/"robust" — the reduction-side channels reconstructed
+    exactly as the pipeline does ("spots" = ``spot_residual`` alone, the
+    coarse-grain/single-crystal sample channel: rings and smooth background
+    cancel in mean − median). ``frames=None`` exports every non-excluded frame.
     ``residual_peaks`` writes ``residual_peaks.csv`` when Step 3a-removal has
     re-fit the leftover peaks; ``unknowns`` writes ``unknowns.csv`` when Step
     3c clustered those residual peaks. Returns a manifest.
@@ -659,7 +661,7 @@ def main(argv: "list[str] | None" = None) -> int:
                         "(default: beside the analysis file).")
     p.add_argument("--source", default="fit",
                    choices=["fit", "clean", "mean", "hybrid", "sigmaclip",
-                            "auto", "robust", "residual"],
+                            "spots", "auto", "robust", "residual"],
                    help="Pattern channel to export. Default fit (what Step 2 "
                         "actually fitted); residual reads /residual/clean.")
     p.add_argument("--peaks", action="store_true",
