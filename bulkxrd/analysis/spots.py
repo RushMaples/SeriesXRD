@@ -679,6 +679,236 @@ def export_ring_removed_cakes(
     return {"out_dir": str(dest), "files": written}
 
 
+def export_spot_masks(
+    reduced_h5: "str | Path",
+    spots_h5: "str | Path",
+    out_dir: "str | Path",
+    *,
+    frames: "Optional[Sequence[int]]" = None,
+    match: "Optional[str | Path]" = None,
+    match_tol: float = 0.02,
+    tracks_only: bool = False,
+    track_ids: "Optional[Sequence[int]]" = None,
+    pad_q: float = 2.0,
+    pad_azim: float = 2.0,
+    dataset_dir: "Optional[str | Path]" = None,
+    integrate: bool = True,
+    min_snr: "Optional[float]" = None,
+) -> Dict[str, Any]:
+    """Keep-only detector masks from spot detections + masked re-integration.
+
+    The inverse of every 1D cleanup so far: instead of removing known
+    contaminants, KEEP only the target reflections. For each requested
+    frame, every retained ``/spots/obs`` blob (a localized (q, azimuth)
+    region) is projected back onto detector pixels via the reduction's own
+    PONI geometry; pixels outside every blob are masked. The masked raw
+    image is then re-integrated into a GSAS-ready two-column pattern
+    containing ONLY the kept reflections' intensity.
+
+    Retention filters (composable):
+      * ``track_ids``      — keep obs belonging to these track ids only
+      * ``tracks_only``    — keep obs that belong to any track (drop noise)
+      * ``match``          — reflection table (e.g. UOTe calc list): keep obs
+                             whose d lies within ``match_tol`` (relative) of
+                             any listed line. NOTE: applied to the observed d
+                             at that frame's pressure vs the AMBIENT table —
+                             size the tolerance to cover your compression,
+                             and prune collisions via the emitted CSV
+                             (e.g. compressed Ne(111) can fall near
+                             UOTe (003)).
+      * ``min_snr``        — drop weak detections
+
+    Per frame it writes ``frame_####_mask.npy`` (bool, pyFAI convention:
+    True/1 = masked) + ``frame_####_mask.tif`` (uint8, loadable as a Dioptas
+    mask image), a PNG preview, and — with ``integrate=True`` and
+    ``dataset_dir`` pointing at the raw images — ``frame_####_masked.xy``
+    (2theta when the wavelength is known, else the native axis).
+    ``kept_obs.csv`` records every kept/dropped blob per frame so the mask
+    contents are reviewable. Returns a manifest.
+
+    Saturated frames: a detector-count-cutoff bloom detects as blobs like
+    anything else — check the preview before trusting a mask from one.
+    """
+    import h5py  # type: ignore
+
+    red = Path(reduced_h5).expanduser().resolve()
+    spath = Path(spots_h5).expanduser().resolve()
+    dest = Path(out_dir).expanduser()
+    dest.mkdir(parents=True, exist_ok=True)
+
+    with h5py.File(str(red), "r") as h:
+        poni_text = str(h.attrs.get("poni_text", "") or "")
+        if not poni_text.strip():
+            raise ValueError(f"No poni_text in {red} — cannot rebuild the "
+                             "integration geometry.")
+        unit = str(h.attrs.get("unit", "q_A^-1"))
+        npt_1d = (int(h["patterns/radial"].shape[0])
+                  if "patterns" in h and "radial" in h["patterns"] else 1500)
+        cg = h.get("cakes")
+        if cg is None:
+            raise ValueError(f"No /cakes in {red}.")
+        d_qbin = float(np.median(np.diff(np.asarray(cg["radial"][:], float))))
+        d_abin = float(np.median(np.diff(np.asarray(cg["azimuthal"][:], float))))
+        fr = h.get("frames")
+        names = ([_decode_text(v) for v in fr["filename"][:]]
+                 if fr is not None and "filename" in fr else [])
+
+    with h5py.File(str(spath), "r") as h:
+        if "spots" not in h or "obs" not in h["spots"]:
+            raise ValueError(f"No /spots/obs in {spath} — run bulkxrd-spots "
+                             "first.")
+        og = h["spots/obs"]
+        obs = {k: np.asarray(og[k][:]) for k in og.keys()}
+
+    keep = np.ones(obs["frame"].size, bool)
+    if track_ids is not None:
+        keep &= np.isin(obs["track"], np.asarray(list(track_ids), int))
+    elif tracks_only:
+        keep &= obs["track"] >= 0
+    if min_snr is not None and "snr" in obs:
+        keep &= obs["snr"] >= float(min_snr)
+    matched_d = np.full(obs["frame"].size, np.nan)
+    if match is not None:
+        table = load_reflection_table(match)
+        td = np.asarray(table["d"], float)
+        for j in np.nonzero(keep)[0]:
+            rel = np.abs(obs["d"][j] - td) / td
+            k = int(np.argmin(rel))
+            if rel[k] <= match_tol:
+                matched_d[j] = td[k]
+            else:
+                keep[j] = False
+
+    # geometry: pixel-center q (file unit) + azimuth (deg), from the PONI
+    import pyFAI  # type: ignore
+    poni_tmp = dest / "_geometry.poni"
+    poni_tmp.write_text(poni_text, encoding="utf-8")
+    ai = pyFAI.load(str(poni_tmp))
+    shape = ai.detector.shape
+    px_r = np.asarray(ai.array_from_unit(shape, "center", unit, scale=True))
+    try:   # chiArray deprecated in pyFAI >= 2025.09
+        px_a = np.degrees(np.asarray(ai.center_array("chi_rad")))
+    except (AttributeError, TypeError, ValueError):
+        px_a = np.degrees(np.asarray(ai.chiArray(shape)))
+
+    if frames is None:
+        frames = sorted(set(int(f) for f in obs["frame"][keep]))
+    frames = [int(f) for f in frames]
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        plt = None
+
+    from .refine_export import _write_xy, _xy_header
+    from ..core.io import read_detector_image
+
+    droot = Path(dataset_dir).expanduser() if dataset_dir else None
+    csv_rows: "List[List[Any]]" = []
+    written: "List[str]" = []
+    n_frames_done = 0
+    for fi in frames:
+        sel = keep & (obs["frame"] == fi)
+        idx = np.nonzero(sel)[0]
+        mask = np.ones(shape, dtype=bool)          # True = masked (pyFAI)
+        for j in idx:
+            hw_q = max(pad_q * float(obs["q_width"][j]), 2.0 * d_qbin)
+            hw_a = max(pad_azim * float(obs["azim_width"][j]), 2.0 * d_abin)
+            dq = np.abs(px_r - float(obs["q"][j]))
+            da = np.abs((px_a - float(obs["azim"][j]) + 180.0) % 360.0 - 180.0)
+            mask[(dq <= hw_q) & (da <= hw_a)] = False
+            csv_rows.append([fi, j, round(float(obs["q"][j]), 5),
+                             round(float(obs["d"][j]), 5),
+                             round(float(obs["azim"][j]), 2),
+                             round(hw_q, 5), round(hw_a, 2),
+                             int(obs["track"][j]),
+                             ("" if not np.isfinite(matched_d[j])
+                              else round(float(matched_d[j]), 5))])
+        if not idx.size:
+            print(f"[SPOTS] masks: frame {fi}: no kept spots — skipped",
+                  flush=True)
+            continue
+        np.save(dest / f"frame_{fi:04d}_mask.npy", mask)
+        written.append(f"frame_{fi:04d}_mask.npy")
+        try:
+            import tifffile  # type: ignore
+            tifffile.imwrite(str(dest / f"frame_{fi:04d}_mask.tif"),
+                             mask.astype("u1") * 255)
+            written.append(f"frame_{fi:04d}_mask.tif")
+        except Exception:
+            pass
+
+        raw = None
+        fname = names[fi] if fi < len(names) else ""
+        if droot is not None and fname:
+            p_raw = droot / fname
+            if p_raw.is_file():
+                raw = read_detector_image(p_raw)
+            else:
+                print(f"[SPOTS] masks: raw image not found: {p_raw}",
+                      flush=True)
+
+        if plt is not None:
+            fig, ax = plt.subplots(figsize=(7, 7), dpi=110,
+                                   layout="constrained")
+            if raw is not None:
+                shown = np.log1p(np.clip(raw, 0, None))
+                ax.imshow(shown, cmap="gray_r", origin="upper")
+                overlay = np.zeros(shape + (4,), float)
+                overlay[..., 0] = 1.0
+                overlay[..., 3] = np.where(mask, 0.25, 0.0)
+                ax.imshow(overlay, origin="upper")
+                ax.set_title(f"frame {fi} — masked (red) / kept (clear), "
+                             f"{idx.size} spot region(s)")
+            else:
+                ax.imshow(mask, cmap="gray", origin="upper")
+                ax.set_title(f"frame {fi} — mask (white = masked), "
+                             f"{idx.size} spot region(s)")
+            ax.set_xticks([]); ax.set_yticks([])
+            fig.savefig(dest / f"frame_{fi:04d}_mask.png")
+            plt.close(fig)
+            written.append(f"frame_{fi:04d}_mask.png")
+
+        if integrate and raw is not None:
+            wl_A = float(ai.wavelength) * 1e10 if ai.wavelength else None
+            res_n = ai.integrate1d(raw, npt_1d, mask=mask, unit=unit)
+            _write_xy(dest / f"frame_{fi:04d}_masked_q.xy",
+                      res_n.radial, res_n.intensity,
+                      header=_xy_header(axis=unit, native_unit=unit,
+                                        wavelength=wl_A,
+                                        source_label=f"spot-masked raw "
+                                                     f"({idx.size} regions)",
+                                        filename=fname))
+            written.append(f"frame_{fi:04d}_masked_q.xy")
+            if wl_A:
+                res_t = ai.integrate1d(raw, npt_1d, mask=mask, unit="2th_deg")
+                _write_xy(dest / f"frame_{fi:04d}_masked.xy",
+                          res_t.radial, res_t.intensity,
+                          header=_xy_header(axis="2th_deg", native_unit=unit,
+                                            wavelength=wl_A,
+                                            source_label=f"spot-masked raw "
+                                                         f"({idx.size} regions)",
+                                            filename=fname))
+                written.append(f"frame_{fi:04d}_masked.xy")
+        n_frames_done += 1
+
+    import csv as _csv
+    with (dest / "kept_obs.csv").open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["frame", "obs_row", "q", "d_A", "azim_deg",
+                    "halfwidth_q", "halfwidth_azim_deg", "track",
+                    "matched_d_A"])
+        w.writerows(csv_rows)
+    written.append("kept_obs.csv")
+
+    print(f"[SPOTS] spot masks: {n_frames_done} frame(s), "
+          f"{len(csv_rows)} kept blob(s) -> {dest}", flush=True)
+    return {"out_dir": str(dest), "n_frames": n_frames_done,
+            "n_kept_obs": len(csv_rows), "files": written}
+
+
 def export_spot_tracks(
     spots_h5: "str | Path",
     out_dir: "str | Path",
@@ -1581,7 +1811,60 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
                           "track's best_frame): write those frames' cakes with "
                           "the powder rings removed (PNG + .npy) into "
                           "<--export DIR>/ringless (or next to the input)")
+    msk = ap.add_argument_group("spot masks (keep-only detector masks + "
+                                "masked re-integration)")
+    msk.add_argument("--export-masks", metavar="DIR",
+                     help="write per-frame keep-only detector masks (.npy + "
+                          ".tif + preview PNG) built from the kept /spots/obs "
+                          "blobs, and — with --dataset-dir — re-integrate the "
+                          "masked raw images into GSAS-ready .xy patterns. "
+                          "Uses --match/--match-tol as the keep filter.")
+    msk.add_argument("--mask-frames", metavar="LIST",
+                     help="comma-separated frame indices to mask (default: "
+                          "every frame with a kept spot)")
+    msk.add_argument("--dataset-dir", metavar="DIR",
+                     help="root folder of the raw images (/frames/filename "
+                          "is resolved against it) — enables the masked "
+                          "re-integration")
+    msk.add_argument("--tracks-only", action="store_true",
+                     help="keep only observations that belong to a track")
+    msk.add_argument("--track-ids", metavar="LIST",
+                     help="keep only observations of these track ids "
+                          "(comma-separated)")
+    msk.add_argument("--mask-pad-q", type=float, default=2.0,
+                     help="keep-window half-width = this x the blob's "
+                          "q_width (default 2.0)")
+    msk.add_argument("--mask-pad-azim", type=float, default=2.0,
+                     help="keep-window half-width = this x the blob's "
+                          "azim_width (default 2.0)")
+    msk.add_argument("--mask-min-snr", type=float, default=None,
+                     help="drop kept observations below this detection SNR")
     args = ap.parse_args(argv)
+
+    def _do_export_masks(spots_path: Path,
+                         reduced_path: "Optional[Path]" = None) -> None:
+        """Resolve --export-masks and run it (shared by both CLI paths)."""
+        if not args.export_masks:
+            return
+        red = reduced_path
+        if red is None or not red.is_file():
+            import h5py  # type: ignore
+            with h5py.File(str(spots_path), "r") as h:
+                red = Path(str(h["spots"].attrs.get("source_reduced", "")))
+        if not red.is_file():
+            print(f"[ERROR] --export-masks: reduced file not found ({red}).",
+                  flush=True)
+            return
+        mframes = ([int(v) for v in args.mask_frames.split(",") if v.strip()]
+                   if args.mask_frames else None)
+        tids = ([int(v) for v in args.track_ids.split(",") if v.strip()]
+                if args.track_ids else None)
+        export_spot_masks(
+            red, spots_path, args.export_masks,
+            frames=mframes, match=args.match, match_tol=args.match_tol,
+            tracks_only=args.tracks_only, track_ids=tids,
+            pad_q=args.mask_pad_q, pad_azim=args.mask_pad_azim,
+            dataset_dir=args.dataset_dir, min_snr=args.mask_min_snr)
 
     def _do_export_cakes(spots_path: Path, best_frames: "Sequence[int]",
                          reduced_path: "Optional[Path]" = None) -> None:
@@ -1608,9 +1891,10 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
         export_ring_removed_cakes(red, dest, frames)
 
     if args.match_only:
-        if not (args.match or args.export or args.export_cakes):
-            print("[ERROR] --match-only needs --match FILE, --export DIR "
-                  "and/or --export-cakes.", flush=True)
+        if not (args.match or args.export or args.export_cakes
+                or args.export_masks):
+            print("[ERROR] --match-only needs --match FILE, --export DIR, "
+                  "--export-cakes and/or --export-masks.", flush=True)
             return 1
         import h5py  # type: ignore
         path = Path(args.reduced).expanduser().resolve()
@@ -1630,6 +1914,7 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
                                match_tol=args.match_tol,
                                include_observations=args.export_observations)
         _do_export_cakes(path, best.tolist())
+        _do_export_masks(path)
         return 0
 
     try:
@@ -1668,6 +1953,8 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
                            include_observations=args.export_observations)
     _do_export_cakes(Path(manifest["out_h5"]),
                      [int(s["best_frame"]) for s in manifest["tracks"]],
+                     reduced_path=Path(args.reduced).expanduser().resolve())
+    _do_export_masks(Path(manifest["out_h5"]),
                      reduced_path=Path(args.reduced).expanduser().resolve())
     return 0
 
