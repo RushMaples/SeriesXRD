@@ -4037,6 +4037,14 @@ class AnalysisApp:
             "against a calculated reflection list), long-format d(P) point "
             "tables, untracked single-band reflections, and a README with "
             "provenance."))
+        _mask_btn = ttk.Button(row2, text="Spot masks…",
+                               command=self.export_spot_masks_clicked)
+        _mask_btn.pack(side="left", padx=2)
+        _ToolTip(_mask_btn, (
+            "Keep-only detector masks from the kept /spots blobs (everything "
+            "else masked, pyFAI convention) + GSAS-ready .xy patterns "
+            "re-integrated from the masked raw images. Filters: tracked-only "
+            "and/or the hkl match table."))
         self._unknowns_status = ttk.Label(row2, text="", foreground=MUTED)
         self._unknowns_status.pack(side="left", padx=12)
 
@@ -4379,6 +4387,169 @@ class AnalysisApp:
                f"(+{man['n_untracked_points']} untracked) -> {dest}")
         self._unknowns_status.configure(text=msg)
         self.log(msg)
+
+    def export_spot_masks_clicked(self):
+        """Keep-only detector masks + masked re-integration from /spots."""
+        self.pull_vars()
+        tk, ttk = self.tk, self.ttk
+        path = str(self.config.get("analysis_h5_file", "") or "").strip()
+        if not path or not Path(path).is_file():
+            self._unknowns_status.configure(text="No analysis file loaded.")
+            return
+        best: list = []
+        red_attr = ""
+        try:
+            import h5py
+            with h5py.File(path, "r") as h:
+                has_obs = "spots" in h and "obs" in h["spots"]
+                if has_obs:
+                    red_attr = str(h["spots"].attrs.get("source_reduced", ""))
+                    tg = h["spots"].get("tracks")
+                    if tg is not None and "best_frame" in tg:
+                        best = sorted(set(int(v) for v in tg["best_frame"][:]))
+        except Exception:
+            has_obs = False
+        if not has_obs:
+            self._unknowns_status.configure(
+                text="No /spots/obs in the analysis file — run bulkxrd-spots "
+                     "first.")
+            return
+        reduced = str(self.config.get("reduced_h5_file", "") or "").strip()
+        if not reduced or not Path(reduced).is_file():
+            reduced = red_attr
+        if not reduced or not Path(reduced).is_file():
+            self._unknowns_status.configure(
+                text="Reduced HDF5 not found (its PONI supplies the mask "
+                     "geometry).")
+            return
+        raw_default = str(self.config.get("spot_mask_dataset_dir", "") or "")
+        if not raw_default:
+            man_p = Path(str(Path(reduced).with_suffix("")) + ".manifest.json")
+            if man_p.is_file():
+                try:
+                    import json as _json
+                    raw_default = str(_json.loads(
+                        man_p.read_text(encoding="utf-8")).get("dataset_dir", ""))
+                except Exception:
+                    pass
+        match_file = str(self.config.get("spot_match_file", "") or "").strip()
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Spot masks")
+        dlg.configure(bg=BG)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        content = ttk.Frame(dlg, padding=10)
+        content.pack(fill="both", expand=True)
+        ttk.Label(content, text=(
+            "Per-frame keep-only detector masks from the kept /spots blobs "
+            "(.npy + .tif + preview PNG), plus GSAS-ready .xy patterns "
+            "re-integrated from the masked raw images."),
+            foreground=MUTED, wraplength=430, justify="left").grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        ttk.Label(content, text="Frames").grid(row=1, column=0, sticky="w",
+                                               pady=2)
+        v_frames = tk.StringVar(value="best")
+        _fr = ttk.Entry(content, textvariable=v_frames, width=36)
+        _fr.grid(row=1, column=1, sticky="we")
+        _ToolTip(_fr, "'best' = each track's best frame; or a comma-"
+                      "separated frame list; blank = every frame with a "
+                      "kept spot.")
+        ttk.Label(content, text="Raw images root").grid(row=2, column=0,
+                                                        sticky="w", pady=2)
+        v_raw = tk.StringVar(value=raw_default)
+        ttk.Entry(content, textvariable=v_raw, width=36).grid(
+            row=2, column=1, sticky="we")
+
+        def _browse_raw():
+            d = self.filedialog.askdirectory(title="Raw image root folder")
+            if d:
+                v_raw.set(d)
+        ttk.Button(content, text="Browse", command=_browse_raw).grid(
+            row=2, column=2, padx=4)
+        v_tracks = tk.BooleanVar(value=True)
+        ttk.Checkbutton(content, text="Tracked observations only",
+                        variable=v_tracks).grid(row=3, column=0, columnspan=2,
+                                                sticky="w", pady=2)
+        v_use_match = tk.BooleanVar(value=bool(match_file))
+        _mt = ttk.Checkbutton(
+            content,
+            text=("Match table: " + (Path(match_file).name if match_file
+                                     else "none (pick via 'hkl table…')")),
+            variable=v_use_match, state="normal" if match_file else "disabled")
+        _mt.grid(row=4, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(content, text="tol").grid(row=4, column=1, sticky="e")
+        v_tol = tk.StringVar(value="0.02")
+        ttk.Entry(content, textvariable=v_tol, width=7).grid(row=4, column=2,
+                                                             sticky="w")
+        ttk.Label(content, text="Destination").grid(row=5, column=0,
+                                                    sticky="w", pady=2)
+        v_dest = tk.StringVar(value=str(
+            Path(str(self.config.get("export_frames_dir", "")
+                     or Path(path).parent)) / "spot_masks"))
+        ttk.Entry(content, textvariable=v_dest, width=36).grid(
+            row=5, column=1, sticky="we")
+
+        def _browse_dest():
+            d = self.filedialog.askdirectory(title="Mask export destination")
+            if d:
+                v_dest.set(d)
+        ttk.Button(content, text="Browse", command=_browse_dest).grid(
+            row=5, column=2, padx=4)
+
+        def _go():
+            spec = v_frames.get().strip().lower()
+            if spec == "best":
+                frames = best or None
+            elif spec:
+                try:
+                    frames = [int(s) for s in spec.split(",") if s.strip()]
+                except ValueError:
+                    self.messagebox.showerror(
+                        "Spot masks", "Frames must be 'best', blank, or a "
+                                      "comma-separated integer list.",
+                        parent=dlg)
+                    return
+            else:
+                frames = None
+            try:
+                tol = float(v_tol.get())
+            except ValueError:
+                tol = 0.02
+            dest = v_dest.get().strip()
+            if not dest:
+                self.messagebox.showerror("Spot masks",
+                                          "Pick a destination folder.",
+                                          parent=dlg)
+                return
+            raw = v_raw.get().strip() or None
+            self.config["spot_mask_dataset_dir"] = raw or ""
+            self.save_config(silent=True)
+            dlg.destroy()
+            try:
+                from .spots import export_spot_masks
+                man = export_spot_masks(
+                    reduced, path, dest, frames=frames,
+                    match=(match_file if (v_use_match.get() and match_file)
+                           else None),
+                    match_tol=tol, tracks_only=bool(v_tracks.get()),
+                    dataset_dir=raw, integrate=bool(raw))
+            except Exception as e:
+                self.log(f"Spot-mask export failed: {e!r}", "WARN")
+                self._unknowns_status.configure(text=f"Mask export failed: {e}")
+                return
+            msg = (f"Spot masks: {man['n_frames']} frame(s), "
+                   f"{man['n_kept_obs']} kept blob(s) -> {dest}"
+                   + ("" if raw else "  (no raw root — masks only, no .xy)"))
+            self._unknowns_status.configure(text=msg)
+            self.log(msg)
+
+        btns = ttk.Frame(content)
+        btns.grid(row=6, column=0, columnspan=3, sticky="e", pady=(8, 0))
+        ttk.Button(btns, text="Export", command=_go).pack(side="left", padx=4)
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="left",
+                                                                  padx=4)
+        content.columnconfigure(1, weight=1)
 
     def export_unknown_frames_clicked(self):
         """Export residual patterns for frames carrying unknown observations."""

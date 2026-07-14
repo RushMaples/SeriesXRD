@@ -786,10 +786,19 @@ def export_spot_masks(
     ai = pyFAI.load(str(poni_tmp))
     shape = ai.detector.shape
     px_r = np.asarray(ai.array_from_unit(shape, "center", unit, scale=True))
-    try:   # chiArray deprecated in pyFAI >= 2025.09
-        px_a = np.degrees(np.asarray(ai.center_array("chi_rad")))
-    except (AttributeError, TypeError, ValueError):
-        px_a = np.degrees(np.asarray(ai.chiArray(shape)))
+    px_a = None
+    for _call in (lambda: ai.center_array("chi_rad"),
+                  lambda: ai.center_array(shape, unit="chi_rad")):
+        try:   # chiArray deprecated in pyFAI >= 2025.09
+            px_a = np.degrees(np.asarray(_call()))
+            break
+        except Exception:
+            continue
+    if px_a is None:
+        import warnings as _warnings
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")
+            px_a = np.degrees(np.asarray(ai.chiArray(shape)))
 
     if frames is None:
         frames = sorted(set(int(f) for f in obs["frame"][keep]))
