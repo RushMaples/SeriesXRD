@@ -31,7 +31,6 @@ Pure numpy + h5py; matplotlib is imported lazily inside :func:`stack_figure`.
 """
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -124,23 +123,9 @@ def stack_figure(
     # ---- optional contaminant-window zeroing (1D exclude-d) ----
     excluded_windows: List[List[float]] = []
     if exclude_d:
-        u = unit.strip().lower()
-        if u.startswith("q_nm"):
-            q = radial * 0.1
-        elif u.startswith("q"):
-            q = radial
-        elif tth is not None and wavelength:
-            q = 4.0 * math.pi * np.sin(np.radians(tth) / 2.0) / wavelength
-        else:
-            raise ValueError("exclude_d needs a q axis or a wavelength on file.")
-        data = np.array(data, dtype=float, copy=True)
-        for d0 in exclude_d:
-            qc = 2.0 * math.pi / float(d0)
-            lo, hi = qc * (1 - exclude_width), qc * (1 + exclude_width)
-            sel = (q >= lo) & (q <= hi)
-            if sel.any():
-                data[:, sel] = 0.0
-                excluded_windows.append([float(d0), float(lo), float(hi)])
+        from .refine_export import _zero_d_windows
+        data, excluded_windows = _zero_d_windows(
+            data, radial, unit, wavelength, exclude_d, exclude_width)
 
     # ---- panel selection ----
     if frames is not None:

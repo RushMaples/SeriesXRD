@@ -101,6 +101,39 @@ def _pattern_source(h5, source: str) -> "Tuple[np.ndarray, str]":
     return np.asarray(data, dtype=float), resolved
 
 
+def _zero_d_windows(data: np.ndarray, radial: np.ndarray, unit: str,
+                    wavelength: "Optional[float]",
+                    exclude_d: "Sequence[float]",
+                    exclude_width: float = 0.028
+                    ) -> "Tuple[np.ndarray, List[List[float]]]":
+    """Zero fractional windows around known contaminant d-spacings (Angstrom)
+    in every frame — the 1D analog of ``bulkxrd-spots --exclude-d`` (gasket
+    W, diamond anvil lines). Positions are used as given; scale them to
+    pressure yourself when that matters. Returns ``(copy, windows)`` where
+    ``windows`` is ``[[d0, q_lo, q_hi], ...]`` for the manifest."""
+    u = (unit or "").strip().lower()
+    r = np.asarray(radial, dtype=float)
+    if u in _Q_NM_UNITS:
+        q = r * 0.1
+    elif u in _Q_A_UNITS:
+        q = r
+    elif u in _TWOTH_UNITS and wavelength:
+        tth_rad = np.radians(r) if u == "2th_deg" else r
+        q = 4.0 * math.pi * np.sin(tth_rad / 2.0) / float(wavelength)
+    else:
+        raise ValueError("exclude_d needs a q axis or a wavelength on file.")
+    out = np.array(data, dtype=float, copy=True)
+    windows: "List[List[float]]" = []
+    for d0 in exclude_d:
+        qc = 2.0 * math.pi / float(d0)
+        lo, hi = qc * (1.0 - exclude_width), qc * (1.0 + exclude_width)
+        sel = (q >= lo) & (q <= hi)
+        if sel.any():
+            out[:, sel] = 0.0
+            windows.append([float(d0), float(lo), float(hi)])
+    return out, windows
+
+
 def _to_two_theta_deg(radial: np.ndarray, unit: str,
                       wavelength: "Optional[float]") -> "Optional[np.ndarray]":
     """2theta (deg) from the native radial axis, or ``None`` when it can't be
@@ -377,7 +410,9 @@ def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
                   frames: "Optional[Sequence[int]]" = None,
                   source: str = "fit", peaks: bool = True,
                   residual_peaks: "Optional[bool]" = None,
-                  unknowns: "Optional[bool]" = None) -> Dict[str, Any]:
+                  unknowns: "Optional[bool]" = None,
+                  exclude_d: "Optional[Sequence[float]]" = None,
+                  exclude_width: float = 0.028) -> Dict[str, Any]:
     """Export selected frames' REDUCTION/FIT patterns and peak-fitting results.
 
     The light sibling of :func:`export_refinement_bundle` for everyday
@@ -395,7 +430,11 @@ def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
     "spots"/"auto"/"robust" — the reduction-side channels reconstructed
     exactly as the pipeline does ("spots" = ``spot_residual`` alone, the
     coarse-grain/single-crystal sample channel: rings and smooth background
-    cancel in mean − median). ``frames=None`` exports every non-excluded frame.
+    cancel in mean − median). ``exclude_d`` zeroes fractional windows
+    (half-width ``exclude_width``) around known contaminant d-spacings in
+    every exported pattern (gasket W, diamond); the zeroed windows are
+    recorded in the manifest and flagged in each .xy header.
+    ``frames=None`` exports every non-excluded frame.
     ``residual_peaks`` writes ``residual_peaks.csv`` when Step 3a-removal has
     re-fit the leftover peaks; ``unknowns`` writes ``unknowns.csv`` when Step
     3c clustered those residual peaks. Returns a manifest.
@@ -415,7 +454,7 @@ def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
                                 "n_peaks": 0, "n_residual_peaks": 0,
                                 "n_unknown_obs": 0,
                                 "unit": "", "wavelength": None,
-                                "source": source}
+                                "source": source, "excluded_windows": []}
 
     with h5py.File(str(src), "r") as h5:
         unit = str(h5.attrs.get("unit", ""))
@@ -425,6 +464,15 @@ def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
         manifest["wavelength"] = wavelength
 
         data, source_label = _pattern_source(h5, source)
+        if exclude_d:
+            radial_x = (np.asarray(h5["radial"][:], dtype=float)
+                        if "radial" in h5
+                        else np.arange(data.shape[1], dtype=float))
+            data, windows = _zero_d_windows(
+                data, radial_x, unit, wavelength, exclude_d, exclude_width)
+            manifest["excluded_windows"] = windows
+            source_label += (" (excluded_d: "
+                             + ",".join(f"{w[0]:g}" for w in windows) + ")")
         n_total = int(data.shape[0])
         radial = (np.asarray(h5["radial"][:], dtype=float) if "radial" in h5
                   else np.arange(data.shape[1], dtype=float))
@@ -492,6 +540,8 @@ def export_refinement_bundle(
     phases: "Optional[Sequence[str]]" = None,
     workspace: "Optional[str | Path]" = None,
     source: str = "fit",
+    exclude_d: "Optional[Sequence[float]]" = None,
+    exclude_width: float = 0.028,
 ) -> Dict[str, Any]:
     """Export a Rietveld-refinement hand-off bundle to ``out_dir``.
 
@@ -521,6 +571,7 @@ def export_refinement_bundle(
     manifest: Dict[str, Any] = {
         "n_frames": 0, "files_written": [], "phases_written": [],
         "phases_skipped": [], "wavelength": None, "unit": "",
+        "excluded_windows": [],
     }
 
     with h5py.File(str(src), "r") as h5:
@@ -534,6 +585,12 @@ def export_refinement_bundle(
         n_total = int(data.shape[0])
         radial = (np.asarray(h5["radial"][:], dtype=float) if "radial" in h5
                   else np.arange(data.shape[1], dtype=float))
+        if exclude_d:
+            data, windows = _zero_d_windows(
+                data, radial, unit, wavelength, exclude_d, exclude_width)
+            manifest["excluded_windows"] = windows
+            source_label += (" (excluded_d: "
+                             + ",".join(f"{w[0]:g}" for w in windows) + ")")
 
         fr = h5.get("frames")
         filenames: "Optional[List[str]]" = None
@@ -668,15 +725,25 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="Also write peaks.csv: every fitted peak of the "
                         "exported frames (center/amplitude/fwhm ± esd, eta, "
                         "area, chi2, flag, attributed phase).")
+    p.add_argument("--exclude-d", default="",
+                   help="Comma-separated d-spacings (A) whose windows are "
+                        "zeroed in every exported pattern (gasket W, "
+                        "diamond anvil lines).")
+    p.add_argument("--exclude-width", type=float, default=0.028,
+                   help="Fractional half-width of each excluded window "
+                        "(default 0.028).")
     args = p.parse_args(argv)
     frames = ([int(s) for s in args.frames.split(",") if s.strip()]
               if args.frames.strip() else None)
     names = ([s.strip() for s in args.phases.split(",") if s.strip()]
              if args.phases.strip() else None)
+    exd = ([float(s) for s in args.exclude_d.split(",") if s.strip()]
+           if args.exclude_d.strip() else None)
     try:
         man = export_refinement_bundle(
             args.analysis, args.out_dir, frames=frames, phases=names,
-            workspace=(args.workspace or None), source=args.source)
+            workspace=(args.workspace or None), source=args.source,
+            exclude_d=exd, exclude_width=args.exclude_width)
         if args.peaks:
             import h5py  # type: ignore
             with h5py.File(str(Path(args.analysis).expanduser()), "r") as h5:

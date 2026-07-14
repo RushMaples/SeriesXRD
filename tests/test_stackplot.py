@@ -82,3 +82,22 @@ def test_unknown_style_raises(analysis_file, tmp_path):
     with pytest.raises(ValueError):
         stack_figure(analysis_file, tmp_path / "y.png", source="clean",
                      style="mountain")
+
+
+def test_export_frames_exclude_d(analysis_file, tmp_path):
+    """export_frames zeroes the excluded windows in the written .xy data."""
+    from bulkxrd.analysis.refine_export import export_frames
+    out = tmp_path / "xy"
+    d0 = 2.231   # ~ the synthetic peak position at 1 GPa (q ~ 2.82)
+    man = export_frames(analysis_file, out, frames=[0], source="clean",
+                        peaks=False, residual_peaks=False, unknowns=False,
+                        exclude_d=[d0])
+    assert len(man["excluded_windows"]) == 1
+    q, y = np.loadtxt(out / "patterns" / "frame_0000_q.xy", unpack=True)
+    qc = 2 * np.pi / d0
+    win = (q > qc * 0.98) & (q < qc * 1.02)
+    assert np.all(y[win] == 0.0)          # window zeroed
+    assert np.any(y[~win] != 0.0)         # everything else intact
+    # header carries the exclusion flag
+    head = (out / "patterns" / "frame_0000_q.xy").read_text().splitlines()[4]
+    assert "excluded_d" in head

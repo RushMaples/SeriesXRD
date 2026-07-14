@@ -2522,7 +2522,8 @@ class AnalysisApp:
 
     def _do_export_frames(self, indices, out_dir, *, source="fit", peaks=True,
                           residual_unknowns=True, stack=False,
-                          stack_style="panels", status_label=None):
+                          stack_style="panels", exclude_d=None,
+                          status_label=None):
         """Run the frame export (patterns + optional peaks.csv + optional
         stacked figure). Returns the manifest, or None on failure."""
         status = status_label or getattr(self, "_fm_status", None)
@@ -2536,7 +2537,8 @@ class AnalysisApp:
             man = export_frames(path, out_dir, frames=indices,
                                 source=source, peaks=peaks,
                                 residual_peaks=residual_unknowns,
-                                unknowns=residual_unknowns)
+                                unknowns=residual_unknowns,
+                                exclude_d=exclude_d)
         except Exception as e:
             self.log(f"Frame export failed: {e!r}", "WARN")
             if status is not None:
@@ -2556,7 +2558,7 @@ class AnalysisApp:
                 from .stackplot import stack_figure
                 sman = stack_figure(path, Path(out_dir) / "stack.png",
                                     source=source, frames=indices,
-                                    style=stack_style)
+                                    style=stack_style, exclude_d=exclude_d)
                 extra_msg = (f" + stack.png ({sman['n_panels']} "
                              f"{sman['style']} panels)")
             except Exception as e:
@@ -2615,6 +2617,15 @@ class AnalysisApp:
             text="Include residual/unknown peaks when available",
             variable=v_resunk,
         ).grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(content, text="Exclude d (Å)").grid(row=5, column=0,
+                                                      sticky="w", pady=2)
+        v_exd = tk.StringVar(value=str(self.config.get("export_exclude_d", "")))
+        _exd = ttk.Entry(content, textvariable=v_exd, width=36)
+        _exd.grid(row=5, column=1, sticky="we")
+        _ToolTip(_exd, "Optional comma-separated d-spacings (Å) whose "
+                       "windows (±2.8%) are zeroed in every exported "
+                       "pattern AND the stacked figure — known contaminant "
+                       "lines (gasket W, diamond). Blank = no exclusion.")
         v_stack = tk.BooleanVar(value=False)
         _stack_row = ttk.Frame(content)
         _stack_row.grid(row=4, column=0, columnspan=3, sticky="w", pady=2)
@@ -2636,18 +2647,18 @@ class AnalysisApp:
                             "subplots (journal layout); waterfall = offset "
                             "traces on one axes (best for tracking peak "
                             "drift across many frames).")
-        ttk.Label(content, text="Destination").grid(row=5, column=0,
+        ttk.Label(content, text="Destination").grid(row=6, column=0,
                                                     sticky="w", pady=2)
         v_dir = tk.StringVar(value=str(self.config.get("export_frames_dir", "")))
         ttk.Entry(content, textvariable=v_dir, width=36).grid(
-            row=5, column=1, sticky="we")
+            row=6, column=1, sticky="we")
 
         def _browse():
             d = self.filedialog.askdirectory(title="Export destination folder")
             if d:
                 v_dir.set(d)
         ttk.Button(content, text="Browse", command=_browse).grid(
-            row=5, column=2, padx=4)
+            row=6, column=2, padx=4)
 
         def _go():
             dest = v_dir.get().strip()
@@ -2656,7 +2667,16 @@ class AnalysisApp:
                                           "Pick a destination folder.",
                                           parent=dlg)
                 return
+            try:
+                exd = [float(s) for s in v_exd.get().split(",") if s.strip()]
+            except ValueError:
+                self.messagebox.showerror(
+                    "Export frames",
+                    "Exclude d must be a comma-separated list of numbers.",
+                    parent=dlg)
+                return
             self.config["export_frames_dir"] = dest
+            self.config["export_exclude_d"] = v_exd.get().strip()
             self.config["stack_style"] = v_stack_style.get()
             self.save_config(silent=True)
             dlg.destroy()
@@ -2664,10 +2684,11 @@ class AnalysisApp:
                                    peaks=bool(v_peaks.get()),
                                    residual_unknowns=bool(v_resunk.get()),
                                    stack=bool(v_stack.get()),
-                                   stack_style=v_stack_style.get())
+                                   stack_style=v_stack_style.get(),
+                                   exclude_d=exd or None)
 
         btns = ttk.Frame(content)
-        btns.grid(row=6, column=0, columnspan=3, sticky="e", pady=(8, 0))
+        btns.grid(row=7, column=0, columnspan=3, sticky="e", pady=(8, 0))
         ttk.Button(btns, text="Export", command=_go).pack(side="left", padx=4)
         ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="left",
                                                                   padx=4)
