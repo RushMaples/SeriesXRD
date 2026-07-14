@@ -2521,9 +2521,10 @@ class AnalysisApp:
                 self._fm_status.configure(text=str(e))
 
     def _do_export_frames(self, indices, out_dir, *, source="fit", peaks=True,
-                          residual_unknowns=True, status_label=None):
-        """Run the frame export (patterns + optional peaks.csv). Returns the
-        manifest, or None on failure (logged + status)."""
+                          residual_unknowns=True, stack=False,
+                          status_label=None):
+        """Run the frame export (patterns + optional peaks.csv + optional
+        stacked figure). Returns the manifest, or None on failure."""
         status = status_label or getattr(self, "_fm_status", None)
         path = str(self.config.get("analysis_h5_file", "") or "").strip()
         if not path or not Path(path).is_file():
@@ -2550,6 +2551,16 @@ class AnalysisApp:
             extra.append(f"{man['n_unknown_obs']} unknown row(s)")
         if extra:
             msg += " + " + " + ".join(extra)
+        if stack:
+            try:
+                from .stackplot import stack_figure
+                sman = stack_figure(path, Path(out_dir) / "stack.png",
+                                    source=source, frames=indices)
+                extra_msg = f" + stack.png ({sman['n_panels']} panels)"
+            except Exception as e:
+                self.log(f"Stacked figure failed: {e!r}", "WARN")
+                extra_msg = " (stacked figure FAILED, see log)"
+            msg += extra_msg
         msg += f" -> {out_dir}"
         if status is not None:
             status.configure(text=msg)
@@ -2602,18 +2613,28 @@ class AnalysisApp:
             text="Include residual/unknown peaks when available",
             variable=v_resunk,
         ).grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Label(content, text="Destination").grid(row=4, column=0,
+        v_stack = tk.BooleanVar(value=False)
+        _stack_cb = ttk.Checkbutton(
+            content,
+            text="Also write stacked figure (stack.png, one panel/pressure)",
+            variable=v_stack,
+        )
+        _stack_cb.grid(row=4, column=0, columnspan=3, sticky="w", pady=2)
+        _ToolTip(_stack_cb, "Journal-style stacked panels of the exported "
+                            "frames ordered by /frames/pressure, sequential "
+                            "color = pressure. Same channel as the export.")
+        ttk.Label(content, text="Destination").grid(row=5, column=0,
                                                     sticky="w", pady=2)
         v_dir = tk.StringVar(value=str(self.config.get("export_frames_dir", "")))
         ttk.Entry(content, textvariable=v_dir, width=36).grid(
-            row=4, column=1, sticky="we")
+            row=5, column=1, sticky="we")
 
         def _browse():
             d = self.filedialog.askdirectory(title="Export destination folder")
             if d:
                 v_dir.set(d)
         ttk.Button(content, text="Browse", command=_browse).grid(
-            row=4, column=2, padx=4)
+            row=5, column=2, padx=4)
 
         def _go():
             dest = v_dir.get().strip()
@@ -2627,10 +2648,11 @@ class AnalysisApp:
             dlg.destroy()
             self._do_export_frames(indices, dest, source=v_src.get(),
                                    peaks=bool(v_peaks.get()),
-                                   residual_unknowns=bool(v_resunk.get()))
+                                   residual_unknowns=bool(v_resunk.get()),
+                                   stack=bool(v_stack.get()))
 
         btns = ttk.Frame(content)
-        btns.grid(row=5, column=0, columnspan=3, sticky="e", pady=(8, 0))
+        btns.grid(row=6, column=0, columnspan=3, sticky="e", pady=(8, 0))
         ttk.Button(btns, text="Export", command=_go).pack(side="left", padx=4)
         ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="left",
                                                                   padx=4)
