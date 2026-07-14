@@ -66,12 +66,20 @@ def stack_figure(
     x_min: "Optional[float]" = None,
     x_max: "Optional[float]" = None,
     title: "Optional[str]" = None,
+    style: str = "panels",
     dpi: int = 300,
 ) -> Dict[str, Any]:
-    """Write a stacked-panel PNG of ``source`` patterns vs pressure.
+    """Write a stacked PNG of ``source`` patterns vs pressure.
 
-    Returns a manifest ``{out_png, n_panels, frames, labels, source, axis}``.
-    Raises ``ValueError`` when no frame qualifies (all excluded/saturated).
+    ``style="panels"`` (default) draws touching bordered subplots, one per
+    frame — the journal compression-series layout. ``style="waterfall"``
+    overlays all traces on ONE axes with a constant vertical offset (labels
+    at the right end of each trace) — better for eyeballing peak drift
+    across many frames because nothing interrupts the vertical alignment.
+
+    Returns a manifest ``{out_png, n_panels, frames, labels, source, axis,
+    style}``. Raises ``ValueError`` when no frame qualifies (all
+    excluded/saturated) or the style is unknown.
     """
     import h5py  # type: ignore
 
@@ -182,44 +190,71 @@ def stack_figure(
     p_lo = min(p_known) if p_known else 0.0
     p_span = (max(p_known) - p_lo) if len(p_known) > 1 else 1.0
 
-    fig, axes = plt.subplots(n, 1, figsize=(7.2, 0.78 * n + 1.2), sharex=True,
-                             gridspec_kw={"hspace": 0}, squeeze=False)
-    axes = axes[:, 0]
-    for ax, i, lbl in zip(axes[::-1], order, labels):
+    def _color(i):
         if np.isfinite(pressure[i]):
             t = (float(pressure[i]) - p_lo) / max(p_span, 1e-9)
-            color = cmap(0.35 + 0.6 * t)
-        else:
-            color = "#888888"
+            return cmap(0.35 + 0.6 * t)
+        return "#888888"
+
+    def _norm(i):
         y = np.nan_to_num(np.asarray(data[i], float))
-        amp = _robust_amp(y)
-        yn = np.clip(y / max(amp, 10.0 * _mad_noise(y), 1e-9), -0.06, 1.05)
-        ax.plot(x, yn, lw=0.8, color=color)
-        ax.set_ylim(-0.12, 1.28)
+        return np.clip(y / max(_robust_amp(y), 10.0 * _mad_noise(y), 1e-9),
+                       -0.06, 1.05)
+
+    lo_x = x_min if x_min is not None else float(np.nanmin(x))
+    hi_x = x_max if x_max is not None else float(np.nanmax(x))
+    fig_title = title if title is not None else f"{src.stem} — {resolved}"
+
+    if style == "waterfall":
+        fig, ax = plt.subplots(figsize=(9.0, 0.62 * n + 2.0))
+        off = 0.0
+        for i, lbl in zip(order, labels):
+            ax.plot(x, _norm(i) + off, lw=0.8, color=_color(i))
+            ax.annotate(lbl, (hi_x, off + 0.08), fontsize=8.5,
+                        color="#333333", ha="right", fontweight="bold")
+            off += 1.1
+        ax.set_xlim(lo_x, hi_x)
         ax.set_yticks([])
-        ax.annotate(lbl, (0.985, 0.72), xycoords="axes fraction", ha="right",
-                    fontsize=9.5, fontweight="bold", color="#333333")
-        for s in ("top", "bottom"):
-            ax.spines[s].set_linewidth(0.6)
-            ax.spines[s].set_color("#999999")
-    for ax, s in ((axes[0], "top"), (axes[-1], "bottom")):
-        ax.spines[s].set_linewidth(0.8)
-        ax.spines[s].set_color("#666666")
-    axes[-1].set_xlim(x_min if x_min is not None else float(np.nanmin(x)),
-                      x_max if x_max is not None else float(np.nanmax(x)))
-    axes[-1].set_xlabel(x_label)
-    fig.text(0.045, 0.5, "Intensity (a.u.)", va="center", rotation="vertical",
-             fontsize=11)
-    axes[0].set_title(title if title is not None
-                      else f"{src.stem} — {resolved}", fontsize=11, pad=8)
-    fig.tight_layout(rect=(0.05, 0, 1, 1))
+        ax.set_ylabel("normalized intensity (offset per frame)")
+        ax.set_xlabel(x_label)
+        ax.set_title(fig_title, fontsize=11, pad=8)
+        ax.grid(axis="x", color="#e6e6e6", lw=0.6)
+        ax.set_axisbelow(True)
+        fig.tight_layout()
+    elif style == "panels":
+        fig, axes = plt.subplots(n, 1, figsize=(7.2, 0.78 * n + 1.2),
+                                 sharex=True, gridspec_kw={"hspace": 0},
+                                 squeeze=False)
+        axes = axes[:, 0]
+        for ax, i, lbl in zip(axes[::-1], order, labels):
+            ax.plot(x, _norm(i), lw=0.8, color=_color(i))
+            ax.set_ylim(-0.12, 1.28)
+            ax.set_yticks([])
+            ax.annotate(lbl, (0.985, 0.72), xycoords="axes fraction",
+                        ha="right", fontsize=9.5, fontweight="bold",
+                        color="#333333")
+            for s in ("top", "bottom"):
+                ax.spines[s].set_linewidth(0.6)
+                ax.spines[s].set_color("#999999")
+        for ax, s in ((axes[0], "top"), (axes[-1], "bottom")):
+            ax.spines[s].set_linewidth(0.8)
+            ax.spines[s].set_color("#666666")
+        axes[-1].set_xlim(lo_x, hi_x)
+        axes[-1].set_xlabel(x_label)
+        fig.text(0.045, 0.5, "Intensity (a.u.)", va="center",
+                 rotation="vertical", fontsize=11)
+        axes[0].set_title(fig_title, fontsize=11, pad=8)
+        fig.tight_layout(rect=(0.05, 0, 1, 1))
+    else:
+        raise ValueError(f"Unknown style {style!r} (panels|waterfall).")
     fig.savefig(str(out), dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
     man = {"out_png": str(out), "n_panels": n, "frames": [int(i) for i in order],
-           "labels": labels, "source": resolved, "axis": axis,
+           "labels": labels, "source": resolved, "axis": axis, "style": style,
            "excluded_windows": excluded_windows}
-    print(f"[STACK] {n} panel(s) ({resolved}, {axis}) -> {out}", flush=True)
+    print(f"[STACK] {n} panel(s) ({resolved}, {axis}, {style}) -> {out}",
+          flush=True)
     return man
 
 
@@ -252,6 +287,10 @@ def main(argv: "list[str] | None" = None) -> int:
     p.add_argument("--x-min", type=float, default=None)
     p.add_argument("--x-max", type=float, default=None)
     p.add_argument("--title", default=None)
+    p.add_argument("--style", default="panels",
+                   choices=["panels", "waterfall"],
+                   help="panels = touching subplots (journal layout); "
+                        "waterfall = offset traces on one axes.")
     args = p.parse_args(argv)
     frames = ([int(s) for s in args.frames.split(",") if s.strip()]
               if args.frames.strip() else None)
@@ -263,7 +302,7 @@ def main(argv: "list[str] | None" = None) -> int:
                      frames=frames, exclude_d=exd,
                      exclude_width=args.exclude_width,
                      saturation_cutoff=cutoff, x_min=args.x_min,
-                     x_max=args.x_max, title=args.title)
+                     x_max=args.x_max, title=args.title, style=args.style)
     except (OSError, ValueError, KeyError) as e:
         print(f"[ERROR] {e}", flush=True)
         return 1

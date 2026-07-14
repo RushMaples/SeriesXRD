@@ -67,3 +67,18 @@ def test_all_saturated_raises(analysis_file, tmp_path):
     with pytest.raises(ValueError):
         stack_figure(analysis_file, tmp_path / "x.png", source="clean",
                      saturation_cutoff=0.5)
+
+
+def test_waterfall_style(analysis_file, tmp_path):
+    out = tmp_path / "wf.png"
+    man = stack_figure(analysis_file, out, source="clean", style="waterfall",
+                       frames=[0, 2, 3])
+    assert out.is_file() and out.stat().st_size > 0
+    assert man["style"] == "waterfall"
+    assert man["n_panels"] == 3
+
+
+def test_unknown_style_raises(analysis_file, tmp_path):
+    with pytest.raises(ValueError):
+        stack_figure(analysis_file, tmp_path / "y.png", source="clean",
+                     style="mountain")

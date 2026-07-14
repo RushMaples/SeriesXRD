@@ -2522,7 +2522,7 @@ class AnalysisApp:
 
     def _do_export_frames(self, indices, out_dir, *, source="fit", peaks=True,
                           residual_unknowns=True, stack=False,
-                          status_label=None):
+                          stack_style="panels", status_label=None):
         """Run the frame export (patterns + optional peaks.csv + optional
         stacked figure). Returns the manifest, or None on failure."""
         status = status_label or getattr(self, "_fm_status", None)
@@ -2555,8 +2555,10 @@ class AnalysisApp:
             try:
                 from .stackplot import stack_figure
                 sman = stack_figure(path, Path(out_dir) / "stack.png",
-                                    source=source, frames=indices)
-                extra_msg = f" + stack.png ({sman['n_panels']} panels)"
+                                    source=source, frames=indices,
+                                    style=stack_style)
+                extra_msg = (f" + stack.png ({sman['n_panels']} "
+                             f"{sman['style']} panels)")
             except Exception as e:
                 self.log(f"Stacked figure failed: {e!r}", "WARN")
                 extra_msg = " (stacked figure FAILED, see log)"
@@ -2614,15 +2616,26 @@ class AnalysisApp:
             variable=v_resunk,
         ).grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
         v_stack = tk.BooleanVar(value=False)
+        _stack_row = ttk.Frame(content)
+        _stack_row.grid(row=4, column=0, columnspan=3, sticky="w", pady=2)
         _stack_cb = ttk.Checkbutton(
-            content,
-            text="Also write stacked figure (stack.png, one panel/pressure)",
+            _stack_row,
+            text="Also write stacked figure (stack.png)  style:",
             variable=v_stack,
         )
-        _stack_cb.grid(row=4, column=0, columnspan=3, sticky="w", pady=2)
-        _ToolTip(_stack_cb, "Journal-style stacked panels of the exported "
-                            "frames ordered by /frames/pressure, sequential "
-                            "color = pressure. Same channel as the export.")
+        _stack_cb.pack(side="left")
+        v_stack_style = tk.StringVar(
+            value=str(self.config.get("stack_style", "panels")))
+        _stack_style = ttk.Combobox(_stack_row, textvariable=v_stack_style,
+                                    state="readonly", width=9,
+                                    values=["panels", "waterfall"])
+        _stack_style.pack(side="left", padx=(4, 0))
+        _ToolTip(_stack_cb, "Figure of the exported frames ordered by "
+                            "/frames/pressure, sequential color = pressure, "
+                            "same channel as the export. panels = touching "
+                            "subplots (journal layout); waterfall = offset "
+                            "traces on one axes (best for tracking peak "
+                            "drift across many frames).")
         ttk.Label(content, text="Destination").grid(row=5, column=0,
                                                     sticky="w", pady=2)
         v_dir = tk.StringVar(value=str(self.config.get("export_frames_dir", "")))
@@ -2644,12 +2657,14 @@ class AnalysisApp:
                                           parent=dlg)
                 return
             self.config["export_frames_dir"] = dest
+            self.config["stack_style"] = v_stack_style.get()
             self.save_config(silent=True)
             dlg.destroy()
             self._do_export_frames(indices, dest, source=v_src.get(),
                                    peaks=bool(v_peaks.get()),
                                    residual_unknowns=bool(v_resunk.get()),
-                                   stack=bool(v_stack.get()))
+                                   stack=bool(v_stack.get()),
+                                   stack_style=v_stack_style.get())
 
         btns = ttk.Frame(content)
         btns.grid(row=6, column=0, columnspan=3, sticky="e", pady=(8, 0))
