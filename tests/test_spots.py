@@ -467,6 +467,16 @@ def _test_export_masks(tmp: Path) -> None:
                       & (data2[:, 0] <= 2.0 * (1 + 0.028)))
     assert np.any(np.abs(data2[:, 0] - 3.0) < 0.1)  # spot 1 survives
 
+    # reintegrate_masked_frames: same masks, fresh dir -> same .xye
+    from bulkxrd.analysis.spots import reintegrate_masked_frames
+    out3 = tmp / "masks_reint"
+    man3 = reintegrate_masked_frames(out, red, dataset_dir=rawdir,
+                                     out_dir=out3)
+    assert man3["n_frames"] == 1 and not man3["missing_raw"], man3
+    data3 = np.loadtxt(out3 / "frame_0000_masked_q.xye", ndmin=2)
+    assert data3.shape == data.shape
+    assert np.allclose(data3, data, rtol=1e-6)
+
 
 def main() -> None:
     _test_helpers()

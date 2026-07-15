@@ -679,6 +679,142 @@ def export_ring_removed_cakes(
     return {"out_dir": str(dest), "files": written}
 
 
+def _integrate_masked_pattern(ai, raw, mask, npt_1d: int, unit: str,
+                              dest: Path, stem: str, *, label: str,
+                              fname: str,
+                              exclude_d: "Optional[Sequence[float]]" = None,
+                              exclude_width: float = 0.028) -> "List[str]":
+    """Integrate one keep-only-masked raw image on the native axis and (when
+    the wavelength is known) 2theta, and write GSAS-ready patterns:
+    ``<stem>_q.xye`` + ``<stem>.xye`` — three columns (x, intensity, Poisson
+    esd), bins with no unmasked pixels omitted, optional contaminant
+    d-windows dropped. Falls back to two-column ``.xy`` if pyFAI returns no
+    sigma. Returns the written filenames."""
+    from .refine_export import _d_window_mask, _write_xy, _xy_header
+
+    written: "List[str]" = []
+    wl_A = float(ai.wavelength) * 1e10 if ai.wavelength else None
+    for ax_unit, suffix in ((unit, "_q"), ("2th_deg", "")):
+        if ax_unit == "2th_deg" and not wl_A:
+            continue
+        res = ai.integrate1d(raw, npt_1d, mask=mask, unit=ax_unit,
+                             error_model="poisson")
+        x = np.asarray(res.radial, float)
+        y = np.asarray(res.intensity, float)
+        sig = (np.asarray(res.sigma, float)
+               if getattr(res, "sigma", None) is not None else None)
+        cnt = (np.asarray(res.count, float).ravel()
+               if getattr(res, "count", None) is not None else None)
+        # bins no kept box covers are NOT measurements — omit them
+        keep_rows = (cnt > 0) if cnt is not None else np.ones(y.size, bool)
+        lbl = label
+        if exclude_d:
+            in_win, wins = _d_window_mask(
+                x, ax_unit, wl_A, exclude_d, exclude_width)
+            keep_rows &= ~in_win
+            lbl += (" (excluded_d drop: "
+                    + ",".join(f"{w[0]:g}" for w in wins) + ")")
+        if sig is not None:
+            # Poisson esd of an observed 0 is 0 -> infinite weight;
+            # floor at the frame's smallest positive esd instead
+            pos = sig[keep_rows & (sig > 0)]
+            floor = float(pos.min()) if pos.size else 1.0
+            sig = np.where(sig > 0, sig, floor)
+        ext = ".xye" if sig is not None else ".xy"
+        p_out = dest / f"{stem}{suffix}{ext}"
+        _write_xy(p_out, x, y, sigma=sig, keep=keep_rows,
+                  header=_xy_header(axis=ax_unit, native_unit=unit,
+                                    wavelength=wl_A, source_label=lbl,
+                                    filename=fname))
+        written.append(p_out.name)
+    return written
+
+
+def reintegrate_masked_frames(
+    mask_dir: "str | Path",
+    reduced_h5: "str | Path",
+    *,
+    dataset_dir: "str | Path",
+    out_dir: "Optional[str | Path]" = None,
+    frames: "Optional[Sequence[int]]" = None,
+    npt: "Optional[int]" = None,
+    exclude_d: "Optional[Sequence[float]]" = None,
+    exclude_width: float = 0.028,
+) -> Dict[str, Any]:
+    """Re-integrate raw frames through PREVIOUSLY EXPORTED keep-only masks.
+
+    Upgrades an existing :func:`export_spot_masks` directory (the reviewed,
+    accepted ``frame_####_mask.npy`` files) to GSAS-ready ``.xye`` patterns
+    without re-deriving the masks: each mask is applied to its raw image and
+    integrated with a Poisson error model (see
+    :func:`_integrate_masked_pattern` for the file conventions). Use this
+    when the mask selection is already accepted and only the pattern format
+    needs to change.
+
+    Geometry comes from ``mask_dir/_geometry.poni`` when present, else the
+    reduced file's ``poni_text``. Frame filenames come from the reduced
+    file's ``/frames/filename``; ``npt`` defaults to the reduction's radial
+    bin count. ``out_dir`` defaults to ``mask_dir`` (the .xye files land
+    beside the masks). Returns a manifest.
+    """
+    import re as _re
+    import h5py  # type: ignore
+    import pyFAI  # type: ignore
+    from ..core.io import read_detector_image
+
+    mdir = Path(mask_dir).expanduser().resolve()
+    dest = Path(out_dir).expanduser() if out_dir is not None else mdir
+    dest.mkdir(parents=True, exist_ok=True)
+    droot = Path(dataset_dir).expanduser()
+
+    with h5py.File(str(Path(reduced_h5).expanduser()), "r") as h:
+        unit = str(h.attrs.get("unit", "q_A^-1"))
+        poni_text = str(h.attrs.get("poni_text", "") or "")
+        npt_file = (int(h["patterns/radial"].shape[0])
+                    if "patterns" in h and "radial" in h["patterns"] else 1500)
+        fr = h.get("frames")
+        names = ([_decode_text(v) for v in fr["filename"][:]]
+                 if fr is not None and "filename" in fr else [])
+
+    poni_path = mdir / "_geometry.poni"
+    if not poni_path.is_file():
+        if not poni_text.strip():
+            raise ValueError(f"No _geometry.poni in {mdir} and no poni_text "
+                             f"in {reduced_h5}.")
+        poni_path = dest / "_geometry.poni"
+        poni_path.write_text(poni_text, encoding="utf-8")
+    ai = pyFAI.load(str(poni_path))
+    n_bins = int(npt or npt_file)
+
+    mask_files = sorted(mdir.glob("frame_*_mask.npy"))
+    want = (None if frames is None
+            else {int(i) for i in frames})
+    written: "List[str]" = []
+    missing: "List[str]" = []
+    n_done = 0
+    for mf in mask_files:
+        fi = int(_re.match(r"frame_(\d+)_mask", mf.name).group(1))
+        if want is not None and fi not in want:
+            continue
+        fname = names[fi] if fi < len(names) else ""
+        p_raw = droot / fname
+        if not fname or not p_raw.is_file():
+            missing.append(str(p_raw))
+            continue
+        raw = read_detector_image(p_raw)
+        mask = np.load(mf)
+        written += _integrate_masked_pattern(
+            ai, raw, mask, n_bins, unit, dest, f"frame_{fi:04d}_masked",
+            label="spot-masked raw (accepted mask)", fname=fname,
+            exclude_d=exclude_d, exclude_width=exclude_width)
+        n_done += 1
+
+    print(f"[SPOTS] reintegrate-masks: {n_done} frame(s) -> {dest}"
+          + (f" ({len(missing)} raw missing)" if missing else ""), flush=True)
+    return {"out_dir": str(dest), "n_frames": n_done,
+            "files": written, "missing_raw": missing}
+
+
 def export_spot_masks(
     reduced_h5: "str | Path",
     spots_h5: "str | Path",
@@ -891,41 +1027,11 @@ def export_spot_masks(
             written.append(f"frame_{fi:04d}_mask.png")
 
         if integrate and raw is not None:
-            wl_A = float(ai.wavelength) * 1e10 if ai.wavelength else None
-            for ax_unit, suffix in ((unit, "_q"), ("2th_deg", "")):
-                if ax_unit == "2th_deg" and not wl_A:
-                    continue
-                res = ai.integrate1d(raw, npt_1d, mask=mask, unit=ax_unit,
-                                     error_model="poisson")
-                x = np.asarray(res.radial, float)
-                y = np.asarray(res.intensity, float)
-                sig = (np.asarray(res.sigma, float)
-                       if getattr(res, "sigma", None) is not None else None)
-                cnt = (np.asarray(res.count, float).ravel()
-                       if getattr(res, "count", None) is not None else None)
-                # bins no kept box covers are NOT measurements — omit them
-                keep_rows = (cnt > 0) if cnt is not None else np.ones(y.size, bool)
-                label = f"spot-masked raw ({idx.size} regions)"
-                if exclude_d:
-                    in_win, wins = _d_window_mask(
-                        x, ax_unit, wl_A, exclude_d, exclude_width)
-                    keep_rows &= ~in_win
-                    label += (" (excluded_d drop: "
-                              + ",".join(f"{w[0]:g}" for w in wins) + ")")
-                if sig is not None:
-                    # Poisson esd of an observed 0 is 0 -> infinite weight;
-                    # floor at the frame's smallest positive esd instead
-                    pos = sig[keep_rows & (sig > 0)]
-                    floor = float(pos.min()) if pos.size else 1.0
-                    sig = np.where(sig > 0, sig, floor)
-                ext = ".xye" if sig is not None else ".xy"
-                p_out = dest / f"frame_{fi:04d}_masked{suffix}{ext}"
-                _write_xy(p_out, x, y, sigma=sig, keep=keep_rows,
-                          header=_xy_header(axis=ax_unit, native_unit=unit,
-                                            wavelength=wl_A,
-                                            source_label=label,
-                                            filename=fname))
-                written.append(p_out.name)
+            written += _integrate_masked_pattern(
+                ai, raw, mask, npt_1d, unit, dest,
+                f"frame_{fi:04d}_masked",
+                label=f"spot-masked raw ({idx.size} regions)", fname=fname,
+                exclude_d=exclude_d, exclude_width=exclude_width)
         n_frames_done += 1
 
     import csv as _csv
@@ -1883,6 +1989,15 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
     msk.add_argument("--mask-exclude-width", type=float, default=0.028,
                      help="fractional half-width of each --mask-exclude-d "
                           "window (default 0.028)")
+    msk.add_argument("--reintegrate-masks", metavar="DIR",
+                     help="re-integrate raw frames through the PREVIOUSLY "
+                          "exported keep-only masks in DIR "
+                          "(frame_####_mask.npy) into GSAS-ready .xye "
+                          "patterns, then exit. Needs --dataset-dir; "
+                          "geometry from DIR\\_geometry.poni (else the "
+                          "reduced file's poni_text). Use when the mask "
+                          "selection is already accepted and only the "
+                          "pattern format changes.")
     args = ap.parse_args(argv)
 
     def _do_export_masks(spots_path: Path,
@@ -1936,6 +2051,25 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
         dest = (Path(args.export) / "ringless" if args.export
                 else spots_path.with_name(spots_path.stem + "_ringless"))
         export_ring_removed_cakes(red, dest, frames)
+
+    if args.reintegrate_masks:
+        if not args.dataset_dir:
+            print("[ERROR] --reintegrate-masks needs --dataset-dir (root of "
+                  "the raw images).", flush=True)
+            return 1
+        mexd = ([float(v) for v in args.mask_exclude_d.split(",") if v.strip()]
+                if args.mask_exclude_d.strip() else None)
+        mframes = ([int(v) for v in args.mask_frames.split(",") if v.strip()]
+                   if args.mask_frames else None)
+        try:
+            reintegrate_masked_frames(
+                args.reintegrate_masks, args.reduced,
+                dataset_dir=args.dataset_dir, frames=mframes,
+                exclude_d=mexd, exclude_width=args.mask_exclude_width)
+        except (OSError, ValueError, KeyError) as e:
+            print(f"[ERROR] {e}", flush=True)
+            return 1
+        return 0
 
     if args.match_only:
         if not (args.match or args.export or args.export_cakes
