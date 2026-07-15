@@ -60,6 +60,7 @@ bulkxrd-texture = "bulkxrd.reduce.texture:main"
 bulkxrd-spots = "bulkxrd.analysis.spots:main"
 bulkxrd-watch = "bulkxrd.reduce.watch:main"
 bulkxrd-export-refinement = "bulkxrd.analysis.refine_export:main"
+bulkxrd-export-gsas = "bulkxrd.analysis.refine_export:main_gsas_raw"
 bulkxrd-stack = "bulkxrd.analysis.stackplot:main"
 bulkxrd-inspect = "bulkxrd.core.inspect:main"
 

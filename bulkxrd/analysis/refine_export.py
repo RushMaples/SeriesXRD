@@ -101,16 +101,17 @@ def _pattern_source(h5, source: str) -> "Tuple[np.ndarray, str]":
     return np.asarray(data, dtype=float), resolved
 
 
-def _zero_d_windows(data: np.ndarray, radial: np.ndarray, unit: str,
-                    wavelength: "Optional[float]",
-                    exclude_d: "Sequence[float]",
-                    exclude_width: float = 0.028
-                    ) -> "Tuple[np.ndarray, List[List[float]]]":
-    """Zero fractional windows around known contaminant d-spacings (Angstrom)
-    in every frame — the 1D analog of ``bulkxrd-spots --exclude-d`` (gasket
-    W, diamond anvil lines). Positions are used as given; scale them to
-    pressure yourself when that matters. Returns ``(copy, windows)`` where
-    ``windows`` is ``[[d0, q_lo, q_hi], ...]`` for the manifest."""
+def _d_window_mask(radial: np.ndarray, unit: str,
+                   wavelength: "Optional[float]",
+                   exclude_d: "Sequence[float]",
+                   exclude_width: float = 0.028
+                   ) -> "Tuple[np.ndarray, List[List[float]]]":
+    """Boolean bin mask (True = inside a window) for fractional windows
+    around known contaminant d-spacings (Angstrom) — the 1D analog of
+    ``bulkxrd-spots --exclude-d`` (gasket W, diamond anvil lines, solid Ne).
+    Positions are used as given; scale them to pressure yourself when that
+    matters. Returns ``(in_window, windows)`` where ``windows`` is
+    ``[[d0, q_lo, q_hi], ...]`` for the manifest."""
     u = (unit or "").strip().lower()
     r = np.asarray(radial, dtype=float)
     if u in _Q_NM_UNITS:
@@ -122,15 +123,32 @@ def _zero_d_windows(data: np.ndarray, radial: np.ndarray, unit: str,
         q = 4.0 * math.pi * np.sin(tth_rad / 2.0) / float(wavelength)
     else:
         raise ValueError("exclude_d needs a q axis or a wavelength on file.")
-    out = np.array(data, dtype=float, copy=True)
+    in_window = np.zeros(r.size, dtype=bool)
     windows: "List[List[float]]" = []
     for d0 in exclude_d:
         qc = 2.0 * math.pi / float(d0)
         lo, hi = qc * (1.0 - exclude_width), qc * (1.0 + exclude_width)
         sel = (q >= lo) & (q <= hi)
         if sel.any():
-            out[:, sel] = 0.0
+            in_window |= sel
             windows.append([float(d0), float(lo), float(hi)])
+    return in_window, windows
+
+
+def _zero_d_windows(data: np.ndarray, radial: np.ndarray, unit: str,
+                    wavelength: "Optional[float]",
+                    exclude_d: "Sequence[float]",
+                    exclude_width: float = 0.028
+                    ) -> "Tuple[np.ndarray, List[List[float]]]":
+    """Zero the :func:`_d_window_mask` windows in every frame (legacy
+    ``exclude_mode="zero"``). Prefer dropping the bins for refinement
+    hand-offs: a least-squares engine treats a zeroed bin as a real
+    zero-intensity measurement, not as missing data."""
+    in_window, windows = _d_window_mask(radial, unit, wavelength,
+                                        exclude_d, exclude_width)
+    out = np.array(data, dtype=float, copy=True)
+    if in_window.any():
+        out[:, in_window] = 0.0
     return out, windows
 
 
@@ -171,9 +189,23 @@ def _xy_header(*, axis: str, native_unit: str, wavelength: "Optional[float]",
     )
 
 
-def _write_xy(path: Path, x: np.ndarray, y: np.ndarray, *, header: str) -> None:
-    np.savetxt(str(path), np.column_stack([np.asarray(x, float), np.asarray(y, float)]),
-               header=header, comments="# ", fmt="%.8f")
+def _write_xy(path: Path, x: np.ndarray, y: np.ndarray, *, header: str,
+              sigma: "Optional[np.ndarray]" = None,
+              keep: "Optional[np.ndarray]" = None) -> None:
+    """Two-column ``.xy`` (x, y) or — with ``sigma`` — three-column ``.xye``
+    (x, y, esd) pattern file. ``keep`` (bool per bin) DROPS the other rows
+    entirely: absent points are how a refinement engine is told "no data
+    here" (a written zero is a confident measurement of zero and drags the
+    background fit into every gap)."""
+    cols = [np.asarray(x, float), np.asarray(y, float)]
+    if sigma is not None:
+        cols.append(np.asarray(sigma, float))
+    stacked = np.column_stack(cols)
+    rows = np.isfinite(stacked).all(axis=1)   # a NaN row is not a measurement
+    if keep is not None:
+        rows &= np.asarray(keep, bool)
+    np.savetxt(str(path), stacked[rows], header=header, comments="# ",
+               fmt="%.8f")
 
 
 _INSTPRM_HEADER = "#GSAS-II instrument parameter file; do not add/delete items!"
@@ -412,7 +444,8 @@ def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
                   residual_peaks: "Optional[bool]" = None,
                   unknowns: "Optional[bool]" = None,
                   exclude_d: "Optional[Sequence[float]]" = None,
-                  exclude_width: float = 0.028) -> Dict[str, Any]:
+                  exclude_width: float = 0.028,
+                  exclude_mode: str = "drop") -> Dict[str, Any]:
     """Export selected frames' REDUCTION/FIT patterns and peak-fitting results.
 
     The light sibling of :func:`export_refinement_bundle` for everyday
@@ -430,10 +463,15 @@ def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
     "spots"/"auto"/"robust" — the reduction-side channels reconstructed
     exactly as the pipeline does ("spots" = ``spot_residual`` alone, the
     coarse-grain/single-crystal sample channel: rings and smooth background
-    cancel in mean − median). ``exclude_d`` zeroes fractional windows
+    cancel in mean − median). ``exclude_d`` excludes fractional windows
     (half-width ``exclude_width``) around known contaminant d-spacings in
-    every exported pattern (gasket W, diamond); the zeroed windows are
+    every exported pattern (gasket W, diamond, solid Ne); the windows are
     recorded in the manifest and flagged in each .xy header.
+    ``exclude_mode`` — ``"drop"`` (default) omits the window bins from the
+    written files, which is what a refinement engine needs (a zeroed bin is
+    fitted as a real zero-intensity measurement and drags the background
+    down); ``"zero"`` writes zeros (the pre-drop behavior, for plotting
+    tools that want a full uniform grid).
     ``frames=None`` exports every non-excluded frame.
     ``residual_peaks`` writes ``residual_peaks.csv`` when Step 3a-removal has
     re-fit the leftover peaks; ``unknowns`` writes ``unknowns.csv`` when Step
@@ -464,18 +502,26 @@ def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
         manifest["wavelength"] = wavelength
 
         data, source_label = _pattern_source(h5, source)
-        if exclude_d:
-            radial_x = (np.asarray(h5["radial"][:], dtype=float)
-                        if "radial" in h5
-                        else np.arange(data.shape[1], dtype=float))
-            data, windows = _zero_d_windows(
-                data, radial_x, unit, wavelength, exclude_d, exclude_width)
-            manifest["excluded_windows"] = windows
-            source_label += (" (excluded_d: "
-                             + ",".join(f"{w[0]:g}" for w in windows) + ")")
-        n_total = int(data.shape[0])
         radial = (np.asarray(h5["radial"][:], dtype=float) if "radial" in h5
                   else np.arange(data.shape[1], dtype=float))
+        keep_bins: "Optional[np.ndarray]" = None
+        if exclude_d:
+            mode = (exclude_mode or "drop").strip().lower()
+            if mode not in ("drop", "zero"):
+                raise ValueError(f"exclude_mode must be 'drop' or 'zero', "
+                                 f"got {exclude_mode!r}")
+            if mode == "zero":
+                data, windows = _zero_d_windows(
+                    data, radial, unit, wavelength, exclude_d, exclude_width)
+            else:
+                in_window, windows = _d_window_mask(
+                    radial, unit, wavelength, exclude_d, exclude_width)
+                keep_bins = ~in_window
+            manifest["excluded_windows"] = windows
+            manifest["exclude_mode"] = mode
+            source_label += (f" (excluded_d {mode}: "
+                             + ",".join(f"{w[0]:g}" for w in windows) + ")")
+        n_total = int(data.shape[0])
         fr = h5.get("frames")
         filenames: "List[str]" = []
         if fr is not None and "filename" in fr:
@@ -494,14 +540,16 @@ def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
         for i in frame_idx:
             fname = filenames[i] if i < len(filenames) else ""
             p_native = patterns_dir / f"frame_{i:04d}_q.xy"
-            _write_xy(p_native, radial, data[i], header=_xy_header(
+            _write_xy(p_native, radial, data[i], keep=keep_bins,
+                      header=_xy_header(
                 axis=unit or "native", native_unit=unit, wavelength=wavelength,
                 source_label=source_label, filename=fname))
             manifest["files_written"].append(str(p_native))
             tth = _to_two_theta_deg(radial, unit, wavelength)
             if tth is not None:
                 p_tth = patterns_dir / f"frame_{i:04d}.xy"
-                _write_xy(p_tth, tth, data[i], header=_xy_header(
+                _write_xy(p_tth, tth, data[i], keep=keep_bins,
+                          header=_xy_header(
                     axis="2th_deg", native_unit=unit, wavelength=wavelength,
                     source_label=source_label, filename=fname))
                 manifest["files_written"].append(str(p_tth))
@@ -542,6 +590,7 @@ def export_refinement_bundle(
     source: str = "fit",
     exclude_d: "Optional[Sequence[float]]" = None,
     exclude_width: float = 0.028,
+    exclude_mode: str = "drop",
 ) -> Dict[str, Any]:
     """Export a Rietveld-refinement hand-off bundle to ``out_dir``.
 
@@ -553,6 +602,9 @@ def export_refinement_bundle(
     ``"fit"`` (default) reconstructs the Step-2 fit source, ``"robust"`` is
     ``clean + baseline``, and ``"clean"``/``"mean"``/``"hybrid"``/
     ``"sigmaclip"``/``"auto"`` go through :func:`peaks.build_fit_source`.
+    ``exclude_d``/``exclude_width``/``exclude_mode`` — contaminant windows;
+    ``"drop"`` (default) omits those bins from the written patterns (what a
+    refinement engine needs), ``"zero"`` writes zeros (uniform-grid legacy).
 
     Returns a manifest dict: ``{n_frames, files_written, phases_written,
     phases_skipped, wavelength, unit}``. Never raises for a single bad phase
@@ -585,11 +637,22 @@ def export_refinement_bundle(
         n_total = int(data.shape[0])
         radial = (np.asarray(h5["radial"][:], dtype=float) if "radial" in h5
                   else np.arange(data.shape[1], dtype=float))
+        keep_bins: "Optional[np.ndarray]" = None
         if exclude_d:
-            data, windows = _zero_d_windows(
-                data, radial, unit, wavelength, exclude_d, exclude_width)
+            mode = (exclude_mode or "drop").strip().lower()
+            if mode not in ("drop", "zero"):
+                raise ValueError(f"exclude_mode must be 'drop' or 'zero', "
+                                 f"got {exclude_mode!r}")
+            if mode == "zero":
+                data, windows = _zero_d_windows(
+                    data, radial, unit, wavelength, exclude_d, exclude_width)
+            else:
+                in_window, windows = _d_window_mask(
+                    radial, unit, wavelength, exclude_d, exclude_width)
+                keep_bins = ~in_window
             manifest["excluded_windows"] = windows
-            source_label += (" (excluded_d: "
+            manifest["exclude_mode"] = mode
+            source_label += (f" (excluded_d {mode}: "
                              + ",".join(f"{w[0]:g}" for w in windows) + ")")
 
         fr = h5.get("frames")
@@ -614,7 +677,8 @@ def export_refinement_bundle(
             fname = filenames[i] if (filenames is not None and i < len(filenames)) else ""
 
             native_path = patterns_dir / f"frame_{i:04d}_q.xy"
-            _write_xy(native_path, radial, y, header=_xy_header(
+            _write_xy(native_path, radial, y, keep=keep_bins,
+                      header=_xy_header(
                 axis=unit or "native", native_unit=unit, wavelength=wavelength,
                 source_label=source_label, filename=fname))
             manifest["files_written"].append(str(native_path))
@@ -622,7 +686,8 @@ def export_refinement_bundle(
             tth = _to_two_theta_deg(radial, unit, wavelength)
             if tth is not None:
                 tth_path = patterns_dir / f"frame_{i:04d}.xy"
-                _write_xy(tth_path, tth, y, header=_xy_header(
+                _write_xy(tth_path, tth, y, keep=keep_bins,
+                          header=_xy_header(
                     axis="2th_deg", native_unit=unit, wavelength=wavelength,
                     source_label=source_label, filename=fname))
                 manifest["files_written"].append(str(tth_path))
@@ -697,6 +762,239 @@ def export_refinement_bundle(
     return manifest
 
 
+# ---------------------------------------------------------------------------
+# Raw re-integration export (statistically GSAS-ready patterns)
+# ---------------------------------------------------------------------------
+
+def export_gsas_raw(reduced_h5: "str | Path", out_dir: "str | Path", *,
+                    frames: "Optional[Sequence[int]]" = None,
+                    analysis_h5: "Optional[str | Path]" = None,
+                    group_by_pressure: bool = False,
+                    dataset_dir: "Optional[str | Path]" = None,
+                    exclude_d: "Optional[Sequence[float]]" = None,
+                    exclude_width: float = 0.028,
+                    npt: "Optional[int]" = None) -> Dict[str, Any]:
+    """Re-integrate RAW frames into GSAS-ready ``.xye`` patterns.
+
+    The reduced-HDF5 channels are averages without stored uncertainties, so
+    a refinement engine importing them has to guess its weights. This export
+    goes back to the raw images with the reduction's own geometry and
+    detector mask and integrates with a Poisson error model, producing
+    three-column (x, intensity, esd) patterns; bins with no contributing
+    pixels are omitted rather than written as zeros.
+
+    ``group_by_pressure=True`` (needs ``analysis_h5`` with a populated
+    ``/frames/pressure``) SUMS the raw images of every frame at the same
+    pressure before integrating — the summed counts stay Poisson, so long
+    scans at one pressure collapse into a single high-significance pattern
+    per pressure point. Otherwise each selected frame (default: every
+    non-excluded one) is exported individually.
+
+    ``exclude_d``/``exclude_width`` DROP fractional windows around known
+    contaminant d-spacings from the written files. Detector pixels that are
+    negative in any summed frame (Pilatus gap/defect markers) are masked
+    dynamically on top of the calibration mask. Returns a manifest dict.
+    """
+    import h5py  # type: ignore
+    import pyFAI  # type: ignore
+    from ..core.io import read_detector_image
+    from ..core.masks import load_mask_npz
+
+    red = Path(reduced_h5).expanduser().resolve()
+    out = Path(out_dir).expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+
+    with h5py.File(str(red), "r") as h5:
+        poni_text = str(h5.attrs.get("poni_text", "") or "")
+        if not poni_text.strip():
+            raise ValueError(f"No poni_text in {red} — cannot rebuild the "
+                             "integration geometry.")
+        unit = str(h5.attrs.get("unit", "q_A^-1"))
+        npt_file = int(h5.attrs.get("npt_1d", 0) or 0)
+        droot = Path(str(dataset_dir or h5.attrs.get("dataset_dir", "")))
+        mask_file = str(h5.attrs.get("mask_file", "") or "")
+        fr = h5.get("frames")
+        if fr is None or "filename" not in fr:
+            raise ValueError(f"No /frames/filename in {red}.")
+        filenames = [
+            (s.decode("utf-8", "replace") if isinstance(s, (bytes, bytearray))
+             else str(s)) for s in fr["filename"][:]]
+        n_total = len(filenames)
+        excluded = (np.asarray(fr["excluded"][:], dtype=bool)
+                    if ("excluded" in fr and fr["excluded"].shape[0] == n_total)
+                    else np.zeros(n_total, dtype=bool))
+
+    if not droot.is_dir():
+        raise ValueError(f"Raw dataset directory not found: {droot} — pass "
+                         "dataset_dir= if the data moved.")
+
+    pressures: "Optional[np.ndarray]" = None
+    if group_by_pressure:
+        if analysis_h5 is None:
+            raise ValueError("group_by_pressure needs analysis_h5 (its "
+                             "/frames/pressure carries the parsed pressures).")
+        with h5py.File(str(Path(analysis_h5).expanduser()), "r") as ah:
+            if "frames" not in ah or "pressure" not in ah["frames"]:
+                raise ValueError("No /frames/pressure in the analysis file — "
+                                 "run frame_metadata first.")
+            pressures = np.asarray(ah["frames/pressure"][:], dtype=float)
+        if pressures.size != n_total:
+            raise ValueError(f"analysis file has {pressures.size} frames, "
+                             f"reduced file has {n_total}.")
+
+    if frames is None:
+        frame_idx = [i for i in range(n_total) if not excluded[i]]
+    else:
+        frame_idx = sorted({int(i) for i in frames if 0 <= int(i) < n_total})
+
+    groups: "List[Tuple[str, List[int]]]" = []
+    if group_by_pressure:
+        assert pressures is not None
+        have = [i for i in frame_idx if np.isfinite(pressures[i])]
+        skipped_nan = [i for i in frame_idx if not np.isfinite(pressures[i])]
+        for p in sorted(set(float(pressures[i]) for i in have)):
+            members = [i for i in have if float(pressures[i]) == p]
+            label = f"{p:g}GPa".replace(".", "p")
+            groups.append((label, members))
+    else:
+        skipped_nan = []
+        groups = [(f"frame_{i:04d}", [i]) for i in frame_idx]
+
+    ai = None
+    poni_tmp = out / "_geometry.poni"
+    poni_tmp.write_text(poni_text, encoding="utf-8")
+    ai = pyFAI.load(str(poni_tmp))
+    wl_A = float(ai.wavelength) * 1e10 if ai.wavelength else None
+    base_mask = (load_mask_npz(mask_file)
+                 if mask_file and Path(mask_file).is_file() else None)
+    n_bins = int(npt or npt_file or 1500)
+
+    manifest: Dict[str, Any] = {"n_groups": 0, "files_written": [],
+                                "groups": [], "unit": unit,
+                                "wavelength": wl_A,
+                                "skipped_no_pressure": skipped_nan,
+                                "missing_raw": []}
+
+    for label, members in groups:
+        acc: "Optional[np.ndarray]" = None
+        dyn_mask: "Optional[np.ndarray]" = None
+        used: "List[str]" = []
+        for i in members:
+            p_raw = droot / filenames[i]
+            if not p_raw.is_file():
+                manifest["missing_raw"].append(str(p_raw))
+                continue
+            img = np.asarray(read_detector_image(p_raw), dtype=np.float64)
+            if acc is None:
+                acc = np.zeros_like(img)
+                dyn_mask = np.zeros(img.shape, dtype=bool)
+            acc += img
+            dyn_mask |= img < 0        # Pilatus gap/defect markers
+            used.append(filenames[i])
+        if acc is None:
+            continue
+        mask = dyn_mask if base_mask is None else (base_mask | dyn_mask)
+
+        for ax_unit, suffix in ((unit, "_q"), ("2th_deg", "")):
+            if ax_unit == "2th_deg":
+                if not wl_A:
+                    continue
+                if (unit or "").strip().lower() in _TWOTH_UNITS:
+                    continue   # native axis already is 2theta
+            res = ai.integrate1d(acc, n_bins, mask=mask, unit=ax_unit,
+                                 error_model="poisson")
+            x = np.asarray(res.radial, float)
+            y = np.asarray(res.intensity, float)
+            sig = (np.asarray(res.sigma, float)
+                   if getattr(res, "sigma", None) is not None else None)
+            cnt = (np.asarray(res.count, float).ravel()
+                   if getattr(res, "count", None) is not None else None)
+            keep_rows = (cnt > 0) if cnt is not None else np.ones(y.size, bool)
+            src = (f"raw re-integration, poisson esd "
+                   f"({len(used)} frame(s) summed)")
+            if exclude_d:
+                in_win, wins = _d_window_mask(
+                    x, ax_unit, wl_A, exclude_d, exclude_width)
+                keep_rows &= ~in_win
+                src += (" (excluded_d drop: "
+                        + ",".join(f"{w[0]:g}" for w in wins) + ")")
+            if sig is not None:
+                pos = sig[keep_rows & (sig > 0)]
+                floor = float(pos.min()) if pos.size else 1.0
+                sig = np.where(sig > 0, sig, floor)
+            ext = ".xye" if sig is not None else ".xy"
+            p_out = out / f"{label}{suffix}{ext}"
+            _write_xy(p_out, x, y, sigma=sig, keep=keep_rows,
+                      header=_xy_header(axis=ax_unit, native_unit=unit,
+                                        wavelength=wl_A, source_label=src,
+                                        filename="; ".join(used[:4])
+                                        + ("..." if len(used) > 4 else "")))
+            manifest["files_written"].append(str(p_out))
+        manifest["groups"].append({"label": label, "n_frames": len(used),
+                                   "files": used})
+        manifest["n_groups"] += 1
+
+    if wl_A:
+        instprm_path = out / "instrument.instprm"
+        _write_instprm(instprm_path, wl_A)
+        manifest["files_written"].append(str(instprm_path))
+
+    print(f"[EXPORT] gsas-raw: {manifest['n_groups']} pattern group(s), "
+          f"{len(manifest['missing_raw'])} missing raw file(s) -> {out}",
+          flush=True)
+    return manifest
+
+
+def main_gsas_raw(argv: "list[str] | None" = None) -> int:
+    """CLI: ``bulkxrd-export-gsas reduced.h5 out_dir [options]``."""
+    import argparse
+    p = argparse.ArgumentParser(
+        prog="bulkxrd-export-gsas",
+        description="Re-integrate RAW frames (reduction geometry + mask, "
+                    "Poisson error model) into GSAS-ready .xye patterns; "
+                    "optionally sum all frames at each pressure first.")
+    p.add_argument("reduced", help="Path to a reduced .h5 (needs poni_text).")
+    p.add_argument("out_dir", help="Output directory (created).")
+    p.add_argument("--frames", default="",
+                   help="Comma-separated frame indices (default: all "
+                        "non-excluded frames).")
+    p.add_argument("--analysis", default="",
+                   help="Analysis .h5 whose /frames/pressure drives "
+                        "--group-pressure.")
+    p.add_argument("--group-pressure", action="store_true",
+                   help="Sum the raw images of every frame at the same "
+                        "pressure and write one pattern per pressure point "
+                        "(needs --analysis).")
+    p.add_argument("--dataset-dir", default="",
+                   help="Root of the raw images (default: the reduced "
+                        "file's dataset_dir attribute).")
+    p.add_argument("--exclude-d", default="",
+                   help="Comma-separated d-spacings (A) whose windows are "
+                        "dropped from the written patterns.")
+    p.add_argument("--exclude-width", type=float, default=0.028,
+                   help="Fractional half-width of each excluded window "
+                        "(default 0.028).")
+    p.add_argument("--npt", type=int, default=0,
+                   help="Radial bins (default: the reduction's npt_1d).")
+    args = p.parse_args(argv)
+    frames = ([int(s) for s in args.frames.split(",") if s.strip()]
+              if args.frames.strip() else None)
+    exd = ([float(s) for s in args.exclude_d.split(",") if s.strip()]
+           if args.exclude_d.strip() else None)
+    try:
+        export_gsas_raw(
+            args.reduced, args.out_dir, frames=frames,
+            analysis_h5=(args.analysis or None),
+            group_by_pressure=args.group_pressure,
+            dataset_dir=(args.dataset_dir or None),
+            exclude_d=exd, exclude_width=args.exclude_width,
+            npt=(args.npt or None))
+    except (OSError, ValueError, KeyError) as e:
+        print(f"[ERROR] {e}", flush=True)
+        return 1
+    return 0
+
+
 def main(argv: "list[str] | None" = None) -> int:
     """CLI: ``bulkxrd-export-refinement analysis.h5 out_dir [options]``."""
     import argparse
@@ -727,11 +1025,17 @@ def main(argv: "list[str] | None" = None) -> int:
                         "area, chi2, flag, attributed phase).")
     p.add_argument("--exclude-d", default="",
                    help="Comma-separated d-spacings (A) whose windows are "
-                        "zeroed in every exported pattern (gasket W, "
-                        "diamond anvil lines).")
+                        "excluded from every exported pattern (gasket W, "
+                        "diamond anvil lines, solid Ne).")
     p.add_argument("--exclude-width", type=float, default=0.028,
                    help="Fractional half-width of each excluded window "
                         "(default 0.028).")
+    p.add_argument("--exclude-mode", default="drop",
+                   choices=["drop", "zero"],
+                   help="drop (default): omit excluded bins from the written "
+                        "files — a refinement engine reads absent points as "
+                        "'no data'. zero: write zeros (legacy uniform grid; "
+                        "least squares fits those as real zero counts).")
     args = p.parse_args(argv)
     frames = ([int(s) for s in args.frames.split(",") if s.strip()]
               if args.frames.strip() else None)
@@ -743,7 +1047,8 @@ def main(argv: "list[str] | None" = None) -> int:
         man = export_refinement_bundle(
             args.analysis, args.out_dir, frames=frames, phases=names,
             workspace=(args.workspace or None), source=args.source,
-            exclude_d=exd, exclude_width=args.exclude_width)
+            exclude_d=exd, exclude_width=args.exclude_width,
+            exclude_mode=args.exclude_mode)
         if args.peaks:
             import h5py  # type: ignore
             with h5py.File(str(Path(args.analysis).expanduser()), "r") as h5:
