@@ -694,6 +694,8 @@ def export_spot_masks(
     dataset_dir: "Optional[str | Path]" = None,
     integrate: bool = True,
     min_snr: "Optional[float]" = None,
+    exclude_d: "Optional[Sequence[float]]" = None,
+    exclude_width: float = 0.028,
 ) -> Dict[str, Any]:
     """Keep-only detector masks from spot detections + masked re-integration.
 
@@ -702,8 +704,14 @@ def export_spot_masks(
     frame, every retained ``/spots/obs`` blob (a localized (q, azimuth)
     region) is projected back onto detector pixels via the reduction's own
     PONI geometry; pixels outside every blob are masked. The masked raw
-    image is then re-integrated into a GSAS-ready two-column pattern
-    containing ONLY the kept reflections' intensity.
+    image is then re-integrated into a GSAS-ready pattern containing ONLY
+    the kept reflections' intensity: three columns (x, intensity, Poisson
+    esd) with the no-coverage bins BETWEEN the kept boxes omitted — a
+    refinement engine reads an absent point as "no data", whereas a written
+    zero is a confident measurement of zero that drags its background fit
+    into every gap. ``exclude_d``/``exclude_width`` additionally DROP
+    fractional windows around known contaminant d-spacings that leak into
+    kept boxes (e.g. a solid-Ne ring crossing a box kept for a sample spot).
 
     Retention filters (composable):
       * ``track_ids``      — keep obs belonging to these track ids only
@@ -721,8 +729,10 @@ def export_spot_masks(
     Per frame it writes ``frame_####_mask.npy`` (bool, pyFAI convention:
     True/1 = masked) + ``frame_####_mask.tif`` (uint8, loadable as a Dioptas
     mask image), a PNG preview, and — with ``integrate=True`` and
-    ``dataset_dir`` pointing at the raw images — ``frame_####_masked.xy``
-    (2theta when the wavelength is known, else the native axis).
+    ``dataset_dir`` pointing at the raw images — ``frame_####_masked.xye``
+    (2theta when the wavelength is known) + ``frame_####_masked_q.xye``
+    (native axis). The ``.xye`` extension signals the esd column; the files
+    fall back to two-column ``.xy`` only if pyFAI returns no sigma.
     ``kept_obs.csv`` records every kept/dropped blob per frame so the mask
     contents are reviewable. Returns a manifest.
 
@@ -811,7 +821,7 @@ def export_spot_masks(
     except Exception:
         plt = None
 
-    from .refine_export import _write_xy, _xy_header
+    from .refine_export import _d_window_mask, _write_xy, _xy_header
     from ..core.io import read_detector_image
 
     droot = Path(dataset_dir).expanduser() if dataset_dir else None
@@ -882,25 +892,40 @@ def export_spot_masks(
 
         if integrate and raw is not None:
             wl_A = float(ai.wavelength) * 1e10 if ai.wavelength else None
-            res_n = ai.integrate1d(raw, npt_1d, mask=mask, unit=unit)
-            _write_xy(dest / f"frame_{fi:04d}_masked_q.xy",
-                      res_n.radial, res_n.intensity,
-                      header=_xy_header(axis=unit, native_unit=unit,
-                                        wavelength=wl_A,
-                                        source_label=f"spot-masked raw "
-                                                     f"({idx.size} regions)",
-                                        filename=fname))
-            written.append(f"frame_{fi:04d}_masked_q.xy")
-            if wl_A:
-                res_t = ai.integrate1d(raw, npt_1d, mask=mask, unit="2th_deg")
-                _write_xy(dest / f"frame_{fi:04d}_masked.xy",
-                          res_t.radial, res_t.intensity,
-                          header=_xy_header(axis="2th_deg", native_unit=unit,
+            for ax_unit, suffix in ((unit, "_q"), ("2th_deg", "")):
+                if ax_unit == "2th_deg" and not wl_A:
+                    continue
+                res = ai.integrate1d(raw, npt_1d, mask=mask, unit=ax_unit,
+                                     error_model="poisson")
+                x = np.asarray(res.radial, float)
+                y = np.asarray(res.intensity, float)
+                sig = (np.asarray(res.sigma, float)
+                       if getattr(res, "sigma", None) is not None else None)
+                cnt = (np.asarray(res.count, float).ravel()
+                       if getattr(res, "count", None) is not None else None)
+                # bins no kept box covers are NOT measurements — omit them
+                keep_rows = (cnt > 0) if cnt is not None else np.ones(y.size, bool)
+                label = f"spot-masked raw ({idx.size} regions)"
+                if exclude_d:
+                    in_win, wins = _d_window_mask(
+                        x, ax_unit, wl_A, exclude_d, exclude_width)
+                    keep_rows &= ~in_win
+                    label += (" (excluded_d drop: "
+                              + ",".join(f"{w[0]:g}" for w in wins) + ")")
+                if sig is not None:
+                    # Poisson esd of an observed 0 is 0 -> infinite weight;
+                    # floor at the frame's smallest positive esd instead
+                    pos = sig[keep_rows & (sig > 0)]
+                    floor = float(pos.min()) if pos.size else 1.0
+                    sig = np.where(sig > 0, sig, floor)
+                ext = ".xye" if sig is not None else ".xy"
+                p_out = dest / f"frame_{fi:04d}_masked{suffix}{ext}"
+                _write_xy(p_out, x, y, sigma=sig, keep=keep_rows,
+                          header=_xy_header(axis=ax_unit, native_unit=unit,
                                             wavelength=wl_A,
-                                            source_label=f"spot-masked raw "
-                                                         f"({idx.size} regions)",
+                                            source_label=label,
                                             filename=fname))
-                written.append(f"frame_{fi:04d}_masked.xy")
+                written.append(p_out.name)
         n_frames_done += 1
 
     import csv as _csv
@@ -1826,8 +1851,10 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
                      help="write per-frame keep-only detector masks (.npy + "
                           ".tif + preview PNG) built from the kept /spots/obs "
                           "blobs, and — with --dataset-dir — re-integrate the "
-                          "masked raw images into GSAS-ready .xy patterns. "
-                          "Uses --match/--match-tol as the keep filter.")
+                          "masked raw images into GSAS-ready .xye patterns "
+                          "(intensity + Poisson esd; no-coverage bins "
+                          "omitted). Uses --match/--match-tol as the keep "
+                          "filter.")
     msk.add_argument("--mask-frames", metavar="LIST",
                      help="comma-separated frame indices to mask (default: "
                           "every frame with a kept spot)")
@@ -1848,6 +1875,14 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
                           "azim_width (default 2.0)")
     msk.add_argument("--mask-min-snr", type=float, default=None,
                      help="drop kept observations below this detection SNR")
+    msk.add_argument("--mask-exclude-d", metavar="LIST", default="",
+                     help="comma-separated d-spacings (A) whose fractional "
+                          "windows are DROPPED from the re-integrated "
+                          "patterns (contaminant rings that cross kept "
+                          "boxes, e.g. solid Ne)")
+    msk.add_argument("--mask-exclude-width", type=float, default=0.028,
+                     help="fractional half-width of each --mask-exclude-d "
+                          "window (default 0.028)")
     args = ap.parse_args(argv)
 
     def _do_export_masks(spots_path: Path,
@@ -1868,12 +1903,15 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
                    if args.mask_frames else None)
         tids = ([int(v) for v in args.track_ids.split(",") if v.strip()]
                 if args.track_ids else None)
+        mexd = ([float(v) for v in args.mask_exclude_d.split(",") if v.strip()]
+                if args.mask_exclude_d.strip() else None)
         export_spot_masks(
             red, spots_path, args.export_masks,
             frames=mframes, match=args.match, match_tol=args.match_tol,
             tracks_only=args.tracks_only, track_ids=tids,
             pad_q=args.mask_pad_q, pad_azim=args.mask_pad_azim,
-            dataset_dir=args.dataset_dir, min_snr=args.mask_min_snr)
+            dataset_dir=args.dataset_dir, min_snr=args.mask_min_snr,
+            exclude_d=mexd, exclude_width=args.mask_exclude_width)
 
     def _do_export_cakes(spots_path: Path, best_frames: "Sequence[int]",
                          reduced_path: "Optional[Path]" = None) -> None:
