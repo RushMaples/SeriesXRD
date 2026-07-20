@@ -13,6 +13,7 @@ credit for each set are on its own page.
 
 | You want to test… | Use | Feeds |
 |---|---|---|
+| Complete GUI calibration + reduction workflow | SeriesXRD Ti-6Al-4V demo | unified `seriesxrd` GUI |
 | Calibration + reduction on real detector frames | pyFAI test images | `seriesxrd-calib-gui` → `seriesxrd-reduce-gui` |
 | HDF5/NeXus stack ingestion (Eiger-style master files) | NeXus exampledata | reduce stage frame sources |
 | Phase identification / ranking against known truth | XRD-AutoAnalyzer example set, RRUFF, opXRD | `seriesxrd-benchmark` |
@@ -85,6 +86,26 @@ ingestion once you have a `filename,phases` CSV.
 ---
 
 ## Detector frames (calibration + reduction)
+
+### SeriesXRD Ti-6Al-4V demo (recommended)
+
+The repository's [`examples/ti64_demo`](../examples/ti64_demo/README.md)
+example downloads and organizes 12 exposure-time measurements plus their
+matching CeO2 calibration frame. It verifies the checksums published by
+Zenodo, preserves source metadata and attribution, and provides a refined
+PONI file and exact GUI walkthrough. The downloaded data remain gitignored
+and are not included in the package.
+
+```bash
+python examples/ti64_demo/fetch_demo_data.py
+seriesxrd --workspace examples/ti64_demo/workspace
+```
+
+Source: Daniel et al. (2022), *Synchrotron X-ray Diffraction Dataset -
+Measuring Bulk Crystallographic Texture from Differently-Orientated
+Ti-6Al-4V Samples*, Zenodo,
+<https://doi.org/10.5281/zenodo.7270710>, CC BY 4.0. See the example's
+`ATTRIBUTION.md` for the full citation and calibration provenance.
 
 ### pyFAI test images
 

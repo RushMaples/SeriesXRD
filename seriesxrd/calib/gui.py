@@ -29,6 +29,7 @@ from ..core.naming import next_available_path
 from ..core.processes import terminate_process_tree, worker_popen
 from ..guikit.theme import BG, BG2, FG, ACCENT, ACCENT2, WARN, BORDER, ENTRY_BG, BTN_BG, BTN_ACT, MUTED
 from ..guikit.tooltip import ToolTip as _ToolTip
+from ..guikit.mpl_embed import embed_figure, request_canvas_draw
 from .dioptas import launch_dioptas, dioptas_manual_instructions
 from .processing import export_accepted_generation, runtime_versions, read_poni_info, suggest_integration_settings
 
@@ -1619,20 +1620,27 @@ class CalibrationApp:
             import matplotlib
             matplotlib.use("TkAgg", force=True)
             from matplotlib.figure import Figure
-            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-            self.mpl = (Figure, FigureCanvasTkAgg, NavigationToolbar2Tk)
+            from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+            self.mpl = (Figure, NavigationToolbar2Tk)
         except Exception as e:
             self.ttk.Label(self.mask_view_frame, text="Matplotlib Tk canvas unavailable: " + str(e)).pack(fill="both", expand=True)
             return
-        Figure, FigureCanvasTkAgg, NavigationToolbar2Tk = self.mpl
+        Figure, NavigationToolbar2Tk = self.mpl
         fig = Figure(figsize=(7, 6), dpi=100)
         ax  = fig.add_subplot(111)
         self.mask_fig, self.mask_ax = fig, ax
-        self.mask_canvas = FigureCanvasTkAgg(fig, master=self.mask_view_frame)
-        self.mask_canvas.get_tk_widget().pack(fill="both", expand=True)
-        toolbar = NavigationToolbar2Tk(self.mask_canvas, self.mask_view_frame)
-        toolbar.update()
-        self.mask_toolbar = toolbar
+        def _mask_toolbar(canvas, parent):
+            toolbar = NavigationToolbar2Tk(canvas, parent, pack_toolbar=False)
+            toolbar.update()
+            toolbar.pack(side="bottom", fill="x")
+            self.mask_toolbar = toolbar
+
+        self.mask_canvas = embed_figure(
+            self.mask_view_frame,
+            fig,
+            self.root,
+            toolbar_factory=_mask_toolbar,
+        )
         self.mask_canvas.mpl_connect("button_press_event", self._mask_click)
         self.refresh_mask_display()
 
@@ -1673,7 +1681,7 @@ class CalibrationApp:
             xs, ys = zip(*self.mask_points)
             ax.plot(xs, ys, "o-", lw=1.2)
         ax.set_title(f"Mask editor — mode: {self.mask_mode}. Double-click to finish polygon.")
-        self.mask_canvas.draw_idle()
+        request_canvas_draw(self.mask_canvas)
         # FIX B4a: update mask stats label.
         if hasattr(self, "mask_stats_label") and mask is not None:
             n_masked = int(mask.sum())
@@ -1921,7 +1929,6 @@ class CalibrationApp:
             import matplotlib
             matplotlib.use("TkAgg", force=True)
             from matplotlib.figure import Figure
-            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         except Exception as e:
             self.messagebox.showerror("Matplotlib unavailable", str(e))
             return
@@ -1952,9 +1959,7 @@ class CalibrationApp:
                 ax.axvline(sat_val, color="red", lw=1.2, label=f"sat. threshold={sat_val}")
                 ax.legend(fontsize=8)
             fig.tight_layout()
-            canvas = FigureCanvasTkAgg(fig, master=top)
-            canvas.draw()
-            canvas.get_tk_widget().pack(fill="both", expand=True)
+            embed_figure(top, fig, self.root)
         except Exception as e:
             self.log(f"Histogram error: {e}", "ERROR")
             self.messagebox.showerror("Histogram error", str(e))

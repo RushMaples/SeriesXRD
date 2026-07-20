@@ -32,6 +32,7 @@ from ..core.processes import terminate_process_tree, worker_popen
 from ..guikit.theme import BG, BG2, FG, ACCENT, ACCENT2, WARN, MUTED, ENTRY_BG
 from ..guikit.tkstyle import apply_dark_theme
 from ..guikit.tooltip import ToolTip as _ToolTip
+from ..guikit.mpl_embed import embed_figure, make_canvas_responsive
 from .processing import scan_dataset, DEFAULT_PATTERNS
 
 
@@ -1202,35 +1203,12 @@ class ReductionApp:
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         parent = self.review_plot_frame
         if not scroll:
-            canvas = FigureCanvasTkAgg(fig, master=parent)
-            widget = canvas.get_tk_widget()
-            # Tiny requested size so the canvas doesn't pin the notebook/window to
-            # the figure size; fill+expand grows it to the pane.
-            widget.configure(width=10, height=10)
-            self._add_review_toolbar(canvas, parent)
-            widget.pack(side="top", fill="both", expand=True)
-
-            # Keep the figure sized to its pane, and force an initial fit (the
-            # <Configure> handler only fires on later resizes, so the first
-            # render would otherwise overflow until the window is resized).
-            def _apply_size(w, h, canvas=canvas, fig=fig):
-                if w < 20 or h < 20:
-                    return False
-                dpi = fig.get_dpi() or 100
-                fig.set_size_inches(w / dpi, h / dpi, forward=False)
-                canvas.draw_idle()
-                return True
-
-            widget.bind("<Configure>", lambda e: _apply_size(e.width, e.height), add="+")
-
-            def _initial_fit(tries=0, widget=widget):
-                if _apply_size(widget.winfo_width(), widget.winfo_height()):
-                    return
-                if tries < 40:
-                    self.root.after(25, lambda: _initial_fit(tries + 1))
-            self.root.after(0, _initial_fit)
-
-            canvas.draw()
+            canvas = embed_figure(
+                parent,
+                fig,
+                self.root,
+                toolbar_factory=self._add_review_toolbar,
+            )
             self._review_canvas = canvas
             return
 
@@ -1244,6 +1222,7 @@ class ReductionApp:
         canvas = FigureCanvasTkAgg(fig, master=sc)
         widget = canvas.get_tk_widget()
         fig_h_px = int(fig.get_figheight() * fig.get_dpi())
+        widget.configure(width=10, height=fig_h_px)
         win = sc.create_window((0, 0), window=widget, anchor="nw")
 
         def _on_sc_config(event):
@@ -1263,7 +1242,7 @@ class ReductionApp:
         sc.bind("<Leave>", lambda e: (sc.unbind_all("<MouseWheel>"),
                                       sc.unbind_all("<Button-4>"),
                                       sc.unbind_all("<Button-5>")))
-        canvas.draw()
+        make_canvas_responsive(canvas, self.root, fixed_height_px=fig_h_px)
         self._review_canvas = canvas
 
     def _add_review_toolbar(self, canvas, parent):

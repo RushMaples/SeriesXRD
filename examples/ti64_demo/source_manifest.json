@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "dataset": {
+    "title": "Synchrotron X-ray Diffraction Dataset - Measuring Bulk Crystallographic Texture from Differently-Orientated Ti-6Al-4V Samples",
+    "creators": [
+      "Christopher Stuart Daniel",
+      "Xiaohan Zeng",
+      "Štefan Michalik",
+      "João Quinta da Fonseca"
+    ],
+    "year": 2022,
+    "publisher": "Zenodo",
+    "doi": "10.5281/zenodo.7270710",
+    "license": "CC-BY-4.0",
+    "record_url": "https://zenodo.org/records/7270710"
+  },
+  "archives": {
+    "rawdata_1.zip": {
+      "url": "https://zenodo.org/records/7270710/files/rawdata_1.zip?download=1",
+      "md5": "a39003fea77b6016c87629e6cea04b99"
+    },
+    "rawdata_calibration.zip": {
+      "url": "https://zenodo.org/records/7270710/files/rawdata_calibration.zip?download=1",
+      "md5": "887b0233a3e2aef789af226b58acdb3a"
+    },
+    "sxrd_metadata_1.yaml": {
+      "url": "https://zenodo.org/records/7270710/files/sxrd_metadata_1.yaml?download=1",
+      "md5": "5934ab813ae2de9ec4e396864a3af7d7"
+    }
+  },
+  "instrument": {
+    "facility": "Diamond Light Source",
+    "beamline": "I12 JEEP",
+    "experiment": "MG25682-2",
+    "detector": "Pilatus 2M CdTe",
+    "energy_keV": 99.801,
+    "wavelength_angstrom": 0.12423,
+    "nominal_distance_mm": 908,
+    "pixel_size_um": 172,
+    "image_shape_rows_columns": [1679, 1475]
+  },
+  "calibration": {
+    "run_number": 103764,
+    "calibrant": "CeO2",
+    "source_member": "rawdata_calibration/103764-pilatus2M-files/00001.cbf",
+    "output_name": "CeO2_run103764_99p801keV_908mm.cbf",
+    "poni_name": "Ti64_908mm_refined.poni"
+  },
+  "frames": [
+    {"run_number": 103789, "exposure_s": 1.0, "output_name": "Ti64_run103789_1s.cbf"},
+    {"run_number": 103790, "exposure_s": 0.5, "output_name": "Ti64_run103790_0p5s.cbf"},
+    {"run_number": 103791, "exposure_s": 0.25, "output_name": "Ti64_run103791_0p25s.cbf"},
+    {"run_number": 103792, "exposure_s": 0.1, "output_name": "Ti64_run103792_0p1s.cbf"},
+    {"run_number": 103793, "exposure_s": 0.05, "output_name": "Ti64_run103793_0p05s.cbf"},
+    {"run_number": 103794, "exposure_s": 0.025, "output_name": "Ti64_run103794_0p025s.cbf"},
+    {"run_number": 103795, "exposure_s": 0.015, "output_name": "Ti64_run103795_0p015s.cbf"},
+    {"run_number": 103796, "exposure_s": 0.01, "output_name": "Ti64_run103796_0p01s.cbf"},
+    {"run_number": 103797, "exposure_s": 0.008, "output_name": "Ti64_run103797_0p008s.cbf"},
+    {"run_number": 103798, "exposure_s": 0.006, "output_name": "Ti64_run103798_0p006s.cbf"},
+    {"run_number": 103799, "exposure_s": 0.005, "output_name": "Ti64_run103799_0p005s.cbf"},
+    {"run_number": 103800, "exposure_s": 0.004, "output_name": "Ti64_run103800_0p004s.cbf"}
+  ]
+}

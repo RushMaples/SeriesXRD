@@ -6,4 +6,6 @@ include CREDITS.md
 include LICENSE
 include SECURITY.md
 recursive-include docs *.md
-recursive-include examples *.json *.sh
+recursive-include docs/images *.png
+recursive-include examples *.json *.md *.poni *.py *.sh
+prune examples/ti64_demo/workspace

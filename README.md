@@ -11,6 +11,11 @@ stages in one window. Heavy pyFAI work still runs in crash-isolated
 `worker.py` subprocesses so a pyFAI or matplotlib crash never takes down the
 GUI.
 
+![SeriesXRD Analysis pattern review showing an integrated diffraction pattern, a two-dimensional cake, and the frame-series contamination trend](docs/images/seriesxrd-analysis-pattern-review.png)
+
+*Pattern review in the unified SeriesXRD application, using the included
+Ti-6Al-4V demonstration workflow.*
+
 ## Pipeline
 
 The workflow is one subpackage per stage, communicating only through artifacts
@@ -139,6 +144,13 @@ The GUI embeds all three stage panes in one process; heavy pyFAI work still
 runs in `worker.py` subprocesses (one per stage) so a worker crash never
 affects the host window or another stage.
 
+### End-to-end demonstration data
+
+The [Ti-6Al-4V demo](examples/ti64_demo/README.md) downloads a compact,
+checksum-pinned set of real synchrotron detector frames and guides it through
+the unified GUI. The third-party CBF data remain in a gitignored local
+workspace and are not bundled with SeriesXRD.
+
 ### Per-stage standalone GUIs
 
 Each stage also has a standalone entry point for advanced use:
@@ -213,6 +225,8 @@ python -m pytest
 - [`docs/test-data.md`](docs/test-data.md) — open datasets you can download to
   exercise each stage (calibration frames, measured patterns, CIFs, simulated
   patterns) and which command each one feeds.
+- [`examples/ti64_demo/README.md`](examples/ti64_demo/README.md) — prepared,
+  end-to-end Ti-6Al-4V calibration and exposure-series demonstration.
 - [`docs/releasing.md`](docs/releasing.md) — build, TestPyPI, and release
   verification checklist.
 

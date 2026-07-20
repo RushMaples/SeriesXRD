@@ -20,6 +20,7 @@ from ..guikit.theme import (
 )
 from ..guikit.tkstyle import apply_dark_theme
 from ..guikit.tooltip import ToolTip as _ToolTip
+from ..guikit.mpl_embed import embed_figure
 
 
 def _tk_imports():
@@ -1522,7 +1523,6 @@ class AnalysisApp:
             self.messagebox.showinfo("Open in window", "Load a plot first.")
             return
         try:
-            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
             win = self.tk.Toplevel(self.root)
             win.title(f"SeriesXRD — {title}")
             try:
@@ -1530,12 +1530,12 @@ class AnalysisApp:
                 win.geometry("1100x800")
             except Exception:
                 pass
-            canvas = FigureCanvasTkAgg(fig, master=win)
-            self._add_nav_toolbar(canvas, win)
-            w = canvas.get_tk_widget()
-            w.configure(width=10, height=10)
-            w.pack(side="top", fill="both", expand=True)
-            canvas.draw()
+            embed_figure(
+                win,
+                fig,
+                self.root,
+                toolbar_factory=self._add_nav_toolbar,
+            )
         except Exception as e:
             self.messagebox.showerror("Open in window", f"Could not open: {e!r}")
 
@@ -1580,58 +1580,21 @@ class AnalysisApp:
         (figsize×dpi ≈ 700–800 px) would pin the whole window to at least that
         size — the plot then loads larger than the GUI and can't shrink. Giving
         the canvas widget a tiny *requested* size removes that floor; fill+expand
-        grows it to fill the pane, and matplotlib's own <Configure> handler
-        redraws the figure at the allocated size (constrained layout re-flows the
-        margins on each resize).
+        grows it to fill the pane. The shared embedding helper waits until the
+        page is mapped, then fits and draws at the allocated size; constrained
+        layout re-flows the margins on each later resize.
 
         A navigation toolbar (home / pan / box-zoom / save) is packed beneath the
         canvas so dense patterns can be zoomed into without resizing the window.
         Returns the canvas.
         """
-        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-        canvas = FigureCanvasTkAgg(fig, master=parent)
-        widget = canvas.get_tk_widget()
-        widget.configure(width=10, height=10)   # don't let the canvas set the min size
-        # Reserve the toolbar strip at the bottom first (best-effort: it degrades
-        # to None if the backend is unavailable and never blocks the plot), then
-        # let the canvas fill the remainder.
-        if toolbar:
-            self._add_nav_toolbar(canvas, parent)
-        widget.pack(side="top", fill="both", expand=True)
-
-        # Keep the figure sized to its allocated canvas so it can never render
-        # larger than the pane (matplotlib's own resize wasn't constraining it
-        # in this embedding).
-        def _apply_size(w, h, canvas=canvas, fig=fig):
-            if w < 20 or h < 20:
-                return False
-            dpi = fig.get_dpi() or 100
-            fig.set_size_inches(w / dpi, h / dpi, forward=False)
-            canvas.draw_idle()
-            return True
-
-        widget.bind("<Configure>", lambda e: _apply_size(e.width, e.height), add="+")
-
-        # Initial fit: <Configure> only fires on later resizes, so without this
-        # the first render keeps the figure's large default size and overflows
-        # the pane until the user resizes the window. Poll until the widget has
-        # its real allocated size, then size the figure to it. The poll must
-        # tolerate the widget being destroyed mid-flight (a reload replaces the
-        # canvas while an earlier poll is still scheduled).
-        def _initial_fit(tries=0, widget=widget):
-            try:
-                if not widget.winfo_exists():
-                    return
-                if _apply_size(widget.winfo_width(), widget.winfo_height()):
-                    return
-            except self.tk.TclError:
-                return
-            if tries < 40:
-                self.root.after(25, lambda: _initial_fit(tries + 1))
-        self.root.after(0, _initial_fit)
-
-        canvas.draw()
-        return canvas
+        toolbar_factory = self._add_nav_toolbar if toolbar else None
+        return embed_figure(
+            parent,
+            fig,
+            self.root,
+            toolbar_factory=toolbar_factory,
+        )
 
     def _add_nav_toolbar(self, canvas, parent):
         """Add a dark-styled matplotlib navigation toolbar below an embedded

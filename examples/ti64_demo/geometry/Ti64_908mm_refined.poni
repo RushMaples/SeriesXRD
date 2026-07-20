@@ -1,0 +1,13 @@
+# Geometry refined with pyFAI from Zenodo record 7270710, CeO2 run 103764.
+# See ../ATTRIBUTION.md for source, license, and derivation details.
+poni_version: 2.1
+Detector: PilatusCdTe2M
+Detector_config: {"pixel1": 0.000172, "pixel2": 0.000172, "orientation": 3}
+Distance: 0.9085438517829851
+Poni1: 0.11734669144343855
+Poni2: 0.12766698509877972
+Rot1: -0.002348592940240395
+Rot2: -0.00027409185617746585
+Rot3: -2.987906094110251e-11
+Wavelength: 1.2423e-11
+

@@ -7,6 +7,8 @@ authors:
   - family-names: "Maples"
     given-names: "Rush"
     email: "rmaples3@gatech.edu"
+    affiliation: "Georgia Institute of Technology"
+    orcid: "https://orcid.org/0009-0008-3743-4191"
 repository-code: "https://github.com/RushMaples/SeriesXRD"
 url: "https://github.com/RushMaples/SeriesXRD"
 license: MIT
