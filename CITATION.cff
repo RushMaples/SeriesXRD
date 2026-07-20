@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use SeriesXRD in your research, please cite the software using this metadata."
+title: "SeriesXRD"
+type: software
+version: 0.2.0
+authors:
+  - family-names: "Maples"
+    given-names: "Rush"
+    email: "rmaples3@gatech.edu"
+repository-code: "https://github.com/RushMaples/SeriesXRD"
+url: "https://github.com/RushMaples/SeriesXRD"
+license: MIT

@@ -11,7 +11,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import h5py
-from bulkxrd.reduce.watch import WatchSession, run_watch
+from seriesxrd.reduce.watch import WatchSession, run_watch
 
 NPT = 100
 X = np.linspace(1.0, 8.0, NPT)
@@ -71,7 +71,7 @@ def test_settle_append_and_analysis_trigger():
         assert ws.cycle() == 0 and len(analyzed) == 2
 
         # The live file feeds the normal analysis Step 1 unchanged.
-        from bulkxrd.analysis.background import run_background_separation
+        from seriesxrd.analysis.background import run_background_separation
         out = td / "an.h5"
         man = run_background_separation(ws.h5_path, out)
         assert man["n_frames"] == 2 and out.is_file()

@@ -1,10 +1,10 @@
-# Conda environment for the bulkxrd workflow.
+# Conda environment for the seriesxrd workflow.
 # pyFAI and its compiled dependencies install most reliably from conda-forge
-# (this matches the conda-forge package names used in bulkxrd/core/env.py).
+# (this matches the conda-forge package names used in seriesxrd/core/env.py).
 #
 # Create with:  conda env create -f environment.yml
-# Activate:     conda activate bulkxrd
-name: bulkxrd
+# Activate:     conda activate seriesxrd
+name: seriesxrd
 channels:
   - conda-forge
 dependencies:

@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bulkxrd.analysis import phases as ph
+from seriesxrd.analysis import phases as ph
 
 
 def test_bundled():
@@ -134,7 +134,7 @@ def test_signed_axial_expansivity():
     under pressure (negative linear compressibility — e.g. the UOTe c-axis,
     unrepresentable by a BM form whose K0 must be positive)."""
     import numpy as np
-    from bulkxrd.analysis import identify as idf
+    from seriesxrd.analysis import identify as idf
     nlc = ph.Phase(name="NLC",
                    lattice={"a": 3.4, "b": 3.4, "c": 7.5,
                             "alpha": 90, "beta": 90, "gamma": 90},

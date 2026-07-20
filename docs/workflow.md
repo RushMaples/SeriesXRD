@@ -1,12 +1,12 @@
-# bulkxrd workflow guide
+# seriesxrd workflow guide
 
-End-to-end guide to running a powder-XRD series through bulkxrd: calibrate,
+End-to-end guide to running a powder-XRD series through seriesxrd: calibrate,
 reduce, analyze. Written for a pressure series (diamond-anvil cell), but the
 same stages and knobs apply to a temperature series, a time series, or a
 spatial mapping scan — the series axis is just a different column of
 per-frame metadata. Where something is pressure-specific, it says so.
 
-Covers the GUI (`bulkxrd`) and the CLI (`bulkxrd-analyze` and friends), with
+Covers the GUI (`seriesxrd`) and the CLI (`seriesxrd-analyze` and friends), with
 emphasis on parameter tuning and file management. For the ML/benchmark
 tooling (training a learned candidate scorer, benchmarking against labelled
 data), see [`docs/ml-training.md`](ml-training.md) — this guide only
@@ -34,20 +34,20 @@ writes one file that hands off to the next stage.
 raw detector frames + a calibrant image
         |
         v
-  [1. CALIBRATE]  calib/gui.py  (bulkxrd-calib-gui)
+  [1. CALIBRATE]  calib/gui.py  (seriesxrd-calib-gui)
         - refine geometry against a calibrant (CeO2, LaB6, Si, ...)
         - build a detector mask
-        - accept a generation -> writes handoff_for_next_notebook.json
+        - accept a generation -> writes calibration_handoff.json
         |  (PONI + mask)
         v
-  [2. REDUCE]     reduce/gui.py  (bulkxrd-reduce-gui)
+  [2. REDUCE]     reduce/gui.py  (seriesxrd-reduce-gui)
         - apply the accepted calibration to every frame in the dataset
         - azimuthal integration: mean, robust (quantile-band), sigma-clip
         - optional 2D cakes, per-frame thumbnails
         - writes reduced_<session>_<timestamp>.h5
         |  (reduced HDF5: /patterns, /frames, /cakes)
         v
-  [3. ANALYZE]    analysis/gui.py  (bulkxrd-analysis-gui / bulkxrd-analyze)
+  [3. ANALYZE]    analysis/gui.py  (seriesxrd-analysis-gui / seriesxrd-analyze)
         Step 1  background separation (SNIP + spot residual)
         Step 2  pseudo-Voigt peak fitting
         Step 3a deterministic EOS phase matching (pressure-aware)
@@ -62,32 +62,32 @@ raw detector frames + a calibrant image
 
 | Stage | Reads | Writes | GUI | CLI |
 |---|---|---|---|---|
-| Calibrate | calibrant image + PONI | `handoff_for_next_notebook.json` (PONI + mask) | `bulkxrd-calib-gui` | none (worker only) |
-| Reduce | handoff JSON + dataset folder | `reduced_<session>_<ts>.h5` | `bulkxrd-reduce-gui` | none for a batch run (worker only); `bulkxrd-watch` for live mode |
-| Analyze | reduced `.h5` | `<stem>_analysis.h5` | `bulkxrd-analysis-gui` | `bulkxrd-analyze` |
+| Calibrate | calibrant image + PONI | `calibration_handoff.json` (PONI + mask) | `seriesxrd-calib-gui` | none (worker only) |
+| Reduce | handoff JSON + dataset folder | `reduced_<session>_<ts>.h5` | `seriesxrd-reduce-gui` | none for a batch run (worker only); `seriesxrd-watch` for live mode |
+| Analyze | reduced `.h5` | `<stem>_analysis.h5` | `seriesxrd-analysis-gui` | `seriesxrd-analyze` |
 
 Calibration has no polished argument-per-flag CLI the way analysis does. A
 batch reduction likewise has none — see
 [§3.4](#34-headless-driving-of-calibrationreduction) for what running either
 stage without the GUI actually looks like. Reduction's live-mode counterpart
-is the exception: `bulkxrd-watch` (see [§3.5](#35-live-mode-during-a-beamtime-bulkxrd-watch))
+is the exception: `seriesxrd-watch` (see [§3.5](#35-live-mode-during-a-beamtime-seriesxrd-watch))
 is a fully-flagged, documented CLI in its own right.
 
-The unified launcher `bulkxrd` embeds all three stages as tabs in one window
+The unified launcher `seriesxrd` embeds all three stages as tabs in one window
 and wires the handoffs automatically: accepting a calibration fills in the
 Reduction tab, and a finished reduction fills in the Analysis tab. The
-per-stage entry points (`bulkxrd-calib-gui`, `bulkxrd-reduce-gui`,
-`bulkxrd-analysis-gui`) still work standalone if you only need one stage.
+per-stage entry points (`seriesxrd-calib-gui`, `seriesxrd-reduce-gui`,
+`seriesxrd-analysis-gui`) still work standalone if you only need one stage.
 
 ## 2. Quick start
 
 ### GUI route
 
 ```bash
-bulkxrd --workspace ~/my_experiment
+seriesxrd --workspace ~/my_experiment
 ```
 
-This creates `~/my_experiment/` (default workspace is `~/bulkxrd_workspace`
+This creates `~/my_experiment/` (default workspace is `~/seriesxrd_workspace`
 if `--workspace` is omitted) with a `calibration_session_config.json`,
 `reduction_session_config.json`, and `analysis_session_config.json` seeded
 inside it, and opens a window with three tabs: **1 Calibration**, **2
@@ -95,20 +95,20 @@ Reduction**, **3 Analysis**.
 
 1. **Calibration tab**: point "Calibration image" at a CeO2/LaB6/Si frame and
    "Input PONI" at its geometry file, build a mask, click "Generate QA run",
-   inspect the fit, then "Save selected items" on the Final Export tab. This
+   inspect the fit, then "Save selected items" on the Accept calibration tab. This
    writes the accepted-calibration folder and hands the PONI + mask straight
    to the Reduction tab.
-2. **Reduction tab**: point "Dataset folder" at the folder of sample frames
+2. **Reduction tab**: point "Data folder" at the folder of sample frames
    (the whole pressure/temperature/time/mapping series), leave the
    integration settings at their defaults (q-axis, robust + sigma-clip
    channels on), click "Run reduction". The finished `reduced_*.h5` flows
    straight to the Analysis tab.
-3. **Analysis tab**: on the **1 Input** tab confirm the reduced file and
+3. **Analysis tab**: on the **1 Data** tab confirm the reduced file and
    output path, tick "Run Step 1"/"Run Step 2" (on by default), optionally
-   enable Step 3a on the **6 Identify** tab with candidate phases picked on
+   enable Step 3a on the **6 Identification** tab with candidate phases picked on
    the **4 Phases** tab, then **7 Run** → "Run analysis". Inspect results on
-   **8 Review** / **9 Peak map** / **10 Pattern map** / **11 Unknowns** /
-   **12 Grid map**.
+   **8 Pattern review** / **9 Peak map** / **10 Phase map** / **11 Unknowns** /
+   **12 Spatial map**.
 
 ### CLI route
 
@@ -119,10 +119,10 @@ produce the reduced HDF5. Once you have `reduced_myrun.h5`:
 
 ```bash
 # Background + peaks only, autodetect settings, all CPUs but one.
-bulkxrd-analyze reduced_myrun.h5 --steps 12
+seriesxrd-analyze reduced_myrun.h5 --steps 12
 
 # Full pipeline with phase identification for a pressure series.
-bulkxrd-analyze reduced_myrun.h5 \
+seriesxrd-analyze reduced_myrun.h5 \
     --steps 123 \
     --phases Au,Re,NaCl-B1 --workspace ~/my_experiment \
     --pressure-csv pressures.csv \
@@ -135,36 +135,36 @@ have added phases to.
 
 ## 3. Stage guides
 
-### 3.1 Calibration (`bulkxrd-calib-gui`)
+### 3.1 Calibration (`seriesxrd-calib-gui`)
 
 Five tabs, in order:
 
-1. **1 Session & Inputs** — workspace/session paths, calibration image, input
+1. **1 Inputs** — workspace/session paths, calibration image, input
    PONI, calibrant (auto-detected from the image filename when it contains a
    recognized name like `CeO2`/`LaB6`/`Si`), energy/wavelength (kept in
    sync), detector geometry fields (auto-filled by "Inspect PONI"). "Preview
    cake orientation" runs a fast dual-orientation cake so you can pick the
    flip that makes calibrant rings straight vertical lines before committing
    to a full generation.
-2. **2 Masking & Inspection** — load the calibration image, build a mask:
+2. **2 Mask** — load the calibration image, build a mask:
    automatic rules (negative/zero/non-finite/saturated-threshold pixels) plus
    manual add/erase polygons, then "Accept Final Mask". The bottom pane
    embeds the Dioptas launcher for a manual geometry refinement round-trip.
-3. **3 pyFAI Generate** — 1D bin count, cake radial/azimuthal bin counts,
+3. **3 Generate** — 1D bin count, cake radial/azimuthal bin counts,
    integration unit (2θ default here, independent of the reduction stage's
    default), pyFAI method, optional 2θ min/max, coverage threshold. "Auto-set
    bins from image/PONI" derives them from the detector geometry. "Generate
    QA run" runs the actual integration in a worker subprocess.
-4. **4 QA Dashboard** — the viewer for each generation: raw/masked detector,
+4. **4 Review** — the viewer for each generation: raw/masked detector,
    mask-only, intensity+difference, normalized intensity, cake, and coverage
    diagnostic panels, each independently toggleable, with pan/zoom/replot
    controls. Step through generations with the arrow buttons.
-5. **5 Final Export** — pick a generation, check which items to keep (source
+5. **5 Accept calibration** — pick a generation, check which items to keep (source
    image/PONI, figures, data CSVs, session config), "Save selected items"
-   writes the accepted-calibration folder and `handoff_for_next_notebook.json`
+   writes the accepted-calibration folder and `calibration_handoff.json`
    that the Reduction stage consumes.
 
-### 3.2 Reduction (`bulkxrd-reduce-gui`)
+### 3.2 Reduction (`seriesxrd-reduce-gui`)
 
 Six tabs, in order:
 
@@ -189,8 +189,8 @@ Six tabs, in order:
    interval in seconds. The live file is handed to the Review tab and the
    Analysis stage as soon as it is created, and Stop finishes the current
    batch gracefully rather than killing it mid-append. See
-   [§3.5](#35-live-mode-during-a-beamtime-bulkxrd-watch) for the equivalent
-   CLI (`bulkxrd-watch`) and the full behavior — this tab is a thin front end
+   [§3.5](#35-live-mode-during-a-beamtime-seriesxrd-watch) for the equivalent
+   CLI (`seriesxrd-watch`) and the full behavior — this tab is a thin front end
    over the same worker.
 5. **5 Review** — inspector for the reduced HDF5: structure summary plus
    overlaid/separated plots of a few sample patterns and (if saved) a cake.
@@ -204,11 +204,11 @@ Six tabs, in order:
    toggle its `excluded` flag (written straight to the `.h5`, no re-reduction
    needed). Needs `make_thumbnails=True` from the run.
 
-### 3.3 Analysis (`bulkxrd-analysis-gui`)
+### 3.3 Analysis (`seriesxrd-analysis-gui`)
 
-Eleven tabs. 1–6 configure a run, 7 runs it, 8–11 inspect the results.
+Twelve tabs. Tabs 1–6 configure a run, tab 7 runs it, and tabs 8–12 review results.
 
-1. **1 Input** — reduced HDF5 path, output analysis HDF5 path (auto-derived
+1. **1 Data** — reduced HDF5 path, output analysis HDF5 path (auto-derived
    as `<stem>_analysis.h5`, editable), "Inspect input" (structure report +
    warns if `intensity_robust` is missing — Step 1 needs it).
 2. **2 Background** — Step 1 on/off, SNIP `max_half_window`, `n_passes`, LLS
@@ -222,72 +222,73 @@ Eleven tabs. 1–6 configure a run, 7 runs it, 8–11 inspect the results.
    category, space group, lattice, isotropic EOS, optional per-axis EOS for
    anisotropic compression); "Import CIF…" parses a CIF via pymatgen (or
    stores it for manual completion if pymatgen is absent).
-5. **5 Frame meta** — extract pressures from filenames, import a CSV,
+5. **5 Metadata** — extract pressures from filenames, import a CSV,
    preview pressure vs. frame, and hand-edit P/σ/T per selected frame in the
    table. See [§5](#5-series-metadata-pressure-temperature-time).
-6. **6 Identify** — Step 3a/3b settings: pressure range, match tolerance,
+6. **6 Identification** — Step 3a/3b settings: pressure range, match tolerance,
    evidence gates, pressure-prior window, ML candidate ranking. See
    [§4.4](#44-phase-identification-step-3a).
 7. **7 Run** — launch the worker, with a worker-count field and a live
    progress bar per phase (Background/Peaks/Identify).
-8. **8 Review** — single-frame QC: overlay mean/robust/baseline/clean/
+8. **8 Pattern review** — single-frame QC: overlay mean/robust/baseline/clean/
    spot_residual traces, fitted-peak markers (good vs. flagged), the 2D cake
    for that frame (read from the reduced file), and a contamination-vs-frame
    strip. Scrub frames with the slider or spinbox.
 9. **9 Peak map** — scatter of every fitted peak's center vs. frame/pressure/
    temperature/time, colored by area/amplitude/FWHM. "Good peaks only"
    filters out flagged fits.
-10. **10 Pattern map** — the full pattern waterfall (radial axis × series
+10. **10 Phase map** — the full pattern waterfall (radial axis × series
     axis), any background-derived source, optional reflection-track overlays
     for enabled phases and per-phase intensity layers (needs Step 3a). Also
     the launch point for "Export ML dataset…" and "Export simulated set…".
 11. **11 Unknowns** — stacked Step-3c unknown-cluster diagram vs.
     frame/pressure/temperature/time, plus CSV and frame-bundle exports. See
     [§6.4](#64-unknowns).
-12. **12 Grid map** — for mapping runs: refolds the frame series onto its 2D
+12. **12 Spatial map** — for mapping runs: refolds the frame series onto its 2D
     scan grid. See [§6.5](#65-grid-map).
 
 Step 3c (unknown-phase clustering, writing `/unknowns`) and the
 Williamson-Hall microstructure module (`analysis/microstructure.py`) both run
 after the main fit/identify path. Step 3c fires automatically in the worker/CLI
 after the residual step (as long as it left peaks behind) and is inspected on
-the Unknowns tab. Microstructure analysis is still a Python-API-only module you
-call yourself on the peak-fit output (size/strain per frame from FWHM vs. q).
+the Unknowns tab. The Peak map tab exposes Williamson–Hall microstructure
+analysis (size/strain per frame from FWHM vs. q), including an explicit warning
+when no instrument-width correction is supplied.
 
 ### 3.4 Headless driving of calibration/reduction
 
-There's no `bulkxrd-calibrate`/`bulkxrd-reduce` console script. What the
+There's no `seriesxrd-calibrate`/`seriesxrd-reduce` console script. What the
 GUI's "Generate QA run" / "Run reduction" buttons actually do is launch:
 
 ```bash
-python -m bulkxrd.calib.worker  --config calibration_session_config.json --generation 1 --output-json out.json
-python -m bulkxrd.reduce.worker --config reduction_session_config.json   --output-json out.json
+python -m seriesxrd.calib.worker  --config calibration_session_config.json --generation 1 --output-json out.json
+python -m seriesxrd.reduce.worker --config reduction_session_config.json   --output-json out.json
 ```
 
 against the same JSON the GUI edits. You can hand-edit that JSON (it's a
 flat key/value dict — see `examples/calibration_session_config.example.json`
 for the schema) and invoke the worker directly to script a run without
 opening a window, but this path is not a stable, documented CLI the way
-`bulkxrd-analyze` is — flags aren't validated, and the config's exact keys
+`seriesxrd-analyze` is — flags aren't validated, and the config's exact keys
 can change between versions. For repeatable batch pressure-series work,
 prefer configuring once in the GUI (it validates as you go) and re-running
 the same config.
 
-`bulkxrd-analyze` has no such caveat — its argparse flags are the supported
+`seriesxrd-analyze` has no such caveat — its argparse flags are the supported
 contract. Note it does **not** read `analysis_session_config.json`; it is a
 fully independent entry point with its own flag set, covering every Step-2
 detection knob the GUI has (`--min-snr`, `--min-prominence-snr`,
 `--edge-bins`, `--fit-min`/`--fit-max`, `--min-fwhm-bins`,
 `--detrend-bins`). For anything beyond that, call
-`bulkxrd.analysis.peaks.run_peak_fitting(...)` /
-`bulkxrd.analysis.worker.run_analysis(config_dict)` from your own script.
+`seriesxrd.analysis.peaks.run_peak_fitting(...)` /
+`seriesxrd.analysis.worker.run_analysis(config_dict)` from your own script.
 
-### 3.5 Live mode during a beamtime (`bulkxrd-watch`)
+### 3.5 Live mode during a beamtime (`seriesxrd-watch`)
 
 ```bash
-bulkxrd-watch --workspace ~/my_experiment            # needs an accepted calibration
-bulkxrd-watch --workspace ~/my_experiment --steps 123  # live phase ID too
-bulkxrd-watch --workspace ~/my_experiment --steps ''   # reduce only
+seriesxrd-watch --workspace ~/my_experiment            # needs an accepted calibration
+seriesxrd-watch --workspace ~/my_experiment --steps 123  # live phase ID too
+seriesxrd-watch --workspace ~/my_experiment --steps ''   # reduce only
 ```
 
 Polls the configured dataset folder (`--poll 5` seconds) while frames are
@@ -308,7 +309,7 @@ An interrupted watch resumes with `--resume path/to/reduced_..._live.h5`
 skipped (matched by their stored names) and new ones append; the file's bin
 count and channel set win over the config if they differ. `--resume` refuses
 a target that isn't a live-mode file — only a `*_live.h5` written by
-`bulkxrd-watch` (i.e. one carrying the `live_mode` attribute) can be resumed.
+`seriesxrd-watch` (i.e. one carrying the `live_mode` attribute) can be resumed.
 Separately, a plain `--out` pointing at an already-existing file, with no
 `--resume`, is refused so a finished live file can't be truncated by
 accident.
@@ -327,10 +328,10 @@ written-tmp-and-replaced — a hard kill mid-append can corrupt the live file
 over, do a normal full reduction for the archival file; the live file is a
 working view.
 
-**Other command-line tools.** `bulkxrd-texture reduced.h5` writes per-ring
+**Other command-line tools.** `seriesxrd-texture reduced.h5` writes per-ring
 azimuthal texture metrics (`/texture`: texture index, spot fraction,
 preferred-orientation harmonic) from a cakes-enabled reduction.
-`bulkxrd-export-refinement analysis.h5 out_dir` writes a Rietveld hand-off
+`seriesxrd-export-refinement analysis.h5 out_dir` writes a Rietveld hand-off
 bundle (patterns as `.xy`, phase CIFs, GSAS-II `instrument.instprm`, README
 with a GSASIIscriptable snippet). Narrow it to specific frames with
 `--frames 0,5,10` (default: all non-excluded frames), pick which pattern
@@ -344,7 +345,7 @@ Analysis GUI: "Export selected…" on the Frame metadata editor (multi-select
 rows) and "Export frame…" on the Review tab (current frame) both write the
 chosen channel's `.xy` (native q always, plus 2θ when the wavelength is
 known) and optional CSVs: `peaks.csv`, `residual_peaks.csv`, and
-`unknowns.csv` when those data exist. `bulkxrd-analyze --fractions` adds
+`unknowns.csv` when those data exist. `seriesxrd-analyze --fractions` adds
 semi-quantitative intensity-share phase fractions (`/fractions`) after the
 residual step — see `analysis/fractions.py`'s docstring for what those
 fractions do and do not correct.
@@ -401,7 +402,7 @@ table follows each stage's knobs.
 | `max_chi2` | `25.0` | Reduced χ² above which a fit is flagged `FLAG_BAD_CHI2`. Tighten (lower) for a cleaner peak map at the cost of more rejected fits; loosen if visibly good fits are being flagged bad. |
 | `auto_range` / `fit_min` / `fit_max` | on / blank / blank | Leave `auto_range` on and both bounds blank for the conservative automatic trim (skips the beamstop ramp and dead/noisy tail, capped at ~15% of the axis per end). Set `fit_min` above the beamstop onset explicitly if the low-angle ramp is still inflating the noise floor and hiding weak peaks; set `fit_max` below a noisy detector tail similarly. |
 | `hybrid_spike_bins` | `5` | Only matters with `peak_source=hybrid`. Radial width (bins) below which the azimuthal-mean excess is treated as a diamond spike and removed; above it, kept as real ring texture. Lower it if diamond spikes are still bleeding through into `hybrid`; raise it if it's clipping genuinely broad real texture. |
-| `detrend_bins` | `81` (GUI and `bulkxrd-analyze --detrend-bins`; the bare `run_peak_fitting()` function default is `0`=off) | Detection-only local-baseline window: removes residual broad background SNIP left behind so weak peaks clear the noise threshold (fitting still uses the un-detrended signal). Size it to a few peak widths; `0` disables it. |
+| `detrend_bins` | `81` (GUI and `seriesxrd-analyze --detrend-bins`; the bare `run_peak_fitting()` function default is `0`=off) | Detection-only local-baseline window: removes residual broad background SNIP left behind so weak peaks clear the noise threshold (fitting still uses the un-detrended signal). Size it to a few peak widths; `0` disables it. |
 | `propagate_seeds` | on | Keep on for series data — seeds each frame's detection with the previous frame's good peak centers so a reflection keeps its identity as the lattice compresses/expands. Turn off only if you suspect seed leakage is masking a genuine peak disappearance/transition. |
 
 **Troubleshooting — peak fitting**
@@ -472,7 +473,7 @@ meta** analysis tab.
 not tied to any one beamline's naming scheme: it recognizes **any**
 `<number><unit>` token in the frame's basename, falling back to the nearest
 parent folder if the basename has none. For example, a DAC session named
-`UOTe-1GPa-001.tif` parses to 1.0 GPa — that is just one worked example, not
+`sample-1GPa-001.tif` parses to 1.0 GPa — that is just one worked example, not
 an assumed convention; the same parser handles `sample-1p5GPa` → 1.5 GPa (the
 `p`-as-decimal convention), `3p9GPa` → 3.9 GPa, `500MPa` → 0.5 GPa, `10kbar` →
 1.0 GPa, or any other prefix your facility's file-naming convention happens to
@@ -675,7 +676,7 @@ once you've run all three stages once:
       reduced_<session>_<ts>.h5
       reduced_<session>_<ts>.manifest.json
       reduced_<session>_<ts>_previews/       (per-frame gallery thumbnails, if enabled)
-      reduced_<session>_<ts>_live.h5          (bulkxrd-watch output, same folder as a
+      reduced_<session>_<ts>_live.h5          (seriesxrd-watch output, same folder as a
                                               normal reduction; a working view — appended
                                               in place, no cakes/thumbnails; run a full
                                               reduction for the archival file)
@@ -696,13 +697,13 @@ once you've run all three stages once:
         report_txt, metadata_json
         calibration_session_config.json      (snapshot at accept time)
         master_metadata.json
-        handoff_for_next_notebook.json       <-- this is what the Reduction stage reads
-  logs/bulkxrd/
+        calibration_handoff.json             <-- this is what the Reduction stage reads
+  logs/seriesxrd/
     reduce_<ts>.json                  reduction worker manifest
     analysis_<ts>.json                analysis worker manifest
     worker_preview_<ts>.json          cake-orientation preview output
-    watch_analysis_cfg_<ts>.json      bulkxrd-watch's per-batch analysis config snapshot
-    watch_analysis_<ts>.json          bulkxrd-watch's per-batch analysis worker manifest
+    watch_analysis_cfg_<ts>.json      seriesxrd-watch's per-batch analysis config snapshot
+    watch_analysis_<ts>.json          seriesxrd-watch's per-batch analysis worker manifest
 ```
 
 The session config JSONs *are* your saved parameter tuning — every field you
@@ -714,14 +715,14 @@ Re-opening the same workspace restores every knob exactly where you left it.
 
 | Path | Safe to delete? | Notes |
 |---|---|---|
-| `logs/bulkxrd/*.json` | Yes | Worker manifests only — the actual results live in the `.h5` files, not here. |
+| `logs/seriesxrd/*.json` | Yes | Worker manifests only — the actual results live in the `.h5` files, not here. |
 | `*_previews/` (reduction gallery thumbnails) | Yes | Loses the Gallery tab's per-frame images; re-run reduction with `make_thumbnails=True` to regenerate, or just live without them — analysis results are unaffected. |
 | `metadata/<workflow>/genNNN/...` (calibration QA generations you haven't accepted) | Yes, once you've accepted the generation you want | Costs pyFAI compute time to regenerate if you need to go back to an earlier trial. |
 | `*.tmp` files | Yes, if any are ever left behind | Every HDF5/JSON write in this pipeline is atomic (`.tmp` file + `os.replace`) — a `.tmp` should never persist after a normal run or a caught exception. A stray one can only survive a hard kill mid-write (e.g. `kill -9`); it's an incomplete write and safe to remove. |
 | `reduced_*.h5` | No — this is the reduction stage's entire output | Re-generating it re-runs the full integration over every frame. Keep it; it's the input every analysis run starts from. |
-| `reduced_*_live.h5` (`bulkxrd-watch` output) | Yes, once you've run a normal full reduction over the same dataset | It's a working view, not the archival file — no cakes/thumbnails, appended in place rather than atomically. Regenerable only by re-watching (`--resume` continues an interrupted one) or by a full reduction, which is the archival path anyway. |
+| `reduced_*_live.h5` (`seriesxrd-watch` output) | Yes, once you've run a normal full reduction over the same dataset | It's a working view, not the archival file — no cakes/thumbnails, appended in place rather than atomically. Regenerable only by re-watching (`--resume` continues an interrupted one) or by a full reduction, which is the archival path anyway. |
 | `<stem>_analysis.h5` | Regenerable from the reduced file, but keep it if you've spent time tuning Step 2/3 parameters or have run Step 3a/ML export | Re-running the analysis worker rebuilds it from scratch (each step is not free — Step 3a in particular can be slow with many candidate phases). |
-| `accepted_calibrations/.../handoff_for_next_notebook.json` + its `accepted_calibration/` folder | No | This is the calibration stage's entire deliverable and the reduction stage's only input. Small (a PONI + a mask + a couple of PNGs); back it up with your data. |
+| `accepted_calibrations/.../calibration_handoff.json` + its `accepted_calibration/` folder | No | This is the calibration stage's entire deliverable and the reduction stage's only input. Small (a PONI + a mask + a couple of PNGs); back it up with your data. |
 | `reference_phases/user_phases.json` + imported CIFs | No | Your hand-entered/imported phase library. Not regenerable without re-entering every phase. |
 
 ### 7.3 HDF5 atomic-write behavior
@@ -749,7 +750,7 @@ they aren't part of this copy.
 If your workspace happens to sit inside this repository (not the normal
 case — a workspace is ordinarily an arbitrary folder outside the repo), note
 that `.gitignore` excludes essentially everything a run produces: all three
-session config JSONs, `handoff_for_next_notebook.json`, `master_metadata.json`,
+session config JSONs, `calibration_handoff.json`, `master_metadata.json`,
 `last_preflight.json`, `data/`, `figures/`, `metadata/`, `logs/`, `previews/`,
 `reference_phases/`, and raw data extensions (`*.tif`, `*.tiff`, `*.edf`,
 `*.npy`, `*.npz`, `*.csv`). The schema for a session config is documented by
@@ -760,16 +761,12 @@ case of raw data, can be arbitrarily large.
 ## 8. Links
 
 - [`docs/ml-training.md`](ml-training.md) — training, validating, and
-  deploying the Step-3b learned candidate scorer (`bulkxrd-ml-train`), the
-  `bulkxrd-benchmark` known-truth harness (RRUFF/opXRD labelled patterns vs.
-  the cosine baseline), and `bulkxrd-corpus` (training-only CIF corpus
+  deploying the Step-3b learned candidate scorer (`seriesxrd-ml-train`), the
+  `seriesxrd-benchmark` known-truth harness (RRUFF/opXRD labelled patterns vs.
+  the cosine baseline), and `seriesxrd-corpus` (training-only CIF corpus
   tooling). Covers the data-quality gate you should run before training on
   any dataset (cake waviness, sampling, channel diagnosis, robust-channel
   provenance) — the same diagnostics referenced in §4.2's troubleshooting
   table.
-- [`docs/ml-training-ris.md`](ml-training-ris.md) — a worked example of a
-  site-specific cluster addendum (WashU RIS: LSF job syntax, storage paths)
-  to the same training pipeline; use it as a template for your own cluster's
-  notes if you need one, not as a requirement.
 - [`docs/roadmap.md`](roadmap.md) — implemented vs. planned features, and the
   "Site adoption" section covering what a new facility needs to provide.

@@ -1,4 +1,4 @@
-# bulkxrd
+# SeriesXRD
 
 GUI-driven workflow for powder X-ray diffraction: detector calibration review,
 dataset reduction, and pattern analysis. Facility-neutral by design — it works
@@ -6,7 +6,7 @@ the same way for a synchrotron beamline or a lab (in-house) diffractometer,
 any calibrant, any detector pyFAI supports, and any beamline-specific frame
 naming or metadata convention (see "Site adoption" in
 [`docs/roadmap.md`](docs/roadmap.md) for exactly what a new site needs to
-supply). A single unified desktop application (`bulkxrd`) hosts all pipeline
+supply). A single unified desktop application (`seriesxrd`) hosts all pipeline
 stages in one window. Heavy pyFAI work still runs in crash-isolated
 `worker.py` subprocesses so a pyFAI or matplotlib crash never takes down the
 GUI.
@@ -16,20 +16,20 @@ GUI.
 The workflow is one subpackage per stage, communicating only through artifacts
 on disk plus a shared workspace folder:
 
-1. **`bulkxrd.calib`** — calibration review (implemented): standard image →
+1. **`seriesxrd.calib`** — calibration review: standard image →
    accepted `.poni` + mask + QA record, ending in a
-   `handoff_for_next_notebook.json` (internal artifact passed automatically to
+   `calibration_handoff.json` (internal artifact passed automatically to
    the Reduction tab — not a user-facing step).
-2. **`bulkxrd.reduce`** — dataset reduction (implemented): apply the accepted
+2. **`seriesxrd.reduce`** — dataset reduction: apply the accepted
    geometry/mask to a sample dataset, parallel batch azimuthal integration →
    1D patterns (mean, azimuthal-quantile-band "robust", and optional
    sigma-clipped trimmed mean) and optional 2D cakes in one HDF5 file + JSON
    manifest. Frame sources include plain images and HDF5/NeXus stack
    containers (Eiger-style master files), with per-frame metadata (timestamp,
-   stage position, temperature) harvested automatically. `bulkxrd-watch`
+   stage position, temperature) harvested automatically. `seriesxrd-watch`
    adds a live mode that reduces and periodically re-analyzes a dataset
    folder while frames are still being collected.
-3. **`bulkxrd.analysis`** — pattern analysis: SNIP background + diamond-spot
+3. **`seriesxrd.analysis`** — pattern analysis: SNIP background + diamond-spot
    separation (Step 1), pseudo-Voigt peak fitting (Step 2), pressure-aware
    EOS phase identification + residual removal (Step 3a), the ML
    candidate-ranking seam (Step 3b: deterministic cosine ranker by default,
@@ -45,7 +45,7 @@ manually.
 ## Repository layout
 
 ```
-├── bulkxrd/             The installable package
+├── seriesxrd/             The installable package
 │   ├── core/            Shared by all stages (stdlib/numpy only)
 │   │   ├── config.py        SessionConfig, JSON/hash/file helpers
 │   │   ├── env.py           dependency / conda environment checks
@@ -54,7 +54,7 @@ manually.
 │   │   │                    HDF5/NeXus frame-stack ingestion (Eiger master files)
 │   │   ├── masks.py         automatic + polygon detector masks
 │   │   ├── handoff.py       the calib→reduce handoff contract (load/validate)
-│   │   └── inspect.py       detector-image diagnostic CLI (bulkxrd-inspect)
+│   │   └── inspect.py       detector-image diagnostic CLI (seriesxrd-inspect)
 │   ├── guikit/          Shared GUI/plot theming
 │   │   ├── theme.py         dark Catppuccin palette (Tk + matplotlib)
 │   │   ├── tkstyle.py       shared ttk style (apply_dark_theme)
@@ -64,25 +64,24 @@ manually.
 │   │   ├── worker.py        crash-isolated worker subprocess
 │   │   ├── gui.py           tabbed Tkinter GUI (embeddable pane)
 │   │   ├── dioptas.py       optional Dioptas hand-off
-│   │   └── run_gui.py       CLI entry point (bulkxrd-calib-gui)
+│   │   └── run_gui.py       CLI entry point (seriesxrd-calib-gui)
 │   ├── reduce/          Batch reduction stage
 │   │   ├── processing.py    batch azimuthal integration logic
 │   │   ├── worker.py        crash-isolated worker subprocess
 │   │   ├── session.py       workspace config seeding (seed_reduction_config)
 │   │   ├── review.py        read-only HDF5 checkpoint review
 │   │   ├── straighten.py    cake-waviness diagnosis + straightened-1D rescue channel
-│   │   ├── texture.py       azimuthal texture metrics per saved cake (bulkxrd-texture)
-│   │   ├── watch.py         live (during-beamtime) reduction + rolling analysis (bulkxrd-watch)
+│   │   ├── texture.py       azimuthal texture metrics per saved cake (seriesxrd-texture)
+│   │   ├── watch.py         live (during-beamtime) reduction + rolling analysis (seriesxrd-watch)
 │   │   ├── gui.py           tabbed Tkinter GUI (embeddable pane)
-│   │   └── run_gui.py       CLI entry point (bulkxrd-reduce-gui)
-│   ├── app.py           unified application (bulkxrd entry point)
-│   └── analysis/        analysis stage (background, peaks, identify, residual,
-│                        heatmap, ML ranking/training — see CLAUDE.md for the
-│                        full module map and HDF5 schemas)
-├── tests/               25 standalone test modules (each runnable directly, see "Tests")
+│   │   └── run_gui.py       CLI entry point (seriesxrd-reduce-gui)
+│   ├── app.py           unified application (seriesxrd entry point)
+│   └── analysis/        analysis stage (background, peaks, identification,
+│                        maps, ML ranking/training, and exports)
+├── tests/               automated pytest suite
 ├── examples/            calibration_session_config.example.json (schema reference),
 │                        fetch_benchmark_example.sh (downloads a real-data
-│                        bulkxrd-benchmark example set — see docs/ml-training.md)
+│                        seriesxrd-benchmark example set — see docs/ml-training.md)
 ├── environment.yml      conda environment (recommended install route)
 └── pyproject.toml       package metadata + pip dependencies
 ```
@@ -93,19 +92,24 @@ also run as batch jobs without any GUI.
 
 ## Installation
 
-Recommended (conda; pyFAI installs most reliably from conda-forge):
+Recommended for a source checkout (pyFAI installs most reliably from conda-forge):
 
 ```bash
 conda env create -f environment.yml
-conda activate bulkxrd
+conda activate seriesxrd
 ```
 
-Or with pip (pyFAI wheels are available for most platforms):
+After publication, install the core package from PyPI:
 
 ```bash
-pip install -e .              # core dependencies, including h5py
-pip install -e ".[io]"        # + optional tifffile reader
-pip install -e ".[stacks]"    # + hdf5plugin for compressed Eiger/HDF5 stacks
+python -m pip install seriesxrd
+python -m pip install "seriesxrd[io,stacks,phases]"  # optional readers and crystallography
+```
+
+For development from a source checkout:
+
+```bash
+python -m pip install -e ".[dev]"
 ```
 
 `tkinter` must be available in your Python (it ships with python.org and
@@ -116,9 +120,11 @@ conda-forge Python; some Linux distros need `python3-tk`).
 ### Unified application (primary)
 
 ```bash
-bulkxrd --workspace <dir>          # after pip install -e .
+seriesxrd --workspace <dir>
+# Windows/macOS GUI entry point (no console window):
+seriesxrd-gui --workspace <dir>
 # or without installing:
-python -m bulkxrd.app --workspace <dir>
+python -m seriesxrd.app --workspace <dir>
 ```
 
 Opens one window with **1 Calibration**, **2 Reduction**, and **3 Analysis**
@@ -138,25 +144,25 @@ affects the host window or another stage.
 Each stage also has a standalone entry point for advanced use:
 
 ```bash
-bulkxrd-calib-gui    --config <path/to/calibration_session_config.json>
-bulkxrd-reduce-gui   --config <path/to/reduction_session_config.json>
-bulkxrd-analysis-gui --config <path/to/analysis_session_config.json>   # optional; auto-found if omitted
+seriesxrd-calib-gui    --config <path/to/calibration_session_config.json>
+seriesxrd-reduce-gui   --config <path/to/reduction_session_config.json>
+seriesxrd-analysis-gui --config <path/to/analysis_session_config.json>   # optional; auto-found if omitted
 ```
 
 ### Detector-image diagnostic
 
 ```bash
-bulkxrd-inspect <image_file>
+seriesxrd-inspect <image_file>
 # or:
-python -m bulkxrd.core.inspect <image_file>
+python -m seriesxrd.core.inspect <image_file>
 ```
 
 ### Headless analysis + ML training
 
 ```bash
-bulkxrd-analyze reduced.h5 --phases Au,Re          # Steps 1-3a, no GUI
-bulkxrd-analyze reduced.h5 --ml-rank               # candidate-free: rank whole library
-bulkxrd-ml-train --workspace <dir> --out scorer.pt # train the learned scorer
+seriesxrd-analyze reduced.h5 --phases Au,Re          # Steps 1-3a, no GUI
+seriesxrd-analyze reduced.h5 --ml-rank               # candidate-free: rank whole library
+seriesxrd-ml-train --workspace <dir> --out scorer.pt # train the learned scorer
 ```
 
 Training the Step-3b learned scorer (data collection, environment setup,
@@ -167,18 +173,21 @@ corpus building, validation gates, deployment) is documented in
 
 | Command | Purpose |
 |---|---|
-| `bulkxrd` | Unified GUI: Calibration + Reduction + Analysis tabs in one window. |
-| `bulkxrd-calib-gui` | Calibration stage standalone GUI. |
-| `bulkxrd-reduce-gui` | Reduction stage standalone GUI (includes live watch-mode controls). |
-| `bulkxrd-analysis-gui` | Analysis stage standalone GUI. |
-| `bulkxrd-analyze` | Headless analysis CLI (Steps 1-3, ML ranking, exports). |
-| `bulkxrd-watch` | Live reduction + rolling analysis while frames are still being collected. |
-| `bulkxrd-ml-train` | Train the Step-3b learned candidate scorer. |
-| `bulkxrd-benchmark` | Score a scorer against labelled XY patterns (RRUFF/opXRD-style known-truth harness). |
-| `bulkxrd-corpus` | Fetch/screen a training-only CIF corpus for `bulkxrd-ml-train --cif-dir`. |
-| `bulkxrd-texture` | Azimuthal texture metrics (`/texture`) from a cakes-enabled reduction. |
-| `bulkxrd-export-refinement` | Rietveld hand-off bundle (`.xy` patterns + phase CIFs + GSAS-II instprm) from an analysis HDF5. |
-| `bulkxrd-inspect` | Detector-image diagnostic: true format from magic bytes, per-reader interpretation, intensity statistics, and a verdict. |
+| `seriesxrd` | Unified GUI: Calibration + Reduction + Analysis tabs in one window. |
+| `seriesxrd-gui` | Unified GUI without a console window on supported desktop platforms. |
+| `seriesxrd-calib-gui` | Calibration stage standalone GUI. |
+| `seriesxrd-reduce-gui` | Reduction stage standalone GUI (includes live watch-mode controls). |
+| `seriesxrd-analysis-gui` | Analysis stage standalone GUI. |
+| `seriesxrd-analyze` | Headless analysis CLI (Steps 1-3, ML ranking, exports). |
+| `seriesxrd-watch` | Live reduction + rolling analysis while frames are still being collected. |
+| `seriesxrd-ml-train` | Train the Step-3b learned candidate scorer. |
+| `seriesxrd-benchmark` | Score a scorer against labelled XY patterns (RRUFF/opXRD-style known-truth harness). |
+| `seriesxrd-corpus` | Fetch/screen a training-only CIF corpus for `seriesxrd-ml-train --cif-dir`. |
+| `seriesxrd-texture` | Azimuthal texture metrics (`/texture`) from a cakes-enabled reduction. |
+| `seriesxrd-export-refinement` | Rietveld hand-off bundle (`.xy` patterns + phase CIFs + GSAS-II instprm) from an analysis HDF5. |
+| `seriesxrd-export-gsas` | GSAS-ready raw patterns grouped by pressure. |
+| `seriesxrd-stack` | Publication-style stacked or waterfall pattern plots. |
+| `seriesxrd-inspect` | Detector-image diagnostic: true format from magic bytes, per-reader interpretation, intensity statistics, and a verdict. |
 
 See [`docs/workflow.md`](docs/workflow.md) for how each of these fits into
 the end-to-end pipeline and [`docs/ml-training.md`](docs/ml-training.md) for
@@ -186,50 +195,40 @@ the ML-specific ones.
 
 ## Tests
 
-25 test modules under `tests/`. Most run standalone with plain `python`
-(top-level script execution or an `if __name__ == "__main__":` guard — no
-`pytest` needed, and it isn't a dependency of this project today, see the
-Roadmap):
+Install the development dependencies and run the test suite with pytest:
 
 ```bash
-python tests/test_imports.py   # all modules import cleanly
-python tests/smoke_test.py     # headless config round-trip (no pyFAI/display needed)
-# and similarly for the other 23: test_background.py, test_peaks.py,
-# test_identify.py, test_residual.py, test_watch.py, test_ml.py, ...
+python -m pip install -e .[dev]
+python -m pytest
 ```
-
-One module, `test_worker_script_bootstrap.py`, uses a `pytest` fixture
-(`monkeypatch`) and needs `pytest` installed to actually exercise its test —
-running it with plain `python` does nothing silently. This is one of the
-reasons the "move tests to pytest" roadmap item exists: standardizing the
-suite would also fix this one file's plain-`python` no-op.
 
 ## Documentation
 
 - [`docs/workflow.md`](docs/workflow.md) — end-to-end analysis workflow.
-- [`docs/group-meeting-workflow.md`](docs/group-meeting-workflow.md) —
-  compact presenter notes, live-demo path, and result slots for a group
-  meeting workflow presentation.
 - [`docs/ml-training.md`](docs/ml-training.md) — training, validating, and
   deploying the Step-3b learned scorer (cluster-agnostic — works on any
   cluster or workstation).
-- [`docs/ml-training-ris.md`](docs/ml-training-ris.md) — a worked example of
-  a site-specific addendum to the guide above (WashU RIS: LSF job syntax,
-  storage paths); write an equivalent short page for your own cluster if it
-  needs one.
 - [`docs/roadmap.md`](docs/roadmap.md) — implemented vs. planned features,
-  and what a new facility needs to provide to adopt bulkxrd.
+  and what a new facility needs to provide to adopt seriesxrd.
 - [`docs/test-data.md`](docs/test-data.md) — open datasets you can download to
   exercise each stage (calibration frames, measured patterns, CIFs, simulated
   patterns) and which command each one feeds.
+- [`docs/releasing.md`](docs/releasing.md) — build, TestPyPI, and release
+  verification checklist.
 
-## Roadmap
+## Citation
 
-Feature status (implemented vs. planned, and what a new facility needs to
-provide to adopt bulkxrd) lives in [`docs/roadmap.md`](docs/roadmap.md), kept
-current against the code — this section is only the open engineering chores,
-not a feature list:
+Citation metadata is provided in [`CITATION.cff`](CITATION.cff). GitHub can
+use this file to generate a formatted software citation.
 
-- [ ] Move tests to `pytest` so they can run in CI (GitHub Actions).
-- [ ] Choose a license (check university/group policy) and add `LICENSE`.
-- [ ] Add a `CITATION.cff` so the software can be cited.
+Project roles and acknowledgments are listed in [`CREDITS.md`](CREDITS.md).
+
+Feature status and planned work are maintained in
+[`docs/roadmap.md`](docs/roadmap.md).
+
+## Contributing and support
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) to set up a development environment
+and submit changes. Report defects through the GitHub issue tracker; report
+security concerns according to [`SECURITY.md`](SECURITY.md). Community
+participation is governed by [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).

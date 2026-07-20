@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bulkxrd.analysis.spots import (
+from seriesxrd.analysis.spots import (
     circ_diff, circ_mean, diamond_q_lines, diamond_q_windows, detect_spots,
     consolidate_spots, link_spot_tracks, run_spot_tracking,
     load_reflection_table, match_tracks, export_spot_tracks, load_spot_tracks,
@@ -410,7 +410,7 @@ def _test_export_masks(tmp: Path) -> None:
     import math
     import h5py
     import tifffile
-    from bulkxrd.analysis.spots import export_spot_masks
+    from seriesxrd.analysis.spots import export_spot_masks
 
     rawdir = tmp / "masks_raw"
     rawdir.mkdir()
@@ -468,7 +468,7 @@ def _test_export_masks(tmp: Path) -> None:
     assert np.any(np.abs(data2[:, 0] - 3.0) < 0.1)  # spot 1 survives
 
     # reintegrate_masked_frames: same masks, fresh dir -> same .xye
-    from bulkxrd.analysis.spots import reintegrate_masked_frames
+    from seriesxrd.analysis.spots import reintegrate_masked_frames
     out3 = tmp / "masks_reint"
     man3 = reintegrate_masked_frames(out, red, dataset_dir=rawdir,
                                      out_dir=out3)

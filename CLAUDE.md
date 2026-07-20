@@ -1,8 +1,8 @@
-# bulkxrd — Claude Code Project Brief
+# seriesxrd — Claude Code Project Brief
 
 ## What this is
 
-Open-source Python package (`bulkxrd`) for automated high-pressure powder X-ray diffraction analysis from diamond-anvil cell (DAC) experiments. Processes thousands of raw 2D detector frames → calibrate → reduce to 1D patterns → **iteratively isolate and identify signal sources** → per-substance heatmaps across a pressure/frame series.
+Open-source Python package (`seriesxrd`) for automated high-pressure powder X-ray diffraction analysis from diamond-anvil cell (DAC) experiments. Processes thousands of raw 2D detector frames → calibrate → reduce to 1D patterns → **iteratively isolate and identify signal sources** → per-substance heatmaps across a pressure/frame series.
 
 Target user: physics grad student running synchrotron DAC experiments. Final deliverable: filterable heatmaps of individual phases (known + unknown) vs. pressure/frame index.
 
@@ -11,7 +11,7 @@ Target user: physics grad student running synchrotron DAC experiments. Final del
 ## Repository layout
 
 ```
-bulkxrd/
+seriesxrd/
   core/          config, env, naming, io, masks, handoff, inspect
   guikit/        theme, tkstyle, tooltip, dpi — shared Tkinter helpers
   calib/         calibration stage (pyFAI geometry refinement, Dioptas-style GUI)
@@ -28,9 +28,9 @@ bulkxrd/
                     (straighten_reduced → /patterns/intensity_straightened [mean]
                     + intensity_straightened_robust [spot-suppressed median]);
                     analysis Step 1 robust_source="straightened" consumes them
-    texture.py      azimuthal texture metrics per saved cake (bulkxrd-texture):
+    texture.py      azimuthal texture metrics per saved cake (seriesxrd-texture):
                     texture index, spot fraction, PO 2nd harmonic -> /texture
-    watch.py        live/during-beamtime mode (bulkxrd-watch): polls the dataset
+    watch.py        live/during-beamtime mode (seriesxrd-watch): polls the dataset
                     folder, appends settled frames to a growing *_live.h5
                     (batch-closed resizable datasets; no cakes/thumbnails),
                     re-runs analysis steps via the worker per batch
@@ -45,25 +45,25 @@ bulkxrd/
     ml_features.py  Step 3b — analysis HDF5 → model-ready frame features
     ml_simulate.py  Step 3b — pressure-conditioned simulator + DAC augmentations
     ml_rank.py      Step 3b — candidate ranker (ML proposes, physics verifies)
-    ml_scorer.py    Step 3b — scorer seam: CosineScorer default; TorchScorer adapter (bulkxrd[ml])
-    ml_train.py     Step 3b — learned-scorer training (bulkxrd-ml-train CLI; torch lazy)
-    benchmark.py    known-truth harness (bulkxrd-benchmark): ingest labelled XY
+    ml_scorer.py    Step 3b — scorer seam: CosineScorer default; TorchScorer adapter (seriesxrd[ml])
+    ml_train.py     Step 3b — learned-scorer training (seriesxrd-ml-train CLI; torch lazy)
+    benchmark.py    known-truth harness (seriesxrd-benchmark): ingest labelled XY
                     patterns (RRUFF/opXRD) through the REAL Step-1/2 preprocessing,
                     score any scorer vs labels (hit@1/hit@K/MRR + identify verify) —
                     the gate a trained scorer must pass vs the cosine baseline
-    corpus.py       training-only CIF corpus tooling (bulkxrd-corpus fetch/screen:
+    corpus.py       training-only CIF corpus tooling (seriesxrd-corpus fetch/screen:
                     COD download by ID; parse/dedupe/size-screen -> manifest)
     unknowns.py     Step 3c — DONE: residual peaks -> coherent tracks (gap-tolerant
                     one-to-one linking) -> co-occurrence clusters (/unknowns) with
                     per-cluster d-fingerprints + transition-candidate frames
     fractions.py    semi-quantitative intensity-share phase fractions from the
                     /peaks/phase attribution (optional RIR weighting) -> /fractions
-    refine_export.py  Rietveld hand-off bundle (bulkxrd-export-refinement):
+    refine_export.py  Rietveld hand-off bundle (seriesxrd-export-refinement):
                     .xy patterns + phase CIFs + GSAS-II instprm + README
     microstructure.py  Williamson-Hall size/strain per frame (esd-weighted,
                     dq = 2piK/D + 2*eps*q; instrument profile optional and the
                     output is flagged uncorrected without one)
-    spots.py        cake-space single-crystal spot tracker (bulkxrd-spots):
+    spots.py        cake-space single-crystal spot tracker (seriesxrd-spots):
                     per-cake azimuthal-median-excess blob detection (powder
                     rings cancel structurally; diamond lines + attributed
                     peaks excluded), then gap-tolerant (azimuth, q) linking
@@ -129,10 +129,10 @@ GUI convention: `make_X_pane()` factory functions, `_owns_root` guard, `shutdown
                                             keys pin unusual layouts)
 /texture/frame, ring_r0, texture_index, po_amplitude, po_phase_deg, spotty_frac,
          coverage              (C cakes × R rings)  optional; written by
-                               reduce/texture.py (bulkxrd-texture)
+                               reduce/texture.py (seriesxrd-texture)
 ```
 
-Live-mode variant (`bulkxrd-watch` → `*_live.h5`): same schema with attrs
+Live-mode variant (`seriesxrd-watch` → `*_live.h5`): same schema with attrs
 `live_mode=True`, resizable datasets appended in ARRIVAL order, no /cakes or
 thumbnails, and (deliberately) no tmp+replace atomicity — the archival file
 comes from a normal full reduction afterwards. `--resume` continues one.
@@ -233,7 +233,7 @@ volumetric CTE) + `/frames/temperature` scale predicted d's isotropically
 pressure-only) — the ambient-pressure temperature-series analog of the EOS.
 **Signed axial expansivity**: an `axial_eos` axis may carry `{"beta": d(ln x)/dP}`
 instead of a BM `K0` — `beta > 0` = the axis EXPANDS under pressure (negative linear
-compressibility, e.g. the UOTe c-axis), which no positive-K0 BM form can represent.
+compressibility), which no positive-K0 BM form can represent.
 
 `run_residual` runs automatically after `run_identification` in the worker. It reuses
 the cached `/identify/<phase>/refl_d`+`refl_hkl` and `predicted_d` (same compression
@@ -272,7 +272,7 @@ of staying at ambient), and the residual is clipped non-negative before cosine. 
 ranker is pure-numpy (no torch). The similarity function lives behind the
 **`ml_scorer` seam**: `rank_candidates(scorer=...)` takes a `PhaseScorer` — default
 `CosineScorer`; `TorchScorer` (a TorchScript model on (measured, candidate) fingerprint
-pairs, `bulkxrd[ml]`) raises instructive errors when torch/model are missing. Scorers
+pairs, `seriesxrd[ml]`) raises instructive errors when torch/model are missing. Scorers
 have a per-phase `score()` plus an overridable batched `score_frame()`. Whatever the
 scorer proposes, Step 3a still verifies.
 `ml_features.frame_features` builds the model input (d-grid resample of a chosen source +
@@ -295,15 +295,14 @@ truncation, noise) on the same grid.
   caps its pressure search there and every simulator/scorer clamps to it, so a
   stability-limited entry (NaCl-B1 ≤30 GPa, Si ≤11 GPa in the baseline) is never fit or
   trained beyond its transition.
-- **Training-only CIF corpus** (`bulkxrd-ml-train --cif-dir`): mixes external CIFs into
+- **Training-only CIF corpus** (`seriesxrd-ml-train --cif-dir`): mixes external CIFs into
   the training pool for pattern diversity without touching the library; entries lacking
   an EOS get a synthetic random-K0 BM3 (the model learns similarity under compression,
   not the K0). Validation pairs come from mixtures generated once with a disjoint seed
   (no train/val mixture leakage); reflections are simulated once, not per epoch.
 - A trained scorer is used via `--ml-scorer torch:<model.pt>` (batch), the `ml_scorer`
-  worker-config key, or `rank_candidates(scorer=...)`. Full training/deployment guide:
-  `docs/ml-training.md` (cluster-agnostic; `docs/ml-training-ris.md` is a short
-  WashU-RIS-specific addendum).
+  worker-config key, or `rank_candidates(scorer=...)`. The training and
+  deployment guide is `docs/ml-training.md`.
 
 ### Later analysis groups (appended by their modules)
 
@@ -311,12 +310,12 @@ truncation, noise) on the same grid.
 /unknowns        Step 3c (unknowns.py): obs/, tracks/, clusters/, fingerprint/
                  — residual peaks linked into gap-tolerant tracks, Jaccard
                  co-occurrence clusters, per-cluster d-fingerprints
-/fractions       fractions.py (bulkxrd-analyze --fractions): names (P,),
+/fractions       fractions.py (seriesxrd-analyze --fractions): names (P,),
                  fractions (N, P) intensity shares; attrs method
                  (intensity_share|rir). Semi-quantitative by design.
 /microstructure  microstructure.py williamson_hall(): size_A, strain, r2 per
                  frame (flagged uncorrected without an instrument profile)
-/spots           spots.py (bulkxrd-spots): single-crystal reflections tracked
+/spots           spots.py (seriesxrd-spots): single-crystal reflections tracked
                  in CAKE space (reads the reduced file's /cakes; target =
                  analysis file if given, else <reduced>_spots.h5 — the big
                  reduced file is never rewritten). obs/ per-frame blob
@@ -349,8 +348,8 @@ Step 3 compound ID:
         Step-3a verifier), ml_scorer (scorer seam), ml_train (DONE: RADAR-PD-style
         pair scorer — strided conv + self-attention on (measured, candidate)
         fingerprints; pairs = augmented mixture + candidate at true P (pos) /
-        wrong P / absent (neg); `bulkxrd-ml-train` CLI → TorchScript → TorchScorer;
-        train on WashU RIS with pip install -e .[phases,ml]). Untrained-on-real-data;
+        wrong P / absent (neg); `seriesxrd-ml-train` CLI → TorchScript → TorchScorer;
+        install with pip install -e .[phases,ml]). Untrained-on-real-data;
         deterministic cosine stays the default until a trained model is validated.
     3c  DONE  Unknown clustering (unknowns.py): residual peaks -> gap-tolerant
               track linking -> Jaccard co-occurrence clusters -> /unknowns with
@@ -452,7 +451,7 @@ and grew into the full hardening/feature series: pipeline fixes from real DAC
 data (pyFAI quantile fallback, cake straightening, spotty-sample seam), Step 3c
 unknowns + Williamson-Hall, GUI polish (tab overflow, grid map, series axes,
 coordinate maps), user-edit provenance, HDF5/NeXus stack ingestion + metadata
-harvesting, live watch mode (bulkxrd-watch + GUI toggle + --resume), fractions /
+harvesting, live watch mode (seriesxrd-watch + GUI toggle + --resume), fractions /
 texture / refinement-export tooling, and the docs set (workflow, ML guide,
 roadmap).
 
@@ -468,7 +467,7 @@ Notable earlier branches (not merged, potentially useful):
 - **SNIP window conservative**: set to ~1.5–2× the broadest Bragg peak half-width. Over-aggressive window erodes real broad peaks — true information loss, not reversible. Step 1 records the baseline so the original data is always recoverable.
 - **HDF5 atomic writes**: `.tmp` + `os.replace` throughout. Never partially-written files.
 - **No JAX yet**: scipy handles the scale; JAX needs fixed peak count per batch (incompatible with variable peak count), heavy dependency, and rarely the bottleneck. Interface is clean enough to add a JAX backend behind it later.
-- **Calibration handoff**: `handoff_for_next_notebook.json` (name kept for back-compat even though it's no longer a notebook workflow). Accepted PONI has geometry overrides baked in (`_apply_geometry_overrides`), not verbatim copy.
+- **Calibration handoff**: `calibration_handoff.json`. Accepted PONI has geometry overrides baked in (`_apply_geometry_overrides`), not verbatim copy.
 - **`intensity_robust` required for analysis**: if missing from reduced HDF5, `run_background_separation` raises with an instructive error. Re-run reduction with `robust_1d=True`.
 
 ---
@@ -499,14 +498,9 @@ No JAX installed. No GPU required.
 
 ## Agent skills
 
-### Next-session worklist
-
-Prioritized fixes/features + verification gates + conventions-that-bite for
-the next AI session: `docs/agents/next-session.md`. Read it after this file.
-
 ### Issue tracker
 
-Issues are tracked in GitHub Issues (`rmaples3/BulkXRD`) via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues are tracked in GitHub Issues (`RushMaples/SeriesXRD`) via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

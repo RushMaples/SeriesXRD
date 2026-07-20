@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bulkxrd.analysis.corpus import fetch_cod_cifs, screen_cifs
+from seriesxrd.analysis.corpus import fetch_cod_cifs, screen_cifs
 
 
 def test_fetch_file_url():
@@ -65,7 +65,7 @@ def test_screen_with_injected_parser():
         assert man3["n_total"] == 2 and man3["n_kept"] == 2
 
     # missing pymatgen (default parser) raises the instructive error
-    from bulkxrd.analysis import phases as ph
+    from seriesxrd.analysis import phases as ph
     if not ph.pymatgen_available():
         with tempfile.TemporaryDirectory() as td:
             (Path(td) / "x.cif").write_text("data_x\n", encoding="utf-8")

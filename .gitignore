@@ -1,5 +1,6 @@
 # Python bytecode and caches
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *.egg-info/
 build/
@@ -23,7 +24,7 @@ calibration_session_config.json
 reduction_session_config.json
 analysis_session_config.json
 last_preflight.json
-handoff_for_next_notebook.json
+calibration_handoff.json
 master_metadata.json
 
 # Generated run outputs (written at runtime)

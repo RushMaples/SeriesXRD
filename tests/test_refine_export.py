@@ -9,8 +9,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import h5py
 
-from bulkxrd.analysis.refine_export import export_refinement_bundle
-from bulkxrd.analysis.phases import Phase, save_user_phases
+from seriesxrd.analysis.refine_export import export_refinement_bundle
+from seriesxrd.analysis.phases import Phase, save_user_phases
 
 WAVELENGTH = 0.4066  # Angstrom
 N_FRAMES = 5
@@ -187,7 +187,7 @@ def test_export_frames_patterns_and_peaks_csv():
     combined peaks.csv restricted to those frames (flagged rows kept with
     their flag; phase column present when the attribution exists)."""
     import csv
-    from bulkxrd.analysis.refine_export import export_frames
+    from seriesxrd.analysis.refine_export import export_frames
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         an = td / "an.h5"
@@ -268,7 +268,7 @@ def test_export_frames_patterns_and_peaks_csv():
 
 def test_write_xy_sigma_keep_and_nan():
     """3-column .xye writing, keep-mask row dropping, NaN-row dropping."""
-    from bulkxrd.analysis.refine_export import _write_xy
+    from seriesxrd.analysis.refine_export import _write_xy
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "t.xye"
         x = np.array([1.0, 2.0, 3.0, 4.0])
@@ -286,7 +286,7 @@ def test_write_xy_sigma_keep_and_nan():
 def test_exclude_windows_drop_vs_zero():
     """exclude_mode='drop' omits the window bins; 'zero' keeps the legacy
     full-grid zeroing."""
-    from bulkxrd.analysis.refine_export import export_frames
+    from seriesxrd.analysis.refine_export import export_frames
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         an = td / "an.h5"
@@ -327,7 +327,7 @@ def test_export_gsas_raw_pressure_groups():
     """Raw re-integration: per-pressure summing, Poisson esd column,
     no-coverage bins dropped, excluded windows dropped."""
     import tifffile
-    from bulkxrd.analysis.refine_export import export_gsas_raw
+    from seriesxrd.analysis.refine_export import export_gsas_raw
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         rawdir = td / "raw"

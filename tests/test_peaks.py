@@ -4,8 +4,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import bulkxrd.analysis.peaks as peaks_mod
-from bulkxrd.analysis.peaks import (
+import seriesxrd.analysis.peaks as peaks_mod
+from seriesxrd.analysis.peaks import (
     pseudo_voigt, pseudo_voigt_area, pseudo_voigt_jac, mad_sigma, detect_peaks,
     fit_pattern, fit_dataset, FLAG_OK,
     resolve_sensitivity, winsorize_excess, auto_fit_range, build_fit_source,
@@ -170,7 +170,7 @@ def _test_group_size_cap():
     """A chain of overlapping candidates must be split at its widest gaps
     instead of forming one unbounded joint fit (which effectively hangs —
     observed on noisy detections with sensitive thresholds)."""
-    from bulkxrd.analysis.peaks import _group_peaks, MAX_GROUP_SIZE
+    from seriesxrd.analysis.peaks import _group_peaks, MAX_GROUP_SIZE
     cands = [{"center": 1.0 + 0.05 * i, "amplitude": 10.0, "fwhm": 0.05}
              for i in range(40)]                        # windows all chain
     groups = _group_peaks(cands, window_factor=3.0)
@@ -311,7 +311,7 @@ def _test_sloped_baseline_fit():
     """A peak on a strongly sloped local background fits cleanly with the local
     LINEAR baseline (a constant baseline would leave a sloped residual → high
     chi-square → bad_chi2 rejection)."""
-    from bulkxrd.analysis.peaks import fit_pattern
+    from seriesxrd.analysis.peaks import fit_pattern
     x = np.linspace(5, 12, 1400)
     y = (8.0 - 0.6 * (x - 5)) + pseudo_voigt(x, 9.0, 10.0, 0.06, 0.5) \
         + np.random.default_rng(0).normal(0, 0.3, x.size)
@@ -327,7 +327,7 @@ def _test_sloped_baseline_fit():
 def _test_local_detrend_detection():
     """When `clean` isn't background-flat, the global MAD σ is inflated and small
     real peaks fall under the height threshold. Local detrending fixes it."""
-    from bulkxrd.analysis.peaks import fit_pattern
+    from seriesxrd.analysis.peaks import fit_pattern
     x = np.linspace(0, 24, 1500)
     broad = (16 * np.exp(-0.5 * ((x - 3.5) / 2.0) ** 2)
              + 6 * np.exp(-0.5 * ((x - 15.5) / 3.0) ** 2))
@@ -348,7 +348,7 @@ def _test_local_detrend_detection():
 def _test_edge_window_and_min_width():
     """Fit window excludes out-of-range/edge artefacts; min-FWHM floor flags
     single-bin spikes."""
-    from bulkxrd.analysis.peaks import fit_pattern, FLAG_WIDTH_BOUND
+    from seriesxrd.analysis.peaks import fit_pattern, FLAG_WIDTH_BOUND
     rng = np.random.default_rng(1)
     x = np.linspace(2.0, 22.0, 2000)            # 2θ degrees
     dx = x[1] - x[0]

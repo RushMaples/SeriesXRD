@@ -5,10 +5,10 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bulkxrd.analysis.residual import (
+from seriesxrd.analysis.residual import (
     attribute_peaks, subtract_peaks, run_residual)
-from bulkxrd.analysis.peaks import pseudo_voigt
-from bulkxrd.analysis.phases import Phase
+from seriesxrd.analysis.peaks import pseudo_voigt
+from seriesxrd.analysis.phases import Phase
 
 
 def _test_attribute_peaks():
@@ -37,7 +37,7 @@ def _test_subtract_peaks():
 
 def _test_run_residual_end_to_end():
     import h5py
-    from bulkxrd.analysis.identify import _h5_safe
+    from seriesxrd.analysis.identify import _h5_safe
 
     x = np.linspace(2.0, 8.0, 2000)               # q (Å^-1)
     clean = (pseudo_voigt(x, 3.0, 100.0, 0.05, 0.5)
@@ -94,7 +94,7 @@ def _build_residual_h5(path, n_matched):
     """One-frame analysis HDF5 whose /identify says KnownX is confident but only
     matched ``n_matched`` reflections (to exercise the evidence gate)."""
     import h5py
-    from bulkxrd.analysis.identify import _h5_safe
+    from seriesxrd.analysis.identify import _h5_safe
     x = np.linspace(2.0, 8.0, 2000)
     clean = (pseudo_voigt(x, 3.0, 100.0, 0.05, 0.5)
              + pseudo_voigt(x, 5.0, 40.0, 0.05, 0.5))[None, :].astype("f4")
@@ -157,7 +157,7 @@ def _test_residual_uses_fit_source():
     clean — otherwise an amplitude fit on the (taller) trimmed mean digs a deep
     negative hole in clean."""
     import h5py
-    from bulkxrd.analysis.identify import _h5_safe
+    from seriesxrd.analysis.identify import _h5_safe
     x = np.linspace(2.0, 8.0, 2000)              # q (Å^-1)
     clean = pseudo_voigt(x, 3.0, 50.0, 0.05, 0.5)[None, :].astype("f4")
     sigmaclip = pseudo_voigt(x, 3.0, 100.0, 0.05, 0.5)[None, :].astype("f4")
@@ -203,7 +203,7 @@ def _test_residual_uses_fit_source():
 def _test_residual_refit_uses_peak_window():
     """Residual re-detection inherits Step-2's fit window from /peaks attrs."""
     import h5py
-    from bulkxrd.analysis.identify import _h5_safe
+    from seriesxrd.analysis.identify import _h5_safe
     x = np.linspace(2.0, 8.0, 2000)
     clean = (pseudo_voigt(x, 3.0, 100.0, 0.05, 0.5)
              + pseudo_voigt(x, 7.0, 80.0, 0.05, 0.5))[None, :].astype("f4")

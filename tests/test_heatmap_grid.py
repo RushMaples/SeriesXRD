@@ -6,7 +6,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import h5py
-from bulkxrd.analysis.heatmap import (
+from seriesxrd.analysis.heatmap import (
     frame_grid, grid_map, series_axis, frame_values, pattern_image,
 )
 

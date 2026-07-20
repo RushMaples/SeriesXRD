@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bulkxrd.reduce.texture import ring_profile, texture_metrics, run_texture
+from seriesxrd.reduce.texture import ring_profile, texture_metrics, run_texture
 
 Q = np.linspace(0.5, 6.0, 600)
 AZ = np.linspace(-180.0, 180.0, 72, endpoint=False)
@@ -32,7 +32,7 @@ def _ring_cake(amp_at_phi, r0=R0, sigma=SIGMA):
     return cake
 
 
-def test_uniform_ring_is_texture_free():
+def _uniform_texture_index():
     cake = _ring_cake(lambda phi: 100.0)
     prof = ring_profile(cake, Q, AZ, R0, HALFWIDTH)
     assert prof["ok"]
@@ -46,6 +46,10 @@ def test_uniform_ring_is_texture_free():
     return met["texture_index"]
 
 
+def test_uniform_ring_is_texture_free():
+    _uniform_texture_index()
+
+
 def test_preferred_orientation_recovered():
     amp0, po_amp, po_phase = 100.0, 0.5, 30.0
     amp = lambda phi: amp0 * (1.0 + po_amp * math.cos(2 * math.radians(phi - po_phase)))
@@ -57,7 +61,7 @@ def test_preferred_orientation_recovered():
     assert abs(met["po_amplitude"] - po_amp) < 0.1 * po_amp, met["po_amplitude"]
     dphi = (met["po_phase_deg"] - po_phase + 90) % 180 - 90
     assert abs(dphi) < 5.0, met["po_phase_deg"]
-    uniform_texture_index = test_uniform_ring_is_texture_free()
+    uniform_texture_index = _uniform_texture_index()
     assert met["texture_index"] > uniform_texture_index
 
 

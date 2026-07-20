@@ -1,7 +1,7 @@
 # Domain docs
 
 This repository is **single-context**: one domain context covering the whole
-`bulkxrd` package.
+`seriesxrd` package.
 
 ## Layout
 

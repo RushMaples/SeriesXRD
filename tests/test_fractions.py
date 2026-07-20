@@ -9,7 +9,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import h5py
 
-from bulkxrd.analysis.fractions import phase_fractions, run_fractions
+from seriesxrd.analysis.fractions import phase_fractions, run_fractions
 
 
 def _fractions_file(path):

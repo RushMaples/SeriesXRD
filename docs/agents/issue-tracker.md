@@ -1,6 +1,6 @@
 # Issue tracker
 
-Issues for this repository are tracked in **GitHub Issues** on `rmaples3/BulkXRD`.
+Issues for this repository are tracked in **GitHub Issues** on `RushMaples/SeriesXRD`.
 
 ## How skills interact with it
 

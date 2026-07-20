@@ -5,7 +5,7 @@ import pytest
 h5py = pytest.importorskip("h5py")
 pytest.importorskip("matplotlib")
 
-from bulkxrd.analysis.stackplot import stack_figure
+from seriesxrd.analysis.stackplot import stack_figure
 
 
 @pytest.fixture()
@@ -86,7 +86,7 @@ def test_unknown_style_raises(analysis_file, tmp_path):
 
 def test_export_frames_exclude_d(analysis_file, tmp_path):
     """export_frames zeroes the excluded windows in the written .xy data."""
-    from bulkxrd.analysis.refine_export import export_frames
+    from seriesxrd.analysis.refine_export import export_frames
     out = tmp_path / "xy"
     d0 = 2.231   # ~ the synthetic peak position at 1 GPa (q ~ 2.82)
     man = export_frames(analysis_file, out, frames=[0], source="clean",

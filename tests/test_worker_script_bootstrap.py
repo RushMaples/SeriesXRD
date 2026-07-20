@@ -1,6 +1,6 @@
 """Worker bootstrap regressions.
 
-The GUI launches ``bulkxrd/analysis/worker.py`` directly by file path, not with
+The GUI launches ``seriesxrd/analysis/worker.py`` directly by file path, not with
 ``python -m``. In that mode ``__package__`` is empty, so lazy relative imports
 inside ``run_analysis`` fail even though the top-of-file bootstrap imports work.
 """
@@ -21,9 +21,9 @@ def test_worker_script_path_handles_lazy_ml_imports(monkeypatch):
     so the test isolates the import/bootstrap seam instead of doing real phase
     fitting.
     """
-    import bulkxrd.analysis.identify as identify_mod
-    import bulkxrd.analysis.phases as phases_mod
-    import bulkxrd.analysis.residual as residual_mod
+    import seriesxrd.analysis.identify as identify_mod
+    import seriesxrd.analysis.phases as phases_mod
+    import seriesxrd.analysis.residual as residual_mod
 
     monkeypatch.setattr(phases_mod, "pymatgen_available", lambda: False)
 
@@ -54,12 +54,12 @@ def test_worker_script_path_handles_lazy_ml_imports(monkeypatch):
         }), encoding="utf-8")
 
         monkeypatch.setattr(sys, "argv", [
-            str(Path("bulkxrd") / "analysis" / "worker.py"),
+            str(Path("seriesxrd") / "analysis" / "worker.py"),
             "--config", str(cfg_path),
             "--output-json", str(out_json),
         ])
 
-        worker_path = Path(__file__).resolve().parents[1] / "bulkxrd" / "analysis" / "worker.py"
+        worker_path = Path(__file__).resolve().parents[1] / "seriesxrd" / "analysis" / "worker.py"
         try:
             runpy.run_path(str(worker_path), run_name="__main__")
         except SystemExit as e:
@@ -71,14 +71,14 @@ def test_worker_script_path_handles_lazy_ml_imports(monkeypatch):
 
 
 def test_worker_script_path_does_not_shadow_stdlib_fractions(monkeypatch):
-    """Direct worker launch must not put bulkxrd/analysis ahead of stdlib.
+    """Direct worker launch must not put seriesxrd/analysis ahead of stdlib.
 
     The analysis package has a sibling ``fractions.py`` module for phase
     fractions. When ``worker.py`` is launched directly by path, Python places
     that sibling directory on ``sys.path``; optional simulators then resolve
     ``import fractions`` to the project file instead of the standard library.
     """
-    worker_path = Path(__file__).resolve().parents[1] / "bulkxrd" / "analysis" / "worker.py"
+    worker_path = Path(__file__).resolve().parents[1] / "seriesxrd" / "analysis" / "worker.py"
     script_dir = str(worker_path.parent)
     repo_root = str(Path(__file__).resolve().parents[1])
 

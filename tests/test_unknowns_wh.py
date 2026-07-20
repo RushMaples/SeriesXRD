@@ -6,9 +6,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import h5py
-from bulkxrd.analysis.unknowns import link_tracks, cluster_tracks, run_unknowns
-from bulkxrd.analysis.microstructure import williamson_hall
-from bulkxrd.analysis.heatmap import unknown_diagram, write_unknown_diagram_csv
+from seriesxrd.analysis.unknowns import link_tracks, cluster_tracks, run_unknowns
+from seriesxrd.analysis.microstructure import williamson_hall
+from seriesxrd.analysis.heatmap import unknown_diagram, write_unknown_diagram_csv
 
 TWO_PI = 2 * np.pi
 

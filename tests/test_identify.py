@@ -11,8 +11,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bulkxrd.analysis import identify as idf
-from bulkxrd.analysis import phases as ph
+from seriesxrd.analysis import identify as idf
+from seriesxrd.analysis import phases as ph
 
 
 def test_radial_to_d():
@@ -109,7 +109,7 @@ def test_run_identification():
         manifest = idf.run_identification(h5, [au], p_min=0.0, p_max=200.0)
         assert manifest["steps"] if "steps" in manifest else True
         assert manifest["phases"] == ["Au"]
-        from bulkxrd.analysis.review import identify_tracks
+        from seriesxrd.analysis.review import identify_tracks
         tr = identify_tracks(h5)
         assert tr["ok"] and tr["n_frames"] == 4 and len(tr["phases"]) == 1
         rec = tr["phases"][0]
@@ -122,7 +122,7 @@ def test_run_identification():
             g = f["identify"]["Au"]
             assert "refl_d" in g and g["refl_d"].size >= 3
         # reflection_tracks must read the cache (works regardless of pymatgen).
-        from bulkxrd.analysis.heatmap import reflection_tracks
+        from seriesxrd.analysis.heatmap import reflection_tracks
         tr2 = reflection_tracks(h5, au)
         assert tr2["ok"] and len(tr2["tracks"]) >= 3
 
@@ -600,7 +600,7 @@ def test_pressure_model_and_penalty_surfaced():
     """pressure_model (eos|axial_eos|no_eos), prior_penalty per frame, and
     prior_penalized are surfaced on /identify, the summary, and review.identify_tracks."""
     import h5py
-    from bulkxrd.analysis.review import identify_tracks
+    from seriesxrd.analysis.review import identify_tracks
     au, au_refl = _synth_au()
     d0 = au_refl[0]
     no_eos = ph.Phase(name="NoEOS", category="sample", space_group="Fm-3m",

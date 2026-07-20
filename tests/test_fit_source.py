@@ -11,10 +11,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import h5py
-from bulkxrd.analysis.peaks import pseudo_voigt, run_peak_fitting
-from bulkxrd.analysis.background import run_background_separation
-from bulkxrd.analysis.review import frame_data
-from bulkxrd.analysis.heatmap import pattern_image
+from seriesxrd.analysis.peaks import pseudo_voigt, run_peak_fitting
+from seriesxrd.analysis.background import run_background_separation
+from seriesxrd.analysis.review import frame_data
+from seriesxrd.analysis.heatmap import pattern_image
 
 
 def _write_reduced(path, q, mean_s, robust_s, sigma_s):

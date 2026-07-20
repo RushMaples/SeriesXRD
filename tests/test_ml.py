@@ -11,12 +11,12 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bulkxrd.analysis import ml_features as mf
-from bulkxrd.analysis import ml_simulate as ms
-from bulkxrd.analysis import ml_rank as mr
-from bulkxrd.analysis import identify as idf
-from bulkxrd.analysis.peaks import pseudo_voigt
-from bulkxrd.analysis.phases import Phase
+from seriesxrd.analysis import ml_features as mf
+from seriesxrd.analysis import ml_simulate as ms
+from seriesxrd.analysis import ml_rank as mr
+from seriesxrd.analysis import identify as idf
+from seriesxrd.analysis.peaks import pseudo_voigt
+from seriesxrd.analysis.phases import Phase
 
 
 def _au_refl():
@@ -228,7 +228,7 @@ def test_worker_ml_rank_candidate_free():
     """--ml-rank / run_ml_rank must NOT require preselected candidates: it ranks
     the whole library and verifies the top-K."""
     import h5py
-    from bulkxrd.analysis import worker as W
+    from seriesxrd.analysis import worker as W
     with tempfile.TemporaryDirectory() as td:
         h5 = Path(td) / "an.h5"
         with h5py.File(str(h5), "w") as f:
@@ -277,7 +277,7 @@ def test_scorer_seam():
     clear instructive error (never a bare ImportError crash); and candidate
     files written before the seam (no method/requested attrs) stay readable."""
     import h5py
-    from bulkxrd.analysis import ml_scorer as msr
+    from seriesxrd.analysis import ml_scorer as msr
 
     # Deterministic path must not pull torch in (order-robust: another test may
     # already have imported it — the invariant is that WE don't add it).
@@ -344,7 +344,7 @@ def test_generate_pairs():
     """Training-pair generation (torch-free): shapes, both labels present, and
     the labels are physically sane — positives (candidate at its true pressure)
     overlap the measured mixture more than the wrong-pressure/absent negatives."""
-    from bulkxrd.analysis import ml_train as mt
+    from seriesxrd.analysis import ml_train as mt
     au = Phase(name="Au", eos={"type": "BM3", "K0": 167, "K0p": 5.0})
     si = Phase(name="Si", eos={"type": "BM3", "K0": 98, "K0p": 4.0})
     d0, w, hkl = _au_refl()
@@ -392,7 +392,7 @@ def test_q_constant_widths():
     """fwhm_q renders q-constant peak widths: on the d-grid a high-d peak is
     wider than a low-d one by (d2/d1)^2 — matching what a q-uniform detector
     axis produces after resampling (constant fwhm_d does not)."""
-    from bulkxrd.analysis.mldata import peak_fwhm_d, simulate_training_pattern, make_d_grid
+    from seriesxrd.analysis.mldata import peak_fwhm_d, simulate_training_pattern, make_d_grid
     c = np.array([2.0, 6.0])
     wq = peak_fwhm_d(c, fwhm_q=0.02)
     assert np.isclose(wq[1] / wq[0], (6.0 / 2.0) ** 2)
@@ -460,7 +460,7 @@ def test_resolution_curve_fit():
     ranker uses it as a per-peak width curve, and the provenance records both
     the median scalar and the polynomial."""
     import h5py
-    from bulkxrd.analysis.mldata import resolution_curve, peak_fwhm_d
+    from seriesxrd.analysis.mldata import resolution_curve, peak_fwhm_d
     # resolution_curve + callable peak_fwhm_d round-trip
     f = resolution_curve((0.001, 0.0, 0.0001))       # fwhm² = 0.001 q² + 1e-4
     q = np.array([1.0, 3.0])
@@ -521,8 +521,8 @@ def test_validity_ceiling():
     """eos['p_max'] caps identification's pressure search and the scorers'
     candidate pressures — a stability-limited phase (NaCl-B1, Si) can't be fit
     or simulated beyond its transition."""
-    from bulkxrd.analysis.phases import valid_pressure_max, clamp_to_validity
-    from bulkxrd.analysis.ml_scorer import CosineScorer
+    from seriesxrd.analysis.phases import valid_pressure_max, clamp_to_validity
+    from seriesxrd.analysis.ml_scorer import CosineScorer
     au = Phase(name="Au", eos={"type": "BM3", "K0": 167, "K0p": 5.0})
     nacl = Phase(name="NaCl-B1", eos={"type": "BM3", "K0": 23.8, "K0p": 5.07,
                                       "p_max": 30.0})
@@ -544,7 +544,7 @@ def test_validity_ceiling():
     assert res["pressure"] <= 30.0 + 1e-6
 
     # And the bundled baseline carries the ceilings.
-    from bulkxrd.analysis.phases import load_bundled
+    from seriesxrd.analysis.phases import load_bundled
     lib = load_bundled()
     assert valid_pressure_max(lib["NaCl-B1"]) == 30.0
     assert valid_pressure_max(lib["Si"]) == 11.0
@@ -553,7 +553,7 @@ def test_validity_ceiling():
 def test_load_cif_corpus():
     """Training-only CIF corpus: phases named cif:<stem>, synthetic EOS when
     requested, never touching any library."""
-    from bulkxrd.analysis import ml_train as mt
+    from seriesxrd.analysis import ml_train as mt
     with tempfile.TemporaryDirectory() as td:
         for nm in ("a.cif", "b.cif"):
             (Path(td) / nm).write_text("data_dummy\n", encoding="utf-8")
@@ -579,8 +579,8 @@ def test_train_export_rank_roundtrip():
         print("  (torch not installed — skipping learned-path roundtrip)")
         return
     import h5py
-    from bulkxrd.analysis import ml_train as mt
-    from bulkxrd.analysis.ml_scorer import TorchScorer
+    from seriesxrd.analysis import ml_train as mt
+    from seriesxrd.analysis.ml_scorer import TorchScorer
     au = Phase(name="Au", eos={"type": "BM3", "K0": 167, "K0p": 5.0})
     si = Phase(name="Si", eos={"type": "BM3", "K0": 98, "K0p": 4.0})
     d0, w, hkl = _au_refl()

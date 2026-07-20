@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bulkxrd.analysis import frame_metadata as fm
+from seriesxrd.analysis import frame_metadata as fm
 
 
 def test_parse_pressure_units():
@@ -162,7 +162,7 @@ def test_background_step1_carries_metadata():
     """Step 1 copies temperature/timestamp and backfills pressure from filenames
     when the reduced placeholder is all-NaN."""
     import h5py
-    from bulkxrd.analysis.background import run_background_separation
+    from seriesxrd.analysis.background import run_background_separation
     names = ["UOTe-1GPa-001.tif", "UOTe-2GPa-002.tif", "UOTe-x-003.tif"]
     nb = 40
     with tempfile.TemporaryDirectory() as td:
@@ -218,7 +218,7 @@ def test_user_edits_survive_reparse_and_step1():
     resurrecting the outlier a user had already corrected by hand. Manual
     edits are now marked user_edited, skipped by re-parsing, and carried
     forward through a Step-1 rebuild."""
-    from bulkxrd.analysis.background import run_background_separation
+    from seriesxrd.analysis.background import run_background_separation
     names = ["UOTe-1GPa-001.tif", "UOTe-50p7GPa-002.tif", "UOTe-3GPa-003.tif"]
     with tempfile.TemporaryDirectory() as td:
         red = Path(td) / "red.h5"
@@ -274,7 +274,7 @@ def test_positions_csv_and_step1_carry():
     """Positions imported from a CSV land in /frames/pos_x+pos_y, are marked
     user-edited, and survive a Step-1 rebuild (the coordinate grid map needs
     them to persist like every other deliberate metadata input)."""
-    from bulkxrd.analysis.background import run_background_separation
+    from seriesxrd.analysis.background import run_background_separation
     names = ["m-001.tif", "m-002.tif", "m-003.tif", "m-004.tif"]
     with tempfile.TemporaryDirectory() as td:
         red = Path(td) / "red.h5"
@@ -306,7 +306,7 @@ def test_positions_from_edf_headers():
     except ImportError:
         print("  (fabio missing - header test skipped)")
         return
-    from bulkxrd.analysis.frame_metadata import (
+    from seriesxrd.analysis.frame_metadata import (
         import_positions_from_headers, frame_header_keys)
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -339,7 +339,7 @@ def test_positions_from_edf_headers():
 def test_coordinate_grid_snapping():
     """coordinate_grid recovers the scan grid from jittered stage positions,
     independent of collection order (serpentine here)."""
-    from bulkxrd.analysis.heatmap import coordinate_grid
+    from seriesxrd.analysis.heatmap import coordinate_grid
     rng = np.random.default_rng(1)
     xs, ys, order = [], [], []
     fi = 0
@@ -368,7 +368,7 @@ def test_coordinate_grid_snapping():
 def test_prior_range_offenders_names_the_outlier():
     """The identify range-widening warning names the frame(s) responsible and
     flags a value far off the series median as a likely metadata error."""
-    from bulkxrd.analysis.identify import prior_range_offenders
+    from seriesxrd.analysis.identify import prior_range_offenders
     pr = np.array([1.0, 2.0, 50.7, 3.0, np.nan])
     w = np.full(5, 2.0)
     names = ["a.tif", "b.tif", "UOTe-50p7GPa-002.tif", "c.tif", "d.tif"]

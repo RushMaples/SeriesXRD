@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install package and test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Run tests
+        run: python -m pytest -q
+
+  optional-dependencies:
+    name: Optional scientific dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install optional dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev,io,stacks,phases]"
+      - name: Run tests
+        run: python -m pytest -q
+
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Build wheel and source distribution
+        run: python -m pip install --upgrade pip build twine && python -m build
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+      - name: Test wheel installation
+        run: python -m pip install dist/*.whl && python -c "import seriesxrd; print(seriesxrd.__version__)" && seriesxrd --help

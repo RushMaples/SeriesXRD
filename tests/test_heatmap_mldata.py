@@ -12,10 +12,10 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bulkxrd.analysis import phases as ph
-from bulkxrd.analysis import identify as idf
-from bulkxrd.analysis import heatmap as hm
-from bulkxrd.analysis import mldata as ml
+from seriesxrd.analysis import phases as ph
+from seriesxrd.analysis import identify as idf
+from seriesxrd.analysis import heatmap as hm
+from seriesxrd.analysis import mldata as ml
 
 
 def _build_analysis(path, au, p_true=60.0, n=4, nb=800):
@@ -28,7 +28,7 @@ def _build_analysis(path, au, p_true=60.0, n=4, nb=800):
         d0, w, _ = refl
         s = idf.scale_at_pressure(au, p_true)
         centers_q = 2 * np.pi / (d0[:6] * s)
-        from bulkxrd.analysis.peaks import pseudo_voigt
+        from seriesxrd.analysis.peaks import pseudo_voigt
         for i in range(n):
             row = np.zeros(nb)
             for c, a in zip(centers_q, w[:6]):

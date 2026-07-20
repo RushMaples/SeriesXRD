@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from bulkxrd.core.processes import terminate_process_tree, worker_popen
+from seriesxrd.core.processes import terminate_process_tree, worker_popen
 
 
 def _pid_running(pid: int) -> bool:
