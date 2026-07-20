@@ -48,8 +48,8 @@ def main() -> None:
         print("ANALYSIS REVIEW TEST SKIPPED (h5py not installed)")
         return
 
-    from bulkxrd.analysis.worker import run_analysis
-    from bulkxrd.analysis.review import (
+    from seriesxrd.analysis.worker import run_analysis
+    from seriesxrd.analysis.review import (
         inspect_analysis, frame_data, peak_map, structure_report)
 
     with tempfile.TemporaryDirectory() as td:
@@ -111,7 +111,7 @@ def main() -> None:
 def _test_cake_for_frame():
     """cake_for_frame pulls the right cake by frame index from a reduced file."""
     import h5py
-    from bulkxrd.analysis.review import cake_for_frame
+    from seriesxrd.analysis.review import cake_for_frame
     with tempfile.TemporaryDirectory() as td:
         red = Path(td) / "reduced.h5"
         n_rad, n_az = 50, 36
@@ -135,7 +135,7 @@ def _test_cake_for_frame():
 def _test_frame_data_residual_unknowns():
     """frame_data exposes /residual/clean, /residual/peaks, and /unknowns/obs."""
     import h5py
-    from bulkxrd.analysis.review import frame_data, inspect_analysis, structure_report
+    from seriesxrd.analysis.review import frame_data, inspect_analysis, structure_report
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "analysis.h5"
         radial = np.linspace(1.0, 5.0, 20)

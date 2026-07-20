@@ -2,9 +2,9 @@
 from pathlib import Path
 import sys, tempfile, json
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PKG_DIR = REPO_ROOT / "bulkxrd"
+PKG_DIR = REPO_ROOT / "seriesxrd"
 sys.path.insert(0, str(REPO_ROOT))
-from bulkxrd import SessionConfig, save_session_config, load_session_config, validate_session_config, check_dependencies
+from seriesxrd import SessionConfig, save_session_config, load_session_config, validate_session_config, check_dependencies
 
 with tempfile.TemporaryDirectory() as td:
     td = Path(td)

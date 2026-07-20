@@ -1,9 +1,9 @@
 # Test data you can download
 
-Open datasets for exercising bulkxrd end to end — calibration frames, real
+Open datasets for exercising seriesxrd end to end — calibration frames, real
 measured 1D patterns, CIF structures for the phase library, and simulated
 patterns for ML. Each entry says which stage or command it feeds and how to
-point bulkxrd at it.
+point seriesxrd at it.
 
 None of this data ships with the package (it is large and separately
 licensed). Download what you need and cite the source; the license and
@@ -13,10 +13,10 @@ credit for each set are on its own page.
 
 | You want to test… | Use | Feeds |
 |---|---|---|
-| Calibration + reduction on real detector frames | pyFAI test images | `bulkxrd-calib-gui` → `bulkxrd-reduce-gui` |
+| Calibration + reduction on real detector frames | pyFAI test images | `seriesxrd-calib-gui` → `seriesxrd-reduce-gui` |
 | HDF5/NeXus stack ingestion (Eiger-style master files) | NeXus exampledata | reduce stage frame sources |
-| Phase identification / ranking against known truth | XRD-AutoAnalyzer example set, RRUFF, opXRD | `bulkxrd-benchmark` |
-| A bigger phase library or ML training corpus | COD, Materials Project | `bulkxrd-corpus`, `bulkxrd-ml-train --cif-dir` |
+| Phase identification / ranking against known truth | XRD-AutoAnalyzer example set, RRUFF, opXRD | `seriesxrd-benchmark` |
+| A bigger phase library or ML training corpus | COD, Materials Project | `seriesxrd-corpus`, `seriesxrd-ml-train --cif-dir` |
 | ML pretraining on simulated patterns | SimXRD-4M | your own training loop (reference set) |
 
 ## A note on downloading these
@@ -32,7 +32,7 @@ machine, not from inside an agent session. The two GitHub-hosted sets
 
 ## Real measured 1D patterns (identification / benchmarking)
 
-These are the ground-truth sets `bulkxrd-benchmark` scores a scorer against:
+These are the ground-truth sets `seriesxrd-benchmark` scores a scorer against:
 each `.xy`/`.txt` pattern goes through the real Step-1/2 preprocessing, then
 the ranker's hit@1 / hit@K / MRR is measured against a `filename,phases`
 labels CSV. See `docs/ml-training.md` "Gate A" for the harness.
@@ -48,7 +48,7 @@ repository. Reachable from an agent sandbox.
 bash examples/fetch_benchmark_example.sh ./benchdata
 # import ./benchdata/cifs into a workspace library (Phases tab or
 # reference_phases/user_phases.json), then:
-bulkxrd-benchmark ./benchdata/spectra --labels ./benchdata/labels.csv \
+seriesxrd-benchmark ./benchdata/spectra --labels ./benchdata/labels.csv \
     --workspace <ws> --out bench_cosine
 ```
 
@@ -64,7 +64,7 @@ patterns; the per-mineral pages also have single-file downloads.
 
 ```bash
 # XY files exported as 2theta (Cu Ka by default on RRUFF); tell the harness:
-bulkxrd-benchmark ./rruff_xy --labels rruff_labels.csv \
+seriesxrd-benchmark ./rruff_xy --labels rruff_labels.csv \
     --unit 2th_deg --wavelength 1.5406 --workspace <ws> --out bench_rruff
 ```
 
@@ -79,7 +79,7 @@ labelled patterns contributed across several labs (Riesel et al., 2025;
 arXiv:2503.05577). Published on Zenodo; search Zenodo for "opXRD" for the
 current record and DOI. Much larger and messier than RRUFF (varied
 instruments, backgrounds, partial labels) — good for stress-testing the
-preprocessing and the scorer on realistic noise. Same `bulkxrd-benchmark`
+preprocessing and the scorer on realistic noise. Same `seriesxrd-benchmark`
 ingestion once you have a `filename,phases` CSV.
 
 ---
@@ -91,7 +91,7 @@ ingestion once you have a `filename,phases` CSV.
 <http://www.silx.org/pub/pyFAI/testimages/> — the calibrant frames and
 detector images pyFAI's own test suite uses (LaB6, CeO2, AgBh rings on real
 detector geometries). Use one as the calibration standard image in
-`bulkxrd-calib-gui`, accept the geometry, then reduce a small stack to verify
+`seriesxrd-calib-gui`, accept the geometry, then reduce a small stack to verify
 the calib→reduce handoff and the 1D channels end to end without needing your
 own beamtime data. pyFAI can also fetch these itself via
 `pyFAI.test.utilstest.UtilsTest.getimage(<name>)` if pyFAI is installed.
@@ -127,9 +127,9 @@ locations.
 
 ```bash
 # curated ID list (one COD id per line) -> CIFs, then screen them:
-bulkxrd-corpus fetch cod_ids.txt ./training_cifs
-bulkxrd-corpus screen ./training_cifs        # parse / dedupe / size-screen
-bulkxrd-ml-train --workspace <ws> --cif-dir ./training_cifs --out scorer.pt
+seriesxrd-corpus fetch cod_ids.txt ./training_cifs
+seriesxrd-corpus screen ./training_cifs        # parse / dedupe / size-screen
+seriesxrd-ml-train --workspace <ws> --cif-dir ./training_cifs --out scorer.pt
 ```
 
 For bulk (10^4+) corpora use COD's rsync mirror rather than the ID fetcher.
@@ -152,9 +152,9 @@ corpus (`--cif-dir`, synthetic BM3 EOS auto-assigned). See
 
 <https://huggingface.co/datasets/caobin/SimXRD> — 4.07M simulated patterns
 from 119,569 Materials Project structures across 33 measurement conditions
-(Cao et al., ICLR 2025; arXiv:2406.15469). The reference design bulkxrd's
+(Cao et al., ICLR 2025; arXiv:2406.15469). The reference design seriesxrd's
 Step-3b simulator follows, and a pretraining set if you build your own model.
-Note the gap bulkxrd's simulator fills that SimXRD does not: lattice
+Note the gap seriesxrd's simulator fills that SimXRD does not: lattice
 compression under pressure (the EOS peak-shift manifold) — see
 `docs/ml-training.md` and CLAUDE.md "Step 3 design". The open-source
 simulator behind it is PysimXRD.
@@ -163,12 +163,12 @@ simulator behind it is PysimXRD.
 
 ## Exporting your own reference patterns
 
-Any bulkxrd analysis run can emit selected frames as clean two-column XY plus
+Any seriesxrd analysis run can emit selected frames as clean two-column XY plus
 a peaks table — useful for building your own labelled benchmark set from data
 you have already reduced and identified:
 
 ```bash
-bulkxrd-export-refinement analysis.h5 ./out --frames 0,5,10 --peaks
+seriesxrd-export-refinement analysis.h5 ./out --frames 0,5,10 --peaks
 ```
 
 or the "Export selected…" / "Export frame…" buttons in the Analysis GUI. See

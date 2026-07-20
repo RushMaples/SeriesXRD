@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import h5py
-from bulkxrd.core.io import (
+from seriesxrd.core.io import (
     h5_stack_info, expand_frame_sources, read_detector_image,
     frame_display_name, is_h5_frame_spec, parse_h5_frame_spec,
 )
@@ -49,11 +49,11 @@ def test_stack_info_autodetect():
         info = h5_stack_info(s)
         assert info["ok"] and info["n_frames"] == 1 and info["ndim"] == 2
 
-        # bulkxrd's own outputs are refused (a results file in the data folder
+        # seriesxrd's own outputs are refused (a results file in the data folder
         # must not be re-ingested as frames)...
-        r = _stack(td / "reduced_x.h5", attrs={"tool": "bulkxrd.reduce"})
+        r = _stack(td / "reduced_x.h5", attrs={"tool": "seriesxrd.reduce"})
         info = h5_stack_info(r)
-        assert not info["ok"] and "bulkxrd output" in info["error"]
+        assert not info["ok"] and "seriesxrd output" in info["error"]
         # ...unless an explicit data path overrides the refusal.
         info = h5_stack_info(r, "entry/data/data")
         assert info["ok"] and info["n_frames"] == 4
@@ -71,7 +71,7 @@ def test_expand_and_read_roundtrip():
         tif_a, tif_c = td / "a.tif", td / "c.tif"
         tif_a.write_bytes(b"")
         tif_c.write_bytes(b"")
-        # a bulkxrd output in the same folder is skipped, not fatal
+        # a seriesxrd output in the same folder is skipped, not fatal
         _stack(td / "reduced_old.h5", attrs={"schema_version": "1"})
 
         files = sorted(td.iterdir())
@@ -126,7 +126,7 @@ def test_explicit_data_path_expansion():
 def test_stack_metadata_harvest():
     """NeXus per-frame metadata (timestamps, positions, temperature) is
     harvested from stack containers and aligned onto the expanded sources."""
-    from bulkxrd.core.io import h5_stack_metadata, harvest_stack_metadata
+    from seriesxrd.core.io import h5_stack_metadata, harvest_stack_metadata
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         p = td / "run.h5"
@@ -187,8 +187,8 @@ def test_stack_metadata_harvest():
 def test_harvested_positions_flow_to_analysis():
     """Reduced-file pos_x/pos_y (as the NeXus harvest writes them) are carried
     into the analysis file by Step 1, feeding the coordinate grid map."""
-    from bulkxrd.analysis.background import run_background_separation
-    from bulkxrd.analysis.frame_metadata import read_frame_metadata
+    from seriesxrd.analysis.background import run_background_separation
+    from seriesxrd.analysis.frame_metadata import read_frame_metadata
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         red = td / "red.h5"

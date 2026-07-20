@@ -8,10 +8,10 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bulkxrd.analysis.benchmark import (read_xy_text, load_labels_csv,
+from seriesxrd.analysis.benchmark import (read_xy_text, load_labels_csv,
                                         ingest_patterns, run_benchmark, CU_KA1)
-from bulkxrd.analysis.peaks import pseudo_voigt
-from bulkxrd.analysis.phases import Phase
+from seriesxrd.analysis.peaks import pseudo_voigt
+from seriesxrd.analysis.phases import Phase
 
 
 def _refl(a0, scale=1.0):

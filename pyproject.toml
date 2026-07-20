@@ -1,26 +1,28 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bulkxrd"
-# Keep in sync with VERSION in bulkxrd/core/config.py.
-version = "0.2.0"
-description = "GUI + CLI workflow for powder XRD series: calibration (pyFAI-based), dataset reduction, and automated phase analysis"
+name = "seriesxrd"
+dynamic = ["version"]
+description = "Desktop and command-line workflow for calibrating, reducing, and analyzing powder X-ray diffraction series"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-    { name = "rmaples3" },
+    { name = "Rush Maples", email = "rmaples3@gatech.edu" },
 ]
 keywords = ["XRD", "powder diffraction", "calibration", "pyFAI", "high pressure"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Physics",
 ]
 
-# Core runtime dependencies (mirrors REQUIRED_IMPORTS in bulkxrd/core/env.py).
+# Core runtime dependencies (mirrors REQUIRED_IMPORTS in seriesxrd/core/env.py).
 # tkinter is also required but ships with the Python interpreter itself.
 dependencies = [
     "numpy",
@@ -32,7 +34,14 @@ dependencies = [
     "h5py",
 ]
 
+[project.urls]
+Homepage = "https://github.com/RushMaples/SeriesXRD"
+Repository = "https://github.com/RushMaples/SeriesXRD"
+Issues = "https://github.com/RushMaples/SeriesXRD/issues"
+Documentation = "https://github.com/RushMaples/SeriesXRD/tree/main/docs"
+
 [project.optional-dependencies]
+dev = ["build>=1.2", "pytest>=8", "twine>=5"]
 # Extra image-format readers beyond the core fabio/Pillow/h5py stack.
 io = ["tifffile"]
 # HDF5 itself is core via h5py. Eiger-style master files are often
@@ -48,24 +57,34 @@ phases = ["pymatgen"]
 ml = ["torch"]
 
 [project.scripts]
-bulkxrd = "bulkxrd.app:main"
-bulkxrd-calib-gui = "bulkxrd.calib.run_gui:main"
-bulkxrd-reduce-gui = "bulkxrd.reduce.run_gui:main"
-bulkxrd-analysis-gui = "bulkxrd.analysis.run_gui:main"
-bulkxrd-analyze = "bulkxrd.analysis.batch:main"
-bulkxrd-ml-train = "bulkxrd.analysis.ml_train:main"
-bulkxrd-benchmark = "bulkxrd.analysis.benchmark:main"
-bulkxrd-corpus = "bulkxrd.analysis.corpus:main"
-bulkxrd-texture = "bulkxrd.reduce.texture:main"
-bulkxrd-spots = "bulkxrd.analysis.spots:main"
-bulkxrd-watch = "bulkxrd.reduce.watch:main"
-bulkxrd-export-refinement = "bulkxrd.analysis.refine_export:main"
-bulkxrd-stack = "bulkxrd.analysis.stackplot:main"
-bulkxrd-inspect = "bulkxrd.core.inspect:main"
+seriesxrd = "seriesxrd.app:main"
+seriesxrd-calib-gui = "seriesxrd.calib.run_gui:main"
+seriesxrd-reduce-gui = "seriesxrd.reduce.run_gui:main"
+seriesxrd-analysis-gui = "seriesxrd.analysis.run_gui:main"
+seriesxrd-analyze = "seriesxrd.analysis.batch:main"
+seriesxrd-ml-train = "seriesxrd.analysis.ml_train:main"
+seriesxrd-benchmark = "seriesxrd.analysis.benchmark:main"
+seriesxrd-corpus = "seriesxrd.analysis.corpus:main"
+seriesxrd-texture = "seriesxrd.reduce.texture:main"
+seriesxrd-spots = "seriesxrd.analysis.spots:main"
+seriesxrd-watch = "seriesxrd.reduce.watch:main"
+seriesxrd-export-refinement = "seriesxrd.analysis.refine_export:main"
+seriesxrd-export-gsas = "seriesxrd.analysis.refine_export:main_gsas_raw"
+seriesxrd-stack = "seriesxrd.analysis.stackplot:main"
+seriesxrd-inspect = "seriesxrd.core.inspect:main"
+
+[project.gui-scripts]
+seriesxrd-gui = "seriesxrd.app:main"
 
 [tool.setuptools.packages.find]
-include = ["bulkxrd*"]
+include = ["seriesxrd*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "seriesxrd.core.config.VERSION"}
 
 [tool.setuptools.package-data]
 # Ship the bundled reference-phase baseline with the package.
-"bulkxrd.analysis.refdata" = ["*.json"]
+"seriesxrd.analysis.refdata" = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

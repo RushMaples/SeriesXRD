@@ -1,6 +1,6 @@
 # Feature roadmap
 
-What bulkxrd does today ("Implemented") and where it's headed ("Planned").
+What SeriesXRD does today ("Implemented") and where it's headed ("Planned").
 This is a features roadmap — for stage-by-stage usage see
 [`docs/workflow.md`](workflow.md); for the ML training pipeline specifically
 see [`docs/ml-training.md`](ml-training.md). Every implemented item below was
@@ -71,12 +71,12 @@ a data-integrity trap for exactly the kind of hand-fixed value you can least
 afford to lose track of.
 
 **Known-truth benchmark harness, CIF corpus tooling, and learned-scorer
-training.** Three CLIs: `bulkxrd-benchmark` (`analysis/benchmark.py`) ingests
+training.** Three CLIs: `seriesxrd-benchmark` (`analysis/benchmark.py`) ingests
 labelled XY patterns (RRUFF, opXRD, or your own) through the real Step-1/2
 preprocessing and scores any scorer against the labels (hit@1/hit@K/MRR, plus
-Step-3a verify metrics); `bulkxrd-corpus` (`analysis/corpus.py`) fetches CIFs
+Step-3a verify metrics); `seriesxrd-corpus` (`analysis/corpus.py`) fetches CIFs
 from COD by ID and screens a CIF directory (parse/dedupe/size-screen) into a
-training-only corpus; `bulkxrd-ml-train` (`analysis/ml_train.py`) trains the
+training-only corpus; `seriesxrd-ml-train` (`analysis/ml_train.py`) trains the
 Step-3b learned pair scorer against that corpus and exports a TorchScript
 model. Together these are the validation gate a trained scorer must clear
 before it's trusted over the deterministic cosine baseline — this matters
@@ -92,7 +92,7 @@ expands any matched `.h5`/`.hdf5`/`.nxs` container into per-frame sources
 (NeXus convention first, else the largest 3D image dataset; `h5_data_path`
 in the reduction config pins an unusual layout), and `read_detector_image`
 reads either kind of source — so the whole downstream pipeline is unchanged.
-bulkxrd's own output files are refused as frame sources, `hdf5plugin` is
+seriesxrd's own output files are refused as frame sources, `hdf5plugin` is
 loaded when present (Eiger bitshuffle/LZ4 compression), and the Dataset
 tab's scan preview shows the true expanded frame count.
 
@@ -110,7 +110,7 @@ the analysis file, so an Eiger mapping scan feeds the coordinate grid map
 with no sidecar CSV at all.
 
 **Watch-folder / during-beamtime mode (new in this release).**
-`bulkxrd-watch` polls the dataset folder while frames are still being
+`seriesxrd-watch` polls the dataset folder while frames are still being
 collected, integrates each new frame once it settles (size/mtime stable
 across two polls; a growing HDF5 stack's newest frame is held back one poll
 so a half-written chunk is never read; failures retry 3× before giving up),
@@ -143,7 +143,7 @@ calibrant auto-detection half of the original roadmap item remains planned
 below.)
 
 **Semi-quantitative phase fractions (new in this release).**
-`analysis/fractions.py` (`bulkxrd-analyze --fractions`) apportions each
+`analysis/fractions.py` (`seriesxrd-analyze --fractions`) apportions each
 frame's attributed peak areas (`/peaks/phase`, from the Step-3a removal)
 into per-phase intensity shares, with optional per-phase RIR (I/Icor)
 weighting, written to `/fractions`. The module says plainly what it is:
@@ -151,7 +151,7 @@ texture, absorption, and structure-factor differences are not corrected —
 Rietveld refinement (the export below) is the quantitative path.
 
 **Refinement hand-off bundle (new in this release).**
-`analysis/refine_export.py` (`bulkxrd-export-refinement`) writes a
+`analysis/refine_export.py` (`seriesxrd-export-refinement`) writes a
 Rietveld-ready bundle: per-frame patterns as two-column `.xy` (native q axis
 always, 2θ additionally when the wavelength is known), phase CIFs (copied
 from the library entry, or synthesized via pymatgen from lattice+atoms), a
@@ -160,7 +160,7 @@ GSASIIscriptable snippet. An export/bridge, deliberately not a Rietveld
 reimplementation.
 
 **Azimuthal texture analysis (new in this release).**
-`reduce/texture.py` (`bulkxrd-texture`) measures each saved cake's strongest
+`reduce/texture.py` (`seriesxrd-texture`) measures each saved cake's strongest
 rings: intensity vs azimuth per ring, with a texture index (std/mean), a
 spot fraction (coarse-grain indicator), and a preferred-orientation second
 harmonic (amplitude + phase), written to `/texture` in the reduced file.
@@ -221,7 +221,7 @@ user knows is fine.
 
 ## Site adoption
 
-bulkxrd is facility-neutral: nothing in the pipeline assumes a particular
+seriesxrd is facility-neutral: nothing in the pipeline assumes a particular
 beamline, cluster, or lab. A new facility adopting it needs to provide:
 
 - **A calibration image + PONI** for a standard calibrant (CeO2, LaB6, Si, or

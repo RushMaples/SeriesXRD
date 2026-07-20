@@ -1,13 +1,10 @@
 # Training the Step-3b learned scorer
 
 This is the end-to-end guide for training, validating, and deploying the
-RADAR-PD-style learned pair scorer (`bulkxrd-ml-train` → `scorer.pt` →
-`TorchScorer`). It applies to any cluster or workstation — read this document
-first regardless of where you run. If your cluster benefits from a short
-site-specific addendum (scheduler syntax, storage layout), see
-[`docs/ml-training-ris.md`](ml-training-ris.md) for a worked example (WashU
-RIS: LSF job syntax, storage paths) you can adapt for your own site; it is an
-example addendum, not a prerequisite.
+RADAR-PD-style learned pair scorer (`seriesxrd-ml-train` → `scorer.pt` →
+`TorchScorer`). It applies to workstations and compute clusters. Scheduler
+examples below use placeholders so deployments can supply their own queue,
+storage, environment, and allocation settings.
 
 The pipeline analyzes pressure series, temperature series, and other in-situ
 series. Examples below use diamond-anvil-cell (DAC) pressure series because
@@ -95,7 +92,7 @@ Notes:
 
 * `[phases]` (pymatgen) is required. Reflections are simulated from CIFs or
   library structures once at startup.
-* `[ml]` (torch) is required for training only. The rest of bulkxrd,
+* `[ml]` (torch) is required for training only. The rest of seriesxrd,
   including the deterministic ranker, never imports torch.
 * If you use a container with its own PyTorch, `pip install -e .[phases]` is
   enough — skip `[ml]` — as long as `python -c "import torch"` works inside
@@ -107,7 +104,7 @@ Notes:
 Always run this before queueing a long or GPU job, on any machine:
 
 ```bash
-bulkxrd-ml-train --workspace /path/to/workspace --out /tmp/scorer_smoke.pt \
+seriesxrd-ml-train --workspace /path/to/workspace --out /tmp/scorer_smoke.pt \
     --epochs 2 --mixtures-per-epoch 32 --device cpu
 python tests/test_ml.py          # train->export->rank roundtrip when torch is present
 ```
@@ -137,7 +134,7 @@ Collect two different things, for two different reasons:
    folder of CIFs spanning crystal systems — a few hundred to a few thousand
    is a good start. Sources: COD (Crystallography Open Database, bulk
    download by ID or rsync mirror), Materials Project (`mp-api`, needs an API
-   key), or your group's own CIF collection. Point `bulkxrd-ml-train
+   key), or your group's own CIF collection. Point `seriesxrd-ml-train
    --cif-dir` at the folder. These phases are never added to your workspace
    library — they only feed the simulator.
 
@@ -158,17 +155,17 @@ will beat it on anything low-symmetry.
 Two commands:
 
 ```bash
-bulkxrd-corpus fetch cod_ids.txt ./training_cifs   # COD IDs, one per line
-bulkxrd-corpus screen ./training_cifs              # parse / dedupe / size-screen
+seriesxrd-corpus fetch cod_ids.txt ./training_cifs   # COD IDs, one per line
+seriesxrd-corpus screen ./training_cifs              # parse / dedupe / size-screen
 ```
 
-`bulkxrd-corpus fetch <ids> <out_dir> [--base-url URL]` downloads COD entries
+`seriesxrd-corpus fetch <ids> <out_dir> [--base-url URL]` downloads COD entries
 by ID to `<out_dir>/<id>.cif`. Existing files are skipped, so it is
 re-runnable. Failures are collected and reported, not fatal. For bulk (10^4+)
 corpora, use COD's rsync mirror instead — this fetcher is for curated ID
 lists.
 
-`bulkxrd-corpus screen <cif_dir> [--max-sites N] [--no-dedupe]
+`seriesxrd-corpus screen <cif_dir> [--max-sites N] [--no-dedupe]
 [--keep-rejects-in-place]` parses every `*.cif` under `cif_dir` and rejects:
 
 * files that fail to parse (an unreadable CIF would otherwise be silently
@@ -181,7 +178,7 @@ lists.
 Rejects move to `cif_dir/rejected/<reason>/` unless
 `--keep-rejects-in-place` is set. The command writes
 `cif_dir/corpus_manifest.json` recording what was kept and why anything was
-dropped. Run `screen` before pointing `bulkxrd-ml-train --cif-dir` at the
+dropped. Run `screen` before pointing `seriesxrd-ml-train --cif-dir` at the
 folder — it is not optional hygiene.
 
 ---
@@ -189,13 +186,13 @@ folder — it is not optional hygiene.
 ## 5. Train
 
 ```bash
-bulkxrd-ml-train --workspace /path/to/workspace --out scorer.pt \
+seriesxrd-ml-train --workspace /path/to/workspace --out scorer.pt \
     --cif-dir /path/to/training_cifs \
     --epochs 20 --mixtures-per-epoch 512 --device cuda
 ```
 
-Full flag list (`bulkxrd-ml-train --help`, verified against
-`bulkxrd/analysis/ml_train.py`):
+Full flag list (`seriesxrd-ml-train --help`, verified against
+`seriesxrd/analysis/ml_train.py`):
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -278,7 +275,7 @@ The deterministic cosine scorer stays the default until a trained model is
 validated against known truth. There are two gates. A trained scorer is
 promoted only if it clears both.
 
-### Gate A — external labelled patterns (`bulkxrd-benchmark`)
+### Gate A — external labelled patterns (`seriesxrd-benchmark`)
 
 Ingest any labelled XY pattern set (RRUFF exports, opXRD dumps, or your own)
 through the pipeline's own preprocessing and score the ranker against the
@@ -286,16 +283,16 @@ labels:
 
 ```bash
 # pin the baseline once
-bulkxrd-benchmark ./patterns --labels labels.csv --workspace ws --out bench_cosine
+seriesxrd-benchmark ./patterns --labels labels.csv --workspace ws --out bench_cosine
 # same command, trained scorer
-bulkxrd-benchmark ./patterns --labels labels.csv --workspace ws \
+seriesxrd-benchmark ./patterns --labels labels.csv --workspace ws \
     --out bench_torch --ml-scorer torch:/path/scorer.pt
 ```
 
-`bulkxrd-benchmark <patterns> --labels FILE [--workspace WS] [--out DIR]
+`seriesxrd-benchmark <patterns> --labels FILE [--workspace WS] [--out DIR]
 [--unit UNIT] [--wavelength A] [--top-k K] [--ml-scorer SCORER]
 [--no-identify]` — flags verified against
-`bulkxrd/analysis/benchmark.py`:
+`seriesxrd/analysis/benchmark.py`:
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -324,7 +321,7 @@ XRD-AutoAnalyzer repository, with a pre-built labels CSV:
 ```bash
 bash examples/fetch_benchmark_example.sh ./benchdata
 # import the CIFs into a workspace library, then:
-bulkxrd-benchmark ./benchdata/spectra --labels ./benchdata/labels.csv \
+seriesxrd-benchmark ./benchdata/spectra --labels ./benchdata/labels.csv \
     --workspace <ws> --out bench_cosine
 ```
 
@@ -338,9 +335,9 @@ marker + gasket run, or any frame set with known phases):
 
 ```bash
 # baseline
-bulkxrd-analyze reduced.h5 --steps 3 --ml-rank --ml-rank-top-k 5
+seriesxrd-analyze reduced.h5 --steps 3 --ml-rank --ml-rank-top-k 5
 # learned
-bulkxrd-analyze reduced.h5 --steps 3 --ml-rank --ml-rank-top-k 5 \
+seriesxrd-analyze reduced.h5 --steps 3 --ml-rank --ml-rank-top-k 5 \
     --ml-scorer torch:/path/to/scorer.pt
 ```
 
@@ -363,9 +360,9 @@ is reproducible.
 ## 8. Deploy
 
 Copy `scorer.pt` somewhere stable and reference it wherever ranking runs
-(requires `pip install bulkxrd[ml]` on that machine):
+(requires `pip install seriesxrd[ml]` on that machine):
 
-* **Batch CLI:** `bulkxrd-analyze ... --ml-rank --ml-scorer
+* **Batch CLI:** `seriesxrd-analyze ... --ml-rank --ml-scorer
   torch:/path/scorer.pt`
 * **Worker/GUI config:** set `"ml_scorer": "torch:/path/scorer.pt"` in the
   analysis session config (the Identify tab's ML ranking then uses it).
@@ -382,17 +379,17 @@ shortlist underperform cosine on a known-truth dataset.
 
 ## 9. Running on any cluster
 
-Training needs: a Python environment (venv or container) with `bulkxrd[phases,ml]`
+Training needs: a Python environment (venv or container) with `seriesxrd[phases,ml]`
 installed, a workspace with a phase library, and optionally a CIF corpus
-directory. Nothing about `bulkxrd-ml-train` is scheduler-specific — it is a
+directory. Nothing about `seriesxrd-ml-train` is scheduler-specific — it is a
 plain CLI process. GPU is optional (`--device cuda` vs `--device cpu`).
 
 Any scheduler works the same way: request CPUs/GPU/memory, activate the
-environment, run `bulkxrd-ml-train`. A generic Slurm example:
+environment, run `seriesxrd-ml-train`. A generic Slurm example:
 
 ```bash
 #!/bin/bash
-#SBATCH --job-name=bulkxrd-ml-train
+#SBATCH --job-name=seriesxrd-ml-train
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
@@ -401,8 +398,8 @@ environment, run `bulkxrd-ml-train`. A generic Slurm example:
 #SBATCH --output=train_%j.log
 
 source /path/to/.venv-ml/bin/activate
-cd /path/to/bulkxrd
-bulkxrd-ml-train \
+cd /path/to/seriesxrd
+seriesxrd-ml-train \
     --workspace /path/to/xrd_workspace \
     --cif-dir   /path/to/training_cifs \
     --out       /path/to/models/scorer.pt \
@@ -413,11 +410,11 @@ bulkxrd-ml-train \
 To adapt this to another scheduler, translate the resource request and keep
 the body:
 
-* **LSF** (`bsub`): `-q`, `-n`, `-M`, `-gpu "num=1"` in place of the
-  `#SBATCH` lines; see `docs/ml-training-ris.md` for a filled-in example.
+* **LSF** (`bsub`): use `-q`, `-n`, `-M`, and `-gpu "num=1"` in place of the
+  `#SBATCH` lines.
 * **PBS/Torque** (`qsub`): `#PBS -l select=1:ncpus=4:ngpus=1`,
   `#PBS -l walltime=04:00:00`, `#PBS -q <queue>` in place of the `#SBATCH`
-  lines; the `bulkxrd-ml-train` invocation is unchanged.
+  lines; the `seriesxrd-ml-train` invocation is unchanged.
 
 Reflection simulation for a large corpus happens once at startup and is
 cached across epochs, so the first minutes of any job are pymatgen-bound

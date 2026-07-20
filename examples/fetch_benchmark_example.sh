@@ -8,7 +8,7 @@
 # Usage:
 #   bash examples/fetch_benchmark_example.sh ./benchdata
 #   # import the CIFs into a workspace library, then:
-#   bulkxrd-benchmark ./benchdata/spectra --labels ./benchdata/labels.csv \
+#   seriesxrd-benchmark ./benchdata/spectra --labels ./benchdata/labels.csv \
 #       --workspace <ws> --out bench_cosine
 set -euo pipefail
 OUT="${1:-./benchdata}"

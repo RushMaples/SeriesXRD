@@ -5,12 +5,13 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import h5py
 
-from bulkxrd.analysis.refine_export import export_refinement_bundle
-from bulkxrd.analysis.phases import Phase, save_user_phases
+from seriesxrd.analysis.refine_export import export_refinement_bundle
+from seriesxrd.analysis.phases import Phase, save_user_phases
 
 WAVELENGTH = 0.4066  # Angstrom
 N_FRAMES = 5
@@ -140,6 +141,7 @@ def test_export_explicit_frames_bypass_excluded():
 
 
 def test_export_phases_written_and_skipped():
+    pytest.importorskip("pymatgen")
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         h5_path = td / "an.h5"
@@ -170,6 +172,7 @@ def test_export_phases_written_and_skipped():
 
 
 def test_default_phases_from_identify_group():
+    pytest.importorskip("pymatgen")
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         h5_path = td / "an.h5"
@@ -187,7 +190,7 @@ def test_export_frames_patterns_and_peaks_csv():
     combined peaks.csv restricted to those frames (flagged rows kept with
     their flag; phase column present when the attribution exists)."""
     import csv
-    from bulkxrd.analysis.refine_export import export_frames
+    from seriesxrd.analysis.refine_export import export_frames
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         an = td / "an.h5"
@@ -266,12 +269,132 @@ def test_export_frames_patterns_and_peaks_csv():
         assert man2["n_frames"] == N_FRAMES - 1           # one excluded frame
 
 
+def test_write_xy_sigma_keep_and_nan():
+    """3-column .xye writing, keep-mask row dropping, NaN-row dropping."""
+    from seriesxrd.analysis.refine_export import _write_xy
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "t.xye"
+        x = np.array([1.0, 2.0, 3.0, 4.0])
+        y = np.array([10.0, np.nan, 30.0, 40.0])
+        s = np.array([1.0, 1.0, 2.0, 2.0])
+        keep = np.array([True, True, True, False])
+        _write_xy(p, x, y, sigma=s, keep=keep, header="h")
+        data = np.loadtxt(p, ndmin=2)
+        # NaN row (x=2) and keep=False row (x=4) both dropped; 3 columns
+        assert data.shape == (2, 3), data.shape
+        assert np.allclose(data[:, 0], [1.0, 3.0])
+        assert np.allclose(data[:, 2], [1.0, 2.0])
+
+
+def test_exclude_windows_drop_vs_zero():
+    """exclude_mode='drop' omits the window bins; 'zero' keeps the legacy
+    full-grid zeroing."""
+    from seriesxrd.analysis.refine_export import export_frames
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        an = td / "an.h5"
+        q, clean = _analysis_file(an)
+        d0 = 2.0 * math.pi / 3.0            # q window centered at 3.0 A^-1
+
+        man = export_frames(an, td / "drop", frames=[0], source="clean",
+                            peaks=False, exclude_d=[d0])
+        assert man["exclude_mode"] == "drop"
+        lo, hi = man["excluded_windows"][0][1:]
+        data = np.loadtxt(td / "drop" / "patterns" / "frame_0000_q.xy")
+        assert not np.any((data[:, 0] >= lo) & (data[:, 0] <= hi))
+        assert data.shape[0] == N_BINS - int(np.sum((q >= lo) & (q <= hi)))
+
+        man2 = export_frames(an, td / "zero", frames=[0], source="clean",
+                             peaks=False, exclude_d=[d0], exclude_mode="zero")
+        assert man2["exclude_mode"] == "zero"
+        data2 = np.loadtxt(td / "zero" / "patterns" / "frame_0000_q.xy")
+        assert data2.shape[0] == N_BINS
+        sel = (data2[:, 0] >= lo) & (data2[:, 0] <= hi)
+        assert sel.any() and np.allclose(data2[sel, 1], 0.0)
+
+
+_PONI_100K = """poni_version: 2.1
+Detector: Pilatus100k
+Detector_config: {}
+Distance: 0.1
+Poni1: 0.01677
+Poni2: 0.0418
+Rot1: 0.0
+Rot2: 0.0
+Rot3: 0.0
+Wavelength: 4.133e-11
+"""
+
+
+def test_export_gsas_raw_pressure_groups():
+    """Raw re-integration: per-pressure summing, Poisson esd column,
+    no-coverage bins dropped, excluded windows dropped."""
+    tifffile = pytest.importorskip("tifffile")
+    from seriesxrd.analysis.refine_export import export_gsas_raw
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        rawdir = td / "raw"
+        rawdir.mkdir()
+        img = np.full((195, 487), 100, dtype=np.int32)
+        img[0, 0] = -1                       # Pilatus gap/defect marker
+        for i in range(3):
+            tifffile.imwrite(str(rawdir / f"f{i}.tif"), img)
+
+        red = td / "red.h5"
+        with h5py.File(str(red), "w") as h:
+            h.attrs["unit"] = "q_A^-1"
+            h.attrs["poni_text"] = _PONI_100K
+            h.attrs["npt_1d"] = 150
+            h.attrs["dataset_dir"] = str(rawdir)
+            fr = h.create_group("frames")
+            fr.create_dataset(
+                "filename", data=np.array([f"f{i}.tif" for i in range(3)],
+                                          dtype=object),
+                dtype=h5py.string_dtype(encoding="utf-8"))
+            fr.create_dataset("excluded", data=np.zeros(3, bool))
+        an = td / "an.h5"
+        with h5py.File(str(an), "w") as h:
+            h.create_group("frames").create_dataset(
+                "pressure", data=np.array([1.0, 1.0, 2.0]))
+
+        out = td / "gsas"
+        man = export_gsas_raw(red, out, analysis_h5=an,
+                              group_by_pressure=True)
+        assert man["n_groups"] == 2, man
+        assert {g["label"] for g in man["groups"]} == {"1GPa", "2GPa"}
+        assert next(g for g in man["groups"]
+                    if g["label"] == "1GPa")["n_frames"] == 2
+        for name in ("1GPa_q.xye", "1GPa.xye", "2GPa_q.xye", "2GPa.xye",
+                     "instrument.instprm"):
+            assert (out / name).is_file(), name
+
+        d1 = np.loadtxt(out / "1GPa_q.xye", ndmin=2)
+        d2 = np.loadtxt(out / "2GPa_q.xye", ndmin=2)
+        assert d1.shape[1] == 3 and d2.shape[1] == 3
+        assert np.all(d1[:, 2] > 0) and np.all(d2[:, 2] > 0)
+        # two summed flat frames vs one: intensity ratio ~2
+        ratio = np.median(d1[:, 1]) / np.median(d2[:, 1])
+        assert abs(ratio - 2.0) < 0.05, ratio
+
+        # excluded window bins are absent from the written pattern
+        qc = float(np.median(d1[:, 0]))
+        d0 = 2.0 * math.pi / qc
+        out2 = td / "gsas_excl"
+        export_gsas_raw(red, out2, frames=[0], exclude_d=[d0])
+        dx = np.loadtxt(out2 / "frame_0000_q.xye", ndmin=2)
+        lo, hi = qc * (1 - 0.028), qc * (1 + 0.028)
+        assert not np.any((dx[:, 0] >= lo) & (dx[:, 0] <= hi))
+
+
 def main() -> None:
     test_export_patterns_and_instprm()
     test_export_explicit_frames_bypass_excluded()
     test_export_phases_written_and_skipped()
     test_default_phases_from_identify_group()
     test_export_frames_patterns_and_peaks_csv()
+    test_write_xy_sigma_keep_and_nan()
+    test_exclude_windows_drop_vs_zero()
+    test_export_gsas_raw_pressure_groups()
     print("REFINE EXPORT TEST OK")
 
 

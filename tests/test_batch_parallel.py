@@ -10,11 +10,11 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bulkxrd.analysis import phases as ph
-from bulkxrd.analysis.background import run_background_separation
-from bulkxrd.analysis.peaks import run_peak_fitting
-from bulkxrd.analysis import identify as idf
-from bulkxrd.analysis import batch
+from seriesxrd.analysis import phases as ph
+from seriesxrd.analysis.background import run_background_separation
+from seriesxrd.analysis.peaks import run_peak_fitting
+from seriesxrd.analysis import identify as idf
+from seriesxrd.analysis import batch
 
 
 def _gauss(x, c, a, w):

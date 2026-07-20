@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bulkxrd.reduce.straighten import (ring_centroids, fit_waviness,
+from seriesxrd.reduce.straighten import (ring_centroids, fit_waviness,
                                        straighten_cake, diagnose_reduced,
                                        straighten_reduced)
 
@@ -183,7 +183,7 @@ def test_background_straightened_source():
     reduce sigmaclip is skipped, and cake-less frames fall back to the ordinary
     median. Requesting it without the channel raises an instructive error."""
     import h5py
-    from bulkxrd.analysis.background import run_background_separation
+    from seriesxrd.analysis.background import run_background_separation
     q = np.linspace(1.0, 8.0, 800)
     n = 3
     bg = 50.0 + 30.0 * np.exp(-(q - 1.0) / 5.0)

@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bulkxrd.analysis.spots import (
+from seriesxrd.analysis.spots import (
     circ_diff, circ_mean, diamond_q_lines, diamond_q_windows, detect_spots,
     consolidate_spots, link_spot_tracks, run_spot_tracking,
     load_reflection_table, match_tracks, export_spot_tracks, load_spot_tracks,
@@ -391,6 +391,93 @@ def _test_export(tmp: Path):
     assert np.nanmax(ex[:, ka]) > 50.0                   # crystallite spot kept
 
 
+_PONI_100K = """poni_version: 2.1
+Detector: Pilatus100k
+Detector_config: {}
+Distance: 0.1
+Poni1: 0.01677
+Poni2: 0.0418
+Rot1: 0.0
+Rot2: 0.0
+Rot3: 0.0
+Wavelength: 4.133e-11
+"""
+
+
+def _test_export_masks(tmp: Path) -> None:
+    """Keep-only masked re-integration: .xye with Poisson esds, no-coverage
+    bins between the kept boxes omitted, exclude_d windows dropped."""
+    import math
+    import h5py
+    import tifffile
+    from seriesxrd.analysis.spots import export_spot_masks
+
+    rawdir = tmp / "masks_raw"
+    rawdir.mkdir()
+    tifffile.imwrite(str(rawdir / "raw0.tif"),
+                     np.full((195, 487), 100, dtype=np.int32))
+
+    red = tmp / "masks_red.h5"
+    with h5py.File(str(red), "w") as h:
+        h.attrs["unit"] = "q_A^-1"
+        h.attrs["poni_text"] = _PONI_100K
+        pg = h.create_group("patterns")
+        pg.create_dataset("radial", data=np.linspace(0.5, 6.0, 200))
+        cg = h.create_group("cakes")
+        cg.create_dataset("radial", data=RADIAL)
+        cg.create_dataset("azimuthal", data=AZIM)
+        fr = h.create_group("frames")
+        fr.create_dataset("filename", data=np.array(["raw0.tif"], object),
+                          dtype=h5py.string_dtype(encoding="utf-8"))
+        fr.create_dataset("excluded", data=np.zeros(1, bool))
+
+    spots = tmp / "masks_spots.h5"
+    with h5py.File(str(spots), "w") as h:
+        og = h.create_group("spots").create_group("obs")
+        og.create_dataset("frame", data=np.array([0, 0], "i4"))
+        og.create_dataset("q", data=np.array([3.0, 2.0]))
+        og.create_dataset("d", data=2.0 * np.pi / np.array([3.0, 2.0]))
+        og.create_dataset("azim", data=np.array([0.0, 90.0]))
+        og.create_dataset("q_width", data=np.array([0.05, 0.05]))
+        og.create_dataset("azim_width", data=np.array([20.0, 20.0]))
+        og.create_dataset("track", data=np.array([0, 1], "i4"))
+
+    out = tmp / "masks_out"
+    man = export_spot_masks(red, spots, out, dataset_dir=rawdir)
+    assert man["n_frames"] == 1, man
+    assert (out / "frame_0000_mask.npy").is_file()
+    xye = out / "frame_0000_masked_q.xye"
+    assert xye.is_file(), man["files"]
+    assert (out / "frame_0000_masked.xye").is_file()
+    data = np.loadtxt(xye, ndmin=2)
+    assert data.shape[1] == 3                      # x, intensity, esd
+    assert np.all(data[:, 2] > 0)
+    # only the two kept boxes contribute: no rows in the coverage gap
+    assert data.shape[0] < 200
+    assert np.any(np.abs(data[:, 0] - 3.0) < 0.1)  # spot 1 region present
+    assert np.any(np.abs(data[:, 0] - 2.0) < 0.1)  # spot 2 region present
+    assert not np.any((data[:, 0] > 2.3) & (data[:, 0] < 2.7))   # the gap
+
+    # exclude_d drops the spot-2 window from the written pattern
+    out2 = tmp / "masks_out_excl"
+    export_spot_masks(red, spots, out2, dataset_dir=rawdir,
+                      exclude_d=[math.pi])         # d = pi <-> q = 2.0
+    data2 = np.loadtxt(out2 / "frame_0000_masked_q.xye", ndmin=2)
+    assert not np.any((data2[:, 0] >= 2.0 * (1 - 0.028))
+                      & (data2[:, 0] <= 2.0 * (1 + 0.028)))
+    assert np.any(np.abs(data2[:, 0] - 3.0) < 0.1)  # spot 1 survives
+
+    # reintegrate_masked_frames: same masks, fresh dir -> same .xye
+    from seriesxrd.analysis.spots import reintegrate_masked_frames
+    out3 = tmp / "masks_reint"
+    man3 = reintegrate_masked_frames(out, red, dataset_dir=rawdir,
+                                     out_dir=out3)
+    assert man3["n_frames"] == 1 and not man3["missing_raw"], man3
+    data3 = np.loadtxt(out3 / "frame_0000_masked_q.xye", ndmin=2)
+    assert data3.shape == data.shape
+    assert np.allclose(data3, data, rtol=1e-6)
+
+
 def main() -> None:
     _test_helpers()
     _test_detection()
@@ -401,6 +488,7 @@ def main() -> None:
         _test_matcher_parsing(tmp)
         _test_end_to_end(tmp)
         _test_export(tmp)
+        _test_export_masks(tmp)
     print("test_spots: all assertions passed")
 
 

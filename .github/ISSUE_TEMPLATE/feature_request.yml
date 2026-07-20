@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a reusable workflow or scientific capability.
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: Research need
+      description: What workflow or scientific problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe inputs, outputs, and where this belongs in the workflow.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
