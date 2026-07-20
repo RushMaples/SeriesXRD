@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import h5py
@@ -140,6 +141,7 @@ def test_export_explicit_frames_bypass_excluded():
 
 
 def test_export_phases_written_and_skipped():
+    pytest.importorskip("pymatgen")
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         h5_path = td / "an.h5"
@@ -170,6 +172,7 @@ def test_export_phases_written_and_skipped():
 
 
 def test_default_phases_from_identify_group():
+    pytest.importorskip("pymatgen")
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         h5_path = td / "an.h5"
@@ -326,7 +329,7 @@ Wavelength: 4.133e-11
 def test_export_gsas_raw_pressure_groups():
     """Raw re-integration: per-pressure summing, Poisson esd column,
     no-coverage bins dropped, excluded windows dropped."""
-    import tifffile
+    tifffile = pytest.importorskip("tifffile")
     from seriesxrd.analysis.refine_export import export_gsas_raw
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
