@@ -47,5 +47,10 @@ def main() -> None:
     print("BACKGROUND TEST OK")
 
 
+def test_main():
+    """Pytest entry point — this file predates the test_* function convention."""
+    main()
+
+
 if __name__ == "__main__":
     main()

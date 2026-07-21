@@ -21,6 +21,9 @@ from ..guikit.theme import (
 from ..guikit.tkstyle import apply_dark_theme
 from ..guikit.tooltip import ToolTip as _ToolTip
 from ..guikit.mpl_embed import embed_figure
+from ..guikit.labels import (unit_label, AZIMUTH_LABEL, INTENSITY_LABEL,
+                              INTENSITY_ARB_LABEL, D_SPACING_LABEL,
+                              PRESSURE_LABEL, FRAME_LABEL, CONTAMINATION_LABEL)
 
 
 def _tk_imports():
@@ -372,33 +375,142 @@ class AnalysisApp:
         self._status_bar_frame = ttk.Frame(outer, relief="sunken")
         self._status_bar_frame.pack(side="bottom", fill="x", pady=(2, 0))
 
-        self.nb = ttk.Notebook(outer)
-        self.nb.pack(fill="both", expand=True)
-        self.tabs: Dict[str, Any] = {}
-        for name, builder in [
-            # Workflow order: configure everything (input → background → peaks
-            # → phases → frame metadata → identify), then run, then inspect the
-            # results (review → peak map → pattern map → grid map). Result tabs
-            # that need Step-3a output sit AFTER the tabs that configure it.
-            ("1 Data",       self._tab_input),
-            ("2 Background", self._tab_background),
-            ("3 Peaks",      self._tab_peaks),
-            ("4 Phases",     self._tab_phases),
-            ("5 Metadata",   self._tab_frame_metadata),
-            ("6 Identification", self._tab_identify),
-            ("7 Run",        self._tab_run),
-            ("8 Pattern review", self._tab_review),
-            ("9 Peak map",   self._tab_heatmap),
-            ("10 Phase map", self._tab_patternmap),
-            ("11 Unknowns",   self._tab_unknowns),
-            ("12 Spatial map", self._tab_gridmap),
-        ]:
-            frame = ttk.Frame(self.nb, padding=10)
-            builder(frame)
-            self.nb.add(frame, text=name)
-            self.tabs[name] = frame
+        self._build_navigation(outer)
 
         self._build_status_bar()
+
+    def _build_navigation(self, outer):
+        """Hierarchical navigation: a left rail (Configure → Run → Review →
+        Export, with sub-pages) and a raised-frame content area.
+
+        Replaces the previous single row of 12 numbered tabs, which hid later
+        tabs at small window widths and 200% display scaling. Page builders
+        are unchanged — each old tab body is now a page.
+        """
+        tk, ttk = self.tk, self.ttk
+
+        body = ttk.Frame(outer)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        rail = ttk.Treeview(body, show="tree", selectmode="browse")
+        rail.grid(row=0, column=0, sticky="nsw", padx=(0, 6))
+        rail.column("#0", width=170, stretch=False)
+        self._nav_rail = rail
+
+        content = ttk.Frame(body)
+        content.grid(row=0, column=1, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        sections = [
+            ("Configure", [
+                ("data",       "Data",           self._tab_input),
+                ("background", "Background",     self._tab_background),
+                ("peaks",      "Peaks",          self._tab_peaks),
+                ("phases",     "Phases",         self._tab_phases),
+                ("metadata",   "Frame metadata", self._tab_frame_metadata),
+                ("identify",   "Identification", self._tab_identify),
+            ]),
+            ("Run", [
+                ("run",        "Run analysis",   self._tab_run),
+            ]),
+            ("Review", [
+                ("pattern",    "Pattern review", self._tab_review),
+                ("peakmap",    "Peak map",       self._tab_heatmap),
+                ("phasemap",   "Phase map",      self._tab_patternmap),
+                ("unknowns",   "Unknowns",       self._tab_unknowns),
+                ("spatial",    "Spatial map",    self._tab_gridmap),
+            ]),
+            ("Export", [
+                ("export",     "Export",         self._tab_export),
+            ]),
+        ]
+
+        self.pages: Dict[str, Any] = {}
+        self._nav_items: Dict[str, str] = {}      # page key -> tree item id
+        self._nav_first_child: Dict[str, str] = {}  # section item id -> page key
+        for section_label, pages in sections:
+            sec_id = rail.insert("", "end", text=section_label, open=True)
+            for key, label, builder in pages:
+                frame = ttk.Frame(content, padding=10)
+                builder(frame)
+                frame.grid(row=0, column=0, sticky="nsew")
+                self.pages[key] = frame
+                item = rail.insert(sec_id, "end", text=label,
+                                   values=(key,), tags=(key,))
+                self._nav_items[key] = item
+                self._nav_first_child.setdefault(sec_id, key)
+
+        # Legacy aliases so older call sites / muscle memory keep working.
+        self.tabs = {
+            "1 Data": self.pages["data"], "2 Background": self.pages["background"],
+            "3 Peaks": self.pages["peaks"], "4 Phases": self.pages["phases"],
+            "5 Metadata": self.pages["metadata"],
+            "6 Identification": self.pages["identify"],
+            "7 Run": self.pages["run"], "8 Pattern review": self.pages["pattern"],
+            "9 Peak map": self.pages["peakmap"],
+            "10 Phase map": self.pages["phasemap"],
+            "11 Unknowns": self.pages["unknowns"],
+            "12 Spatial map": self.pages["spatial"],
+        }
+
+        def _on_select(_event=None):
+            sel = rail.selection()
+            if not sel:
+                return
+            item = sel[0]
+            vals = rail.item(item, "values")
+            if vals:
+                self.pages[vals[0]].tkraise()
+                if vals[0] == "run":
+                    self._update_preflight()
+            else:
+                # A section header: forward to its first page.
+                first = self._nav_first_child.get(item)
+                if first:
+                    rail.selection_set(self._nav_items[first])
+        rail.bind("<<TreeviewSelect>>", _on_select)
+        self.select_page("data")
+
+    def select_page(self, key: str) -> None:
+        """Raise a navigation page by key (e.g. 'data', 'run', 'pattern')."""
+        item = self._nav_items.get(key)
+        if item is None:
+            return
+        try:
+            self._nav_rail.selection_set(item)
+            self._nav_rail.see(item)
+        except Exception:
+            pass
+        self.pages[key].tkraise()
+        if key == "run":
+            self._update_preflight()
+
+    def _tab_export(self, frame):
+        """Whole-series export actions. Frame- and result-specific exports
+        stay on their own pages (Pattern review, Unknowns, Phase map)."""
+        ttk = self.ttk
+        box = ttk.LabelFrame(frame, text="Whole-series exports", padding=10)
+        box.pack(fill="x", anchor="n")
+        ttk.Button(box, text="Refinement bundle (GSAS-II)…",
+                   command=self.export_refinement_clicked).pack(
+            side="left", padx=4)
+        ttk.Button(box, text="GSAS-ready raw patterns…",
+                   command=self.export_gsas_raw_clicked).pack(
+            side="left", padx=4)
+        _ToolTip(box, "Rietveld hand-off: per-frame patterns, phase CIFs, and "
+                      "a GSAS-II instrument file — see docs/validation.md for "
+                      "what the export is (and is not).")
+        note = ttk.Label(
+            frame, foreground=MUTED, justify="left", wraplength=680,
+            text=("Context-bound exports live with their results:\n"
+                  "  • Pattern review — per-frame .xy patterns and stacked "
+                  "figures\n"
+                  "  • Unknowns — cluster diagrams, spot tracks, spot masks\n"
+                  "  • Frame metadata — selected-frame metadata CSV"))
+        note.pack(anchor="w", pady=(10, 0))
 
     def _build_status_bar(self):
         ttk = self.ttk
@@ -411,6 +523,31 @@ class AnalysisApp:
         self.status_frames.pack(side="left", padx=(0, 12))
         self.status_worker = ttk.Label(bar, text="idle", foreground=MUTED, anchor="e")
         self.status_worker.pack(side="right", padx=6)
+        # Transient non-modal notifications (successful saves/exports) land
+        # here instead of interrupting with a dialog.
+        self.status_notify = ttk.Label(bar, text="", foreground=ACCENT2, anchor="w")
+        self.status_notify.pack(side="left", padx=(0, 12))
+        self._notify_after_id = None
+
+    def notify(self, text: str, *, level: str = "INFO", seconds: int = 8):
+        """Non-modal notification: one line in the status bar plus the log.
+
+        For successful saves/loads/exports — outcomes the user should see
+        without having to dismiss anything. Errors stay modal.
+        """
+        one_line = " ".join(str(text).split())
+        self.log(one_line, level)
+        lbl = getattr(self, "status_notify", None)
+        if lbl is None:
+            return
+        if self._notify_after_id is not None:
+            try:
+                lbl.after_cancel(self._notify_after_id)
+            except Exception:
+                pass
+        lbl.configure(text=one_line[:160])
+        self._notify_after_id = lbl.after(
+            int(seconds * 1000), lambda: lbl.configure(text=""))
 
     def _update_status_bar(self):
         try:
@@ -676,6 +813,13 @@ class AnalysisApp:
         ttk.Button(
             btns, text="Inspect input", command=self.inspect_input_clicked,
         ).pack(side="left", padx=2)
+        # The raw HDF5 tree and attribute dumps are implementation detail —
+        # off by default, one click away when needed.
+        self._inspect_advanced = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            btns, text="Advanced details", variable=self._inspect_advanced,
+            command=self._render_input_report,
+        ).pack(side="left", padx=8)
 
         # Warn if robust pattern is missing — analysis requires it.
         self._robust_warn_label = ttk.Label(btns, text="", foreground=WARN)
@@ -698,15 +842,14 @@ class AnalysisApp:
             self.messagebox.showerror(
                 "Input", "Select a reduced .h5 file first (1 Data tab).")
             return
-        from ..reduce.review import inspect_reduction, structure_report as reduce_report
+        from ..reduce.review import inspect_reduction
         self.log(f"Inspecting reduced HDF5: {reduced}")
         try:
             review_r = inspect_reduction(reduced)
         except Exception as e:
             self.messagebox.showerror("Inspect failed", repr(e))
             return
-
-        lines = ["=== Reduced HDF5 ===", reduce_report(review_r)]
+        self._last_review_reduced = review_r
 
         # Warn about missing robust pattern.
         robust_ok = bool(review_r.get("robust_present"))
@@ -723,26 +866,49 @@ class AnalysisApp:
         if nf:
             self._frame_count = int(nf)
 
-        # If an analysis HDF5 already exists, append its summary too.
+        # If an analysis HDF5 already exists, summarize it too.
+        self._last_review_analysis = None
+        self._last_review_analysis_error = ""
         analysis = str(self.config.get("analysis_h5_file", "") or "").strip()
         if analysis and Path(analysis).is_file():
-            from .review import inspect_analysis, structure_report as analysis_report
+            from .review import inspect_analysis
             self.log(f"Inspecting analysis HDF5: {analysis}")
             try:
                 review_a = inspect_analysis(analysis)
-                lines += ["", "=== Analysis HDF5 ===", analysis_report(review_a)]
+                self._last_review_analysis = review_a
                 if review_a.get("n_frames"):
                     self._frame_count = int(review_a["n_frames"])
             except Exception as e:
-                lines += ["", f"[Could not inspect analysis HDF5: {e!r}]"]
+                self._last_review_analysis_error = repr(e)
 
-        combined = "\n".join(lines)
-        self.input_text.configure(state="normal")
-        self.input_text.delete("1.0", "end")
-        self.input_text.insert("end", combined + "\n")
-        self.input_text.configure(state="disabled")
+        self._render_input_report()
         self._update_status_bar()
         self.save_config(silent=True)
+
+    def _render_input_report(self):
+        """Render the cached inspection results into the Data page, honoring
+        the Advanced-details toggle (no file re-read on toggle)."""
+        review_r = getattr(self, "_last_review_reduced", None)
+        if review_r is None:
+            return
+        from ..reduce.review import structure_report as reduce_report
+        from .review import structure_report as analysis_report
+        advanced = bool(self._inspect_advanced.get())
+        lines = ["=== Reduced HDF5 ===", reduce_report(review_r, advanced=advanced)]
+        review_a = getattr(self, "_last_review_analysis", None)
+        if review_a is not None:
+            lines += ["", "=== Analysis HDF5 ===",
+                      analysis_report(review_a, advanced=advanced)]
+        elif getattr(self, "_last_review_analysis_error", ""):
+            lines += ["", f"[Could not inspect analysis HDF5: "
+                          f"{self._last_review_analysis_error}]"]
+        if not advanced:
+            lines += ["", "(Enable “Advanced details” for the raw HDF5 tree "
+                          "and all attributes.)"]
+        self.input_text.configure(state="normal")
+        self.input_text.delete("1.0", "end")
+        self.input_text.insert("end", "\n".join(lines) + "\n")
+        self.input_text.configure(state="disabled")
 
     def set_reduced(self, path: "str | Path") -> None:
         """Called by the host app to wire in the reduced file after reduction.
@@ -759,7 +925,7 @@ class AnalysisApp:
         self.save_config(silent=True)
         self.log(f"Reduced HDF5 received: {p}")
         try:
-            self.nb.select(self.tabs["1 Data"])
+            self.select_page("data")
         except Exception:
             pass
         if Path(p).is_file():
@@ -895,15 +1061,107 @@ class AnalysisApp:
         _w_entry.pack(side="left", padx=2)
         _ToolTip(_w_entry, "Parallel worker processes for all steps. "
                            "0 = auto (CPU count − 1), 1 = serial.")
+
+        # Preflight: what will run, on what input, into what output — visible
+        # before committing to a run instead of discovered from error dialogs.
+        pf = ttk.LabelFrame(frame, text="Preflight", padding=(8, 4))
+        pf.pack(fill="x", padx=4, pady=(6, 0))
+        self._preflight_label = ttk.Label(pf, text="", justify="left",
+                                          foreground=MUTED)
+        self._preflight_label.pack(anchor="w")
+        self._preflight_warn = ttk.Label(pf, text="", justify="left",
+                                         foreground=WARN)
+        self._preflight_warn.pack(anchor="w")
+
         self.progress = ttk.Progressbar(frame, mode="determinate", maximum=100)
         self.progress.pack(fill="x", padx=4, pady=6)
         self.progress_label = ttk.Label(frame, text="Idle", foreground=MUTED)
         self.progress_label.pack(anchor="w", padx=6)
+
+        # Completion summary: filled by _run_done on success, with direct
+        # follow-up actions instead of a modal popup.
+        done = ttk.Frame(frame)
+        done.pack(fill="x", padx=4)
+        self._completion_label = ttk.Label(done, text="", justify="left",
+                                           foreground=ACCENT2)
+        self._completion_label.pack(side="left", anchor="w")
+        self._completion_review_btn = ttk.Button(
+            done, text="Review results",
+            command=lambda: (self.select_page("pattern"), self.load_review()))
+        self._completion_open_btn = ttk.Button(
+            done, text="Open output folder", command=self._open_output_folder)
+        # (buttons pack on completion)
+
         self.run_log_text = tk.Text(
             frame, bg=BG2, fg=FG, insertbackground=FG, relief="flat",
             state="disabled", font=("TkFixedFont", 9),
         )
         self.run_log_text.pack(fill="both", expand=True, padx=4, pady=4)
+        self._update_preflight()
+
+    def _update_preflight(self):
+        """Refresh the Run page's preflight block from the current config."""
+        if not hasattr(self, "_preflight_label"):
+            return
+        try:
+            self.pull_vars()
+        except Exception:
+            pass
+        cfg = self.config
+        reduced = str(cfg.get("reduced_h5_file", "") or "").strip()
+        out_h5 = str(cfg.get("analysis_h5_file", "") or "").strip()
+        steps = []
+        if bool(cfg.get("run_step1", True)):
+            steps.append("1 background")
+        if bool(cfg.get("run_step2", True)):
+            steps.append("2 peaks")
+        if bool(cfg.get("run_ml_rank", False)):
+            steps.append("3b ML rank")
+        if bool(cfg.get("run_step3", False)):
+            steps.append("3a identify + residual + unknowns")
+        frames = getattr(self, "_frame_count", 0)
+        lines = [
+            f"Input:   {Path(reduced).name if reduced else '(none)'}"
+            + (f"    frames: {frames}" if frames else ""),
+            f"Steps:   {', '.join(steps) if steps else '(none enabled)'}",
+            f"Output:  {out_h5 or '(derived from input)'}",
+        ]
+        self._preflight_label.configure(text="\n".join(lines))
+
+        warns = []
+        if not reduced or not Path(reduced).is_file():
+            warns.append("No reduced input file — set it on Configure → Data.")
+        rev = getattr(self, "_last_review_reduced", None)
+        if rev is not None and not rev.get("robust_present", True):
+            warns.append("Robust pattern missing — re-run reduction with "
+                         "robust_1d=True before Step 1.")
+        if bool(cfg.get("run_step3", False)):
+            cands = cfg.get("candidate_phases") or []
+            if not cands and not bool(cfg.get("identify_all_phases", False)) \
+                    and not bool(cfg.get("run_ml_rank", False)):
+                warns.append("Step 3a is enabled with no candidate phases — "
+                             "pick phases (Configure → Phases), enable ML "
+                             "ranking, or set identify-all.")
+        if not steps:
+            warns.append("Nothing to run — enable at least one step.")
+        self._preflight_warn.configure(text="\n".join(warns))
+
+    def _open_output_folder(self):
+        out_h5 = str(self.config.get("analysis_h5_file", "") or "").strip()
+        folder = Path(out_h5).parent if out_h5 else None
+        if not folder or not folder.is_dir():
+            self.log("No output folder to open yet.", "WARN")
+            return
+        try:
+            if sys.platform.startswith("win"):
+                import os as _os
+                _os.startfile(str(folder))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(folder)])
+            else:
+                subprocess.Popen(["xdg-open", str(folder)])
+        except Exception as exc:
+            self.log(f"Could not open {folder}: {exc!r}", "WARN")
 
     def run_analysis(self):
         if self._run_proc is not None:
@@ -955,6 +1213,8 @@ class AnalysisApp:
             "--output-json", out_json,
         ]
         self.log("Worker command: " + " ".join(cmd))
+        self._update_preflight()
+        self._clear_completion()
         self.run_btn.configure(state="disabled")
         self.cancel_btn.configure(state="normal")
         self.progress.configure(value=0)
@@ -1019,6 +1279,45 @@ class AnalysisApp:
         self.progress.configure(maximum=max(total, 1), value=done)
         self.progress_label.configure(text=f"{phase}: {done} / {total} frames")
 
+    def _clear_completion(self):
+        if not hasattr(self, "_completion_label"):
+            return
+        self._completion_label.configure(text="")
+        self._completion_review_btn.pack_forget()
+        self._completion_open_btn.pack_forget()
+
+    def _show_completion(self, manifest: dict):
+        """Completion summary with direct follow-up actions (non-modal)."""
+        if not hasattr(self, "_completion_label"):
+            return
+        lines = []
+        s1 = manifest.get("step1") or {}
+        if s1:
+            n_flag = s1.get("n_flagged")
+            extra = f", {n_flag} contamination-flagged" if n_flag else ""
+            lines.append(f"Step 1: {s1.get('n_frames', '?')} frames"
+                         f" ({s1.get('n_excluded', 0)} excluded{extra})")
+            if s1.get("spotty_sample"):
+                lines.append("  ⚠ spotty/coarse-grained sample diagnosed — "
+                             "peak fitting used the mean channel")
+        s2 = manifest.get("step2") or {}
+        if s2:
+            lines.append(f"Step 2: {s2.get('n_good', '?')} good / "
+                         f"{s2.get('n_peaks', '?')} fitted peaks")
+            if s2.get("npt_recommended"):
+                lines.append(f"  ⚠ peaks are under-sampled — re-reduce with "
+                             f"npt_1d ≈ {s2['npt_recommended']}")
+        s3 = manifest.get("step3") or {}
+        if s3:
+            seen = [n for n, d in (s3.get("summary") or {}).items()
+                    if d.get("n_frames_seen")]
+            lines.append("Step 3a: " + (", ".join(seen) if seen
+                                        else "no phase cleared the gate"))
+        self._completion_label.configure(
+            text="\n".join(lines) if lines else "Run finished.")
+        self._completion_review_btn.pack(side="right", padx=4)
+        self._completion_open_btn.pack(side="right", padx=4)
+
     def _run_done(self, returncode: int, out_json: str):
         self._run_proc = None
         self.run_btn.configure(state="normal")
@@ -1058,6 +1357,7 @@ class AnalysisApp:
         self.progress_label.configure(
             text=f"Done: {', '.join(steps)} -> {h5}", foreground=ACCENT2)
         self.log(f"Analysis complete: {h5}")
+        self._show_completion(manifest)
         if h5:
             self.config["analysis_h5_file"] = h5
             if "analysis_h5_file" in self.vars:
@@ -1449,8 +1749,8 @@ class AnalysisApp:
 
         fname = Path(fd.get("filename", "")).name or f"frame {frame_index}"
         ax1.set_title(f"{fname}  [frame {frame_index}]", color=FG)
-        ax1.set_xlabel(unit)
-        ax1.set_ylabel("intensity")
+        ax1.set_xlabel(unit_label(unit))
+        ax1.set_ylabel(INTENSITY_LABEL)
         if ax1.get_legend_handles_labels()[1]:
             ax1.legend(fontsize=7, framealpha=0.4)
         self._style_ax(ax1)
@@ -1474,8 +1774,8 @@ class AnalysisApp:
                 vmax = float(np.percentile(finite, 99)) if finite.size else None
                 ax_cake.imshow(cc, aspect="auto", origin="lower", cmap="magma",
                                extent=extent, vmin=vmin, vmax=vmax)
-                ax_cake.set_xlabel(ck.get("unit") or unit)
-                ax_cake.set_ylabel("azimuth (deg)")
+                ax_cake.set_xlabel(unit_label(ck.get("unit") or unit))
+                ax_cake.set_ylabel(AZIMUTH_LABEL)
                 ax_cake.set_title("Cake (2D)", color=FG)
             else:
                 ax_cake.set_title(f"Cake: {ck.get('error', 'unavailable')}", color=WARN)
@@ -1488,12 +1788,12 @@ class AnalysisApp:
             c_arr = np.asarray(contam, dtype=float)
             ax2.plot(c_arr, lw=0.8, color=CLR_DIFF, alpha=0.85)
             ax2.axvline(frame_index, color=ACCENT, lw=1.2, alpha=0.8)
-            ax2.set_xlabel("frame")
-            ax2.set_ylabel("contamination")
+            ax2.set_xlabel(FRAME_LABEL)
+            ax2.set_ylabel(CONTAMINATION_LABEL)
             ax2.set_title("Contamination vs frame", color=FG)
         else:
             ax2.set_title("Contamination (not available)", color=FG)
-            ax2.set_xlabel("frame")
+            ax2.set_xlabel(FRAME_LABEL)
         self._style_ax(ax2)
 
         self._review_canvas = self._embed_figure(self.review_plot_frame, fig)
@@ -1730,11 +2030,8 @@ class AnalysisApp:
         fitted = sum(int(n) >= 5 for n in result.get("n_peaks", []))
         qualifier = "instrument-corrected" if result.get("instrument_corrected") else "uncorrected"
         self.log(f"Williamson–Hall analysis saved: {fitted} frames ({qualifier})")
-        self.messagebox.showinfo(
-            "Size / strain",
-            f"Saved {qualifier} size and strain estimates for {fitted} frame(s).\n\n"
-            "Results are stored in the analysis file under /microstructure.",
-        )
+        self.notify(f"Size/strain: saved {qualifier} estimates for {fitted} "
+                    f"frame(s) to /microstructure.")
 
     def load_heatmap(self):
         """Render the peak-map scatter plot from the analysis HDF5."""
@@ -1801,7 +2098,7 @@ class AnalysisApp:
 
         # Map the frame index onto the chosen independent variable.
         x_kind = getattr(self._heatmap_xaxis, "get", lambda: "frame")() or "frame"
-        x_arr, x_label = frame_arr, "frame index"
+        x_arr, x_label = frame_arr, "Frame index"
         if x_kind != "frame":
             from .heatmap import series_axis
             sx = series_axis(path, x_kind)
@@ -1861,7 +2158,7 @@ class AnalysisApp:
             except Exception:
                 pass
             ax.set_xlabel(x_label, color=FG)
-            ax.set_ylabel(f"peak center ({unit})", color=FG)
+            ax.set_ylabel(f"Peak center — {unit_label(unit)}", color=FG)
             ax.set_title(f"Peak map — {n_pts} peaks", color=FG)
 
         self._heatmap_canvas = self._embed_figure(self.heatmap_plot_frame, fig)
@@ -2523,6 +2820,7 @@ class AnalysisApp:
     def _do_export_frames(self, indices, out_dir, *, source="fit", peaks=True,
                           residual_unknowns=True, stack=False,
                           stack_style="panels", exclude_d=None,
+                          fig_preset="screen", fig_format="",
                           status_label=None):
         """Run the frame export (patterns + optional peaks.csv + optional
         stacked figure). Returns the manifest, or None on failure."""
@@ -2555,16 +2853,33 @@ class AnalysisApp:
             msg += " + " + " + ".join(extra)
         if stack:
             try:
-                from .stackplot import stack_figure
-                sman = stack_figure(path, Path(out_dir) / "stack.png",
+                from .stackplot import stack_figure, FIGURE_PRESETS
+                preset = FIGURE_PRESETS.get(fig_preset,
+                                            FIGURE_PRESETS["screen"])
+                fmt = (fig_format or preset["format"]).lstrip(".")
+                out_name = f"stack.{fmt}"
+                sman = stack_figure(path, Path(out_dir) / out_name,
                                     source=source, frames=indices,
-                                    style=stack_style, exclude_d=exclude_d)
-                extra_msg = (f" + stack.png ({sman['n_panels']} "
-                             f"{sman['style']} panels)")
+                                    style=stack_style, exclude_d=exclude_d,
+                                    dpi=int(preset["dpi"]))
+                extra_msg = (f" + {out_name} ({sman['n_panels']} "
+                             f"{sman['style']} panels, {fig_preset} preset)")
             except Exception as e:
                 self.log(f"Stacked figure failed: {e!r}", "WARN")
                 extra_msg = " (stacked figure FAILED, see log)"
             msg += extra_msg
+        # Provenance sidecar: what produced this export, from which file, with
+        # which settings — so a figure folder found months later explains itself.
+        try:
+            from ..core.provenance import provenance_report
+            sidecar = Path(out_dir) / "export_provenance.txt"
+            settings = (f"source={source}  frames={list(indices)}\n"
+                        f"exclude_d={exclude_d}  stack={stack} "
+                        f"style={stack_style} preset={fig_preset}\n")
+            sidecar.write_text(provenance_report(path) + "\n\nExport settings:\n"
+                               + settings, encoding="utf-8")
+        except Exception as e:
+            self.log(f"Provenance sidecar failed: {e!r}", "WARN")
         msg += f" -> {out_dir}"
         if status is not None:
             status.configure(text=msg)
@@ -2647,6 +2962,26 @@ class AnalysisApp:
                             "subplots (journal layout); waterfall = offset "
                             "traces on one axes (best for tracking peak "
                             "drift across many frames).")
+        from .stackplot import FIGURE_PRESETS, FIGURE_FORMATS
+        ttk.Label(_stack_row, text="  preset:").pack(side="left")
+        v_fig_preset = tk.StringVar(
+            value=str(self.config.get("fig_preset", "screen")))
+        _fig_preset = ttk.Combobox(_stack_row, textvariable=v_fig_preset,
+                                   state="readonly", width=12,
+                                   values=list(FIGURE_PRESETS))
+        _fig_preset.pack(side="left", padx=(2, 0))
+        _ToolTip(_fig_preset, "screen 110 dpi PNG · presentation 200 dpi PNG "
+                              "· publication 600 dpi, vector by default. "
+                              "Every export writes an export_provenance.txt "
+                              "sidecar recording versions and settings.")
+        ttk.Label(_stack_row, text="format:").pack(side="left", padx=(6, 0))
+        v_fig_format = tk.StringVar(
+            value=str(self.config.get("fig_format", "")))
+        _fig_format = ttk.Combobox(_stack_row, textvariable=v_fig_format,
+                                   state="readonly", width=5,
+                                   values=[""] + list(FIGURE_FORMATS))
+        _fig_format.pack(side="left", padx=(2, 0))
+        _ToolTip(_fig_format, "Blank = the preset's default format.")
         ttk.Label(content, text="Destination").grid(row=6, column=0,
                                                     sticky="w", pady=2)
         v_dir = tk.StringVar(value=str(self.config.get("export_frames_dir", "")))
@@ -2678,6 +3013,8 @@ class AnalysisApp:
             self.config["export_frames_dir"] = dest
             self.config["export_exclude_d"] = v_exd.get().strip()
             self.config["stack_style"] = v_stack_style.get()
+            self.config["fig_preset"] = v_fig_preset.get()
+            self.config["fig_format"] = v_fig_format.get()
             self.save_config(silent=True)
             dlg.destroy()
             self._do_export_frames(indices, dest, source=v_src.get(),
@@ -2685,7 +3022,9 @@ class AnalysisApp:
                                    residual_unknowns=bool(v_resunk.get()),
                                    stack=bool(v_stack.get()),
                                    stack_style=v_stack_style.get(),
-                                   exclude_d=exd or None)
+                                   exclude_d=exd or None,
+                                   fig_preset=v_fig_preset.get(),
+                                   fig_format=v_fig_format.get())
 
         btns = ttk.Frame(content)
         btns.grid(row=7, column=0, columnspan=3, sticky="e", pady=(8, 0))
@@ -3031,8 +3370,8 @@ class AnalysisApp:
         ax = fig.add_subplot(1, 1, 1)
         x = np.arange(pressure.size, dtype=float)
         ax.plot(x, pressure, marker=".", markersize=3, linewidth=0.8, color=ACCENT2)
-        ax.set_xlabel("frame index")
-        ax.set_ylabel("pressure (GPa)")
+        ax.set_xlabel(FRAME_LABEL)
+        ax.set_ylabel(PRESSURE_LABEL)
         ax.set_title("Frame pressure", color=FG)
         self._style_ax(ax)
 
@@ -3468,7 +3807,7 @@ class AnalysisApp:
             # Always show confidence trace in the same color.
             ax_conf.plot(x, conf_arr, linewidth=0.7, color=color, label=label)
 
-        ax_pres.set_ylabel("pressure (GPa)")
+        ax_pres.set_ylabel(PRESSURE_LABEL)
         ax_pres.set_title(
             f"Phases seen (confidence ≥ {conf_min:.2f}) — {len(shown)} shown",
             color=FG)
@@ -3478,8 +3817,8 @@ class AnalysisApp:
         self._style_ax(ax_pres)
 
         ax_conf.axhline(conf_min, color=MUTED, linewidth=0.8, linestyle="--")
-        ax_conf.set_xlabel("frame index")
-        ax_conf.set_ylabel("confidence")
+        ax_conf.set_xlabel(FRAME_LABEL)
+        ax_conf.set_ylabel("Confidence")
         ax_conf.set_ylim(0, 1.02)
         self._style_ax(ax_conf)
 
@@ -3887,7 +4226,7 @@ class AnalysisApp:
         Z = img["Z"]                      # (n_bins, n_frames)
         radial = img["radial"]
         n = img["n_frames"]
-        x_label = img.get("x_label") or "frame index"
+        x_label = img.get("x_label") or "Frame index"
         xv = (np.asarray(img["x"], dtype=float) if img.get("x") is not None
               else np.arange(n, dtype=float))
 
@@ -3926,7 +4265,7 @@ class AnalysisApp:
             ax.pcolormesh(xs, radial, Zs, cmap="magma", shading="nearest",
                           vmin=vmin, vmax=vmax)
         ax.set_xlabel(x_label)
-        ax.set_ylabel(img["unit"] or "radial")
+        ax.set_ylabel(unit_label(img["unit"]))
         ax.set_title(f"Pattern waterfall — {img['source']}", color=FG)
         self._style_ax(ax)
 
@@ -3971,7 +4310,7 @@ class AnalysisApp:
                     ax2.plot(lx[m][o], y[m][o], lw=0.8, marker=".",
                              markersize=2, label=layer["name"])
                 ax2.set_xlabel(x_label)
-                ax2.set_ylabel("phase intensity (norm.)")
+                ax2.set_ylabel(INTENSITY_ARB_LABEL)
                 handles2, _ = ax2.get_legend_handles_labels()
                 if handles2:
                     ax2.legend(fontsize=7, framealpha=0.4)
@@ -4216,8 +4555,8 @@ class AnalysisApp:
 
         if not clusters or x_plot.size == 0:
             ax.set_title("No unknown clusters to display with current filter", color=FG)
-            ax.set_xlabel(data.get("x_label") or "frame index")
-            ax.set_ylabel("unknown cluster")
+            ax.set_xlabel(data.get("x_label") or FRAME_LABEL)
+            ax.set_ylabel("Unknown cluster")
         else:
             for c in clusters:
                 ci = int(c["cluster"])
@@ -4243,8 +4582,8 @@ class AnalysisApp:
                 self._style_colorbar(cb)
             except Exception:
                 pass
-            ax.set_xlabel(data.get("x_label") or "frame index")
-            ax.set_ylabel("unknown cluster")
+            ax.set_xlabel(data.get("x_label") or FRAME_LABEL)
+            ax.set_ylabel("Unknown cluster")
             ax.set_title(
                 f"Unknown clusters — {len(clusters)} cluster(s), "
                 f"{int(x_plot.size)} observation(s)",
@@ -4402,8 +4741,8 @@ class AnalysisApp:
                         label=f"untracked ({un['pressure'].size})")
                 ax.legend(loc="best", fontsize=8, framealpha=0.3,
                           labelcolor=FG, facecolor=BG)
-            ax.set_xlabel("pressure (GPa)")
-            ax.set_ylabel("d-spacing (Å)")
+            ax.set_xlabel(PRESSURE_LABEL)
+            ax.set_ylabel(D_SPACING_LABEL)
             ax.set_title(
                 f"Crystallite spot tracks — {len(tracks)}/{data['n_tracks_total']} "
                 f"track(s), {n_pts} points; ▲ rising = d grows with P "
@@ -4886,7 +5225,7 @@ class AnalysisApp:
             hx, hy = _half(xc), _half(yc)
             extent = [xc[0] - hx, xc[-1] + hx, yc[0] - hy, yc[-1] + hy]
             origin = "lower"
-            xlab, ylab = "stage x", "stage y"
+            xlab, ylab = "Stage x (mm)", "Stage y (mm)"
             title = f"{label} — from frame coordinates"
             base_txt = (f"{cg['n_placed']} frames on a "
                         f"{grid.shape[0]}×{grid.shape[1]} coordinate grid")
@@ -4911,7 +5250,7 @@ class AnalysisApp:
                 return
             extent = None
             origin = "upper"
-            xlab, ylab = "scan column", "scan row"
+            xlab, ylab = "Scan column", "Scan row"
             path_txt = "boustrophedon" if serp else "unidirectional"
             title = f"{label} — {order} lines, {path_txt}"
             n_pad = int(np.sum(gidx < 0))
@@ -5006,8 +5345,11 @@ class AnalysisApp:
         )
         if skipped:
             message += f"\n\n{len(skipped)} phase file(s) could not be resolved."
-        self.log(f"Refinement bundle exported: {out_dir}")
-        self.messagebox.showinfo("Refinement export complete", message)
+        self.log(message.replace("\n", " "))
+        self.notify(f"Refinement bundle: {result.get('n_frames', 0)} patterns, "
+                    f"{written} files → {out_dir}"
+                    + (f" ({len(skipped)} phase file(s) unresolved — see log)"
+                       if skipped else ""))
 
     def export_gsas_raw_clicked(self):
         """Re-integrate raw frames with uncertainties for GSAS import."""
@@ -5075,8 +5417,7 @@ class AnalysisApp:
             count = int(result.get("n_groups", 0))
             self._pm_status.configure(text=f"Exported {count} GSAS pattern(s)", foreground=MUTED)
             self.log(f"GSAS raw patterns exported: {out_dir}")
-            self.messagebox.showinfo(
-                "GSAS export complete", f"Exported {count} pattern(s) to:\n{out_dir}")
+            self.notify(f"GSAS export: {count} pattern(s) → {out_dir}")
 
         self.root.after(250, _poll)
 
@@ -5113,11 +5454,9 @@ class AnalysisApp:
             f"ML dataset exported: {man['n_frames']} frames × {man['n_channels']} channels "
             f"→ {out}  labels: {'yes' if man['has_labels'] else 'no'}"
         )
-        self.messagebox.showinfo(
-            "Export complete",
-            f"{man['n_frames']} frames × {man['n_channels']} channels → {out}\n"
-            f"Labels: {'yes' if man['has_labels'] else 'no (run Step 3a first)'}",
-        )
+        self.notify(f"ML export: {man['n_frames']} frames × "
+                    f"{man['n_channels']} channels → {out} "
+                    f"(labels: {'yes' if man['has_labels'] else 'no'})")
 
     def export_sim_clicked(self):
         """Export a pressure-augmented simulated training set as .npz."""
@@ -5166,10 +5505,8 @@ class AnalysisApp:
             f"Simulated dataset exported: {man['n_samples']} patterns "
             f"({len(man['phases'])} phases) → {out}"
         )
-        self.messagebox.showinfo(
-            "Export complete",
-            f"{man['n_samples']} simulated patterns ({len(man['phases'])} phases) → {out}",
-        )
+        self.notify(f"Simulated set: {man['n_samples']} patterns "
+                    f"({len(man['phases'])} phases) → {out}")
 
     # ------------------------------------------------------------------
     # Lifecycle

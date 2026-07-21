@@ -1,0 +1,134 @@
+name: Release
+
+# Tag-triggered release pipeline: build once, verify the artifacts, publish
+# to TestPyPI, then (behind the pypi environment's manual approval) publish
+# the SAME artifacts to PyPI and create the GitHub release.
+#
+# One-time setup this workflow depends on (see docs/releasing.md):
+#   * GitHub environments `testpypi` and `pypi`, with required reviewers on
+#     `pypi` for the production approval gate.
+#   * Trusted Publishers registered on test.pypi.org and pypi.org for this
+#     repository/workflow (no API tokens anywhere).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify the tag matches the package version
+        run: |
+          python -m pip install --upgrade pip
+          PKG_VERSION=$(python -c "import re,pathlib; s=pathlib.Path('seriesxrd/core/config.py').read_text(); print(re.search(r'VERSION\s*=\s*\"([^\"]+)\"', s).group(1))")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match seriesxrd VERSION $PKG_VERSION" >&2
+            exit 1
+          fi
+      - name: Build wheel and source distribution
+        run: python -m pip install build twine && python -m build
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  test-install:
+    name: Install-test ${{ matrix.artifact }} on Python ${{ matrix.python-version }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.10", "3.14"]
+        artifact: [wheel, sdist]
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Install and smoke-test
+        run: |
+          python -m pip install --upgrade pip
+          if [ "${{ matrix.artifact }}" = "wheel" ]; then
+            python -m pip install dist/*.whl
+          else
+            python -m pip install dist/*.tar.gz
+          fi
+          python -c "import seriesxrd; print('seriesxrd', seriesxrd.__version__)"
+          seriesxrd --help
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: test-install
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/seriesxrd
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # A re-run after a partial failure must not die on the files that
+          # did make it up.
+          skip-existing: true
+
+  publish-pypi:
+    name: Publish to PyPI
+    # The pypi environment carries required reviewers — this is the manual
+    # approval gate for production.
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/seriesxrd
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      # The publish action generates PEP 740 attestations automatically.
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: Create GitHub release
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Create the release with the published artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "SeriesXRD $GITHUB_REF_NAME" \
+            --generate-notes

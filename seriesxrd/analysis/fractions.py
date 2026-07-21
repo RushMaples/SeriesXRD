@@ -44,6 +44,9 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
+from ..core.config import VERSION
+from ..core.provenance import manifest_provenance, write_step_provenance
+
 SCHEMA_VERSION = "1"
 
 
@@ -241,7 +244,11 @@ def _write_fractions(analysis_h5: "str | Path", names: Sequence[str],
             if "fractions" in o:
                 del o["fractions"]
             g = o.create_group("fractions")
+            write_step_provenance(o, "fractions",
+                                  tool="seriesxrd.analysis.fractions",
+                                  schema_version=SCHEMA_VERSION)
             g.attrs["schema_version"] = SCHEMA_VERSION
+            g.attrs["seriesxrd_version"] = VERSION
             g.attrs["method"] = str(method)
             g.attrs["schema"] = (
                 "names (P,) str phase names, column order of fractions; "
@@ -291,7 +298,7 @@ def run_fractions(analysis_h5: "str | Path", *,
     method = result.get("method", "intensity_share")
     rir_used = dict(result.get("rir_used", {}))
     manifest: Dict[str, Any] = {
-        "tool_version": SCHEMA_VERSION,
+        **manifest_provenance("seriesxrd.analysis.fractions", SCHEMA_VERSION),
         "source": str(src),
         "ok": bool(result.get("ok")),
         "error": str(result.get("error", "")),

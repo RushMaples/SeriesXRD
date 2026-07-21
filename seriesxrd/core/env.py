@@ -10,16 +10,20 @@ import shutil
 import subprocess
 import sys
 
+# Mirrors [project.dependencies] in pyproject.toml — every core runtime
+# dependency must be checked here, or "Check environment" can report success
+# for an installation that cannot actually run the pipeline.
 REQUIRED_IMPORTS = {
     "numpy": "numpy",
+    "scipy": "scipy",
     "Pillow": "PIL",
     "matplotlib": "matplotlib",
     "pyFAI": "pyFAI",
     "fabio": "fabio",
+    "h5py": "h5py",
 }
 OPTIONAL_IMPORTS = {
     "tifffile": "tifffile",
-    "h5py": "h5py",
     "hdf5plugin": "hdf5plugin",
 }
 
@@ -170,6 +174,7 @@ def package_install_command(missing: List[str], python_exe: str, conda_exe: str 
     # Map import package names to conda-forge package names.
     conda_map = {
         "numpy": "numpy",
+        "scipy": "scipy",
         "Pillow": "pillow",
         "matplotlib": "matplotlib",
         "pyFAI": "pyfai",

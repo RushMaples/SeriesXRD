@@ -67,7 +67,7 @@ def test_series_axis_kinds():
         sx = series_axis(p, "frame")
         assert sx["ok"] and sx["x"].tolist() == [0.0, 1.0, 2.0, 3.0]
         sx = series_axis(p, "pressure")
-        assert sx["ok"] and sx["label"] == "pressure (GPa)"
+        assert sx["ok"] and sx["label"] == "Pressure (GPa)"
         sx = series_axis(p, "temperature")
         assert sx["ok"] and sx["x"][1] == 350.0
         sx = series_axis(p, "time")
@@ -81,10 +81,10 @@ def test_pattern_image_series_axes():
         p = Path(td) / "an.h5"
         _series_file(p)
         img = pattern_image(p, x_axis="temperature")
-        assert img["ok"] and img["x_label"] == "temperature (K)"
+        assert img["ok"] and img["x_label"] == "Temperature (K)"
         assert img["x"].tolist() == [300.0, 350.0, 400.0, 450.0]
         img = pattern_image(p, x_axis="time")
-        assert img["ok"] and img["x_label"] == "elapsed time (s)"
+        assert img["ok"] and img["x_label"] == "Elapsed time (s)"
 
 
 def test_frame_values():

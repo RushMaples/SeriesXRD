@@ -1,5 +1,8 @@
 # Triage labels
 
+> Development-automation configuration (see "Development transparency" in
+> the repository's `GOVERNANCE.md`) — not user documentation.
+
 The `triage` skill moves an incoming issue through a state machine and applies
 one of the labels below. These are the **canonical default strings** — they
 equal their role names. If you rename a label in GitHub, update the right-hand

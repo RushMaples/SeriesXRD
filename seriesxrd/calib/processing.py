@@ -963,6 +963,7 @@ def generate_qa_run(config: Dict[str, Any], generation_index: int) -> Dict[str, 
     rr = integration.get("radial_range")
     metadata = {
         "tool_version":     VERSION,
+        "seriesxrd_version": VERSION,
         "generation":       gen_label(generation_index),
         "generation_index": generation_index,
         "created_at":       now_iso(),
@@ -1083,6 +1084,7 @@ def export_accepted_generation(
     handoff = {
         "handoff_schema_version": "1",
         "tool_version":      VERSION,
+        "seriesxrd_version": VERSION,
         "created_at":        now_iso(),
         "accepted_generation": generation_metadata.get("generation"),
         "accepted_folder":   str(folder),

@@ -35,6 +35,8 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from .parallel import resolve_workers, chunk_ranges
+from ..core.config import VERSION, now_iso
+from ..core.provenance import manifest_provenance, write_provenance
 
 
 # ---------------------------------------------------------------------------
@@ -290,8 +292,12 @@ def run_background_separation(
     ``patterns/radial`` (and ``frames/...`` for provenance). Writes a
     self-contained analysis HDF5:
 
-        /  attrs: schema_version, source_reduced, unit, wavelength, max_half_window,
-                  n_passes, robust_source, n_straightened
+        /  attrs: schema_version, seriesxrd_version, created_at, source_reduced,
+                  unit, wavelength, max_half_window, n_passes, robust_source,
+                  n_straightened
+        /provenance  attrs: version/dependency/config/input-hash record
+                     (see core/provenance.py); /provenance/steps/<step> is
+                     appended by each later analysis step
         /radial                      (N_bins,)
         /frames/filename             (N,)   copied from the reduced file
         /frames/contamination        (N,)   per-frame spot score
@@ -544,6 +550,7 @@ def run_background_separation(
         with h5py.File(str(tmp), "w") as o:
             o.attrs.update({
                 "tool": "seriesxrd.analysis.background", "schema_version": SCHEMA_VERSION,
+                "seriesxrd_version": VERSION, "created_at": now_iso(),
                 "source_reduced": str(src), "unit": unit,
                 "wavelength": float(wavelength),
                 "max_half_window": int(max_half_window), "n_passes": int(n_passes),
@@ -593,6 +600,17 @@ def run_background_separation(
             if sigmaclip_residual is not None:
                 gb.create_dataset("sigmaclip_residual", data=sigmaclip_residual,
                                   compression="gzip", compression_opts=1)
+            write_provenance(
+                o, tool="seriesxrd.analysis.background",
+                schema_version=SCHEMA_VERSION,
+                config={
+                    "max_half_window": int(max_half_window),
+                    "n_passes": int(n_passes), "use_lls": bool(use_lls),
+                    "contamination_threshold": contamination_threshold,
+                    "robust_source": robust_source,
+                    "num_workers": int(num_workers),
+                },
+                inputs={"reduced": src})
         import os
         os.replace(tmp, out)
     except Exception:
@@ -601,7 +619,7 @@ def run_background_separation(
         raise
 
     manifest = {
-        "tool_version": SCHEMA_VERSION,
+        **manifest_provenance("seriesxrd.analysis.background", SCHEMA_VERSION),
         "source_reduced": str(src),
         "out_h5": str(out),
         "n_frames": int(n),

@@ -33,6 +33,7 @@ from ..guikit.theme import BG, BG2, FG, ACCENT, ACCENT2, WARN, MUTED, ENTRY_BG
 from ..guikit.tkstyle import apply_dark_theme
 from ..guikit.tooltip import ToolTip as _ToolTip
 from ..guikit.mpl_embed import embed_figure, make_canvas_responsive
+from ..guikit.labels import unit_label, AZIMUTH_LABEL, INTENSITY_LABEL
 from .processing import scan_dataset, DEFAULT_PATTERNS
 
 
@@ -866,6 +867,11 @@ class ReductionApp:
         self._review_overlay = tk.BooleanVar(value=bool(self.config.get("review_overlay", False)))
         ttk.Checkbutton(ctrl, text="Overlay patterns", variable=self._review_overlay,
                         command=self._on_review_overlay_toggle).pack(side="left", padx=(12, 0))
+        # Raw HDF5 tree + full attributes are implementation detail — summary
+        # by default, one click away when needed.
+        self._review_advanced = tk.BooleanVar(value=False)
+        ttk.Checkbutton(ctrl, text="Advanced details", variable=self._review_advanced,
+                        command=self._render_review_report).pack(side="left", padx=(12, 0))
         _diag_btn = ttk.Button(ctrl, text="Diagnose waviness",
                                command=lambda: self._run_straighten_job("diagnose"))
         _diag_btn.pack(side="left", padx=(12, 0))
@@ -923,19 +929,32 @@ class ReductionApp:
         if not path or not Path(path).is_file():
             self.messagebox.showerror("Review", "Select a reduced .h5 file first.")
             return
-        from .review import inspect_reduction, structure_report
+        from .review import inspect_reduction
         self.log(f"Inspecting reduced HDF5: {path}")
         try:
             review = inspect_reduction(path)
         except Exception as e:
             self.messagebox.showerror("Review failed", repr(e))
             return
-        self.review_text.configure(state="normal")
-        self.review_text.delete("1.0", "end")
-        self.review_text.insert("end", structure_report(review) + "\n")
-        self.review_text.configure(state="disabled")
+        self._last_review = review
+        self._render_review_report()
         self._render_review_plots(review)
         self.save_config(silent=True)
+
+    def _render_review_report(self):
+        """Render the cached inspection honoring the Advanced-details toggle."""
+        review = getattr(self, "_last_review", None)
+        if review is None:
+            return
+        from .review import structure_report
+        text = structure_report(review, advanced=bool(self._review_advanced.get()))
+        if not self._review_advanced.get():
+            text += ("\n\n(Enable “Advanced details” for the raw HDF5 tree "
+                     "and all attributes.)")
+        self.review_text.configure(state="normal")
+        self.review_text.delete("1.0", "end")
+        self.review_text.insert("end", text + "\n")
+        self.review_text.configure(state="disabled")
 
     def _on_review_overlay_toggle(self):
         """Re-render the loaded review when the overlay toggle flips."""
@@ -1106,8 +1125,8 @@ class ReductionApp:
                   extent=extent, vmin=vmin, vmax=vmax)
         fi = review.get("cake_frame_index")
         ax.set_title(f"Cake (frame {fi})" if fi is not None else "Cake")
-        ax.set_xlabel(review.get("unit") or "radial")
-        ax.set_ylabel("azimuth (deg)")
+        ax.set_xlabel(unit_label(review.get("unit")))
+        ax.set_ylabel(AZIMUTH_LABEL)
         self._style_review_ax(ax)
 
     def _render_review_plots(self, review: dict):
@@ -1158,8 +1177,8 @@ class ReductionApp:
                 else:
                     ax1.plot(y, lw=0.8, alpha=0.7)
             ax1.set_title(f"{len(patterns)} sample patterns (overlaid)")
-            ax1.set_xlabel(unit)
-            ax1.set_ylabel("intensity")
+            ax1.set_xlabel(unit_label(unit))
+            ax1.set_ylabel(INTENSITY_LABEL)
             self._style_review_ax(ax1)
             if cake_present:
                 self._draw_review_cake(fig.add_subplot(nrows, 1, 2), review)
@@ -1184,8 +1203,8 @@ class ReductionApp:
             else:
                 ax.plot(y, lw=0.9, color=ACCENT2)
             ax.set_title(pr.get("name") or f"frame {pr.get('index')}", fontsize=9)
-            ax.set_ylabel("intensity", fontsize=8)
-            ax.set_xlabel(unit, fontsize=8)
+            ax.set_ylabel(INTENSITY_LABEL, fontsize=8)
+            ax.set_xlabel(unit_label(unit), fontsize=8)
             self._style_review_ax(ax)
         if cake_present:
             self._draw_review_cake(axes[n], review)

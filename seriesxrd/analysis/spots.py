@@ -59,6 +59,8 @@ from scipy import ndimage
 from .identify import radial_to_d
 from .frame_metadata import extract_pressures
 from .unknowns import _decode_text, _predict_center, _scan_label
+from ..core.config import VERSION, now_iso
+from ..core.provenance import manifest_provenance, write_step_provenance
 
 SCHEMA_VERSION = "1"
 GROUP_MODES = ("none", "scan")
@@ -1757,11 +1759,17 @@ def run_spot_tracking(
         with h5py.File(str(tmp), mode) as o:
             if mode == "w":
                 o.attrs.update({"schema_version": SCHEMA_VERSION,
+                                "seriesxrd_version": VERSION,
+                                "created_at": now_iso(),
                                 "source_reduced": str(src), "unit": unit,
                                 "tool": "seriesxrd.analysis.spots"})
             if "spots" in o:
                 del o["spots"]
             g = o.create_group("spots")
+            write_step_provenance(o, "spots",
+                                  tool="seriesxrd.analysis.spots",
+                                  schema_version=SCHEMA_VERSION)
+            g.attrs["seriesxrd_version"] = VERSION
             g.attrs.update(params)
             go = g.create_group("obs")
             go.create_dataset("frame", data=o_frame.astype("i4"))
@@ -1809,7 +1817,8 @@ def run_spot_tracking(
             tmp.unlink()
         raise
 
-    manifest = {"tool_version": SCHEMA_VERSION, "out_h5": str(dst),
+    manifest = {**manifest_provenance("seriesxrd.analysis.spots", SCHEMA_VERSION),
+                "out_h5": str(dst),
                 "unit": unit, "ladder": ladder,
                 "pressure_source": pressure_source, "group_by": group_key,
                 "n_obs": int(o_frame.size), "n_points": len(points["group"]),

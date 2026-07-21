@@ -10,15 +10,16 @@ channels:
 dependencies:
   - python>=3.10
   - numpy
+  - scipy
   - pillow
   - matplotlib
   - pyfai
   - fabio
+  - h5py
   - tk
   # optional image/stack readers
   - tifffile
   - imageio
-  - h5py
   - hdf5plugin
   # notebook front-end
   - jupyterlab

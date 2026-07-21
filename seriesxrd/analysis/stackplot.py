@@ -53,6 +53,18 @@ def _mad_noise(y: np.ndarray) -> float:
     return float(np.nanmedian(np.abs(y - np.nanmedian(y))) * 1.4826)
 
 
+# Figure-output presets for GUI/CLI exports: where the figure will live
+# decides its resolution and format. "publication" prefers a vector format so
+# journals can rescale without rasterization artifacts.
+FIGURE_PRESETS = {
+    "screen":       {"dpi": 110, "format": "png"},
+    "presentation": {"dpi": 200, "format": "png"},
+    "publication":  {"dpi": 600, "format": "pdf"},
+}
+
+FIGURE_FORMATS = ("png", "svg", "pdf")
+
+
 def stack_figure(
     analysis_h5: "str | Path",
     out_png: "str | Path",

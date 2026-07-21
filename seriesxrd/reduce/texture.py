@@ -43,6 +43,8 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from ..core.config import VERSION, now_iso
+
 
 def ring_profile(cake: np.ndarray, radial: np.ndarray, azimuthal_deg: np.ndarray,
                  r0: float, halfwidth: float, *, min_height_sigma: float = 3.0
@@ -278,6 +280,8 @@ def run_texture(reduced_h5: "str | Path", *, n_rings: int = 3,
                 gt.attrs["unit"] = unit
                 gt.attrs["n_rings"] = R
                 gt.attrs["halfwidth"] = hw
+                gt.attrs["seriesxrd_version"] = VERSION
+                gt.attrs["created_at"] = now_iso()
             os.replace(tmp, src)
         except Exception:
             if tmp.exists():

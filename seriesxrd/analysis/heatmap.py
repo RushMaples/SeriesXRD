@@ -129,31 +129,31 @@ def _series_x(h5, kind: str, pressure_phase: "Optional[str]" = None,
     if k in ("frame", "index", ""):
         if n is None:
             raise ValueError("frame axis needs the frame count")
-        return np.arange(int(n), dtype=float), "frame index"
+        return np.arange(int(n), dtype=float), "Frame index"
     if k == "pressure":
         if pressure_phase:
             pr = _pressure_track(h5, pressure_phase)
             if pr is None:
                 raise ValueError(f"No Step-3a pressure track for {pressure_phase!r} "
                                  "— run Step 3a first.")
-            return pr, f"pressure (GPa) — {pressure_phase}"
+            return pr, f"Pressure (GPa) — {pressure_phase}"
         pr = _frame_pressure(h5)
         if pr is None:
             raise ValueError("No frame pressure — extract/import one on the "
                              "Frame metadata tab, or pass a pressure_phase "
                              "with a Step-3a track.")
-        return pr, "pressure (GPa)"
+        return pr, "Pressure (GPa)"
     if k == "temperature":
         tt = _frame_temperature(h5)
         if tt is None:
             raise ValueError("No frame temperature — import a CSV with a "
                              "temperature_K column on the Frame metadata tab.")
-        return tt, "temperature (K)"
+        return tt, "Temperature (K)"
     if k in ("time", "timestamp"):
         ts = _frame_elapsed_seconds(h5)
         if ts is None:
             raise ValueError("No parseable /frames/timestamp in this file.")
-        return ts, "elapsed time (s)"
+        return ts, "Elapsed time (s)"
     raise ValueError(f"Unknown series axis {kind!r} (choose from {SERIES_AXES}).")
 
 
@@ -229,7 +229,7 @@ def unknown_diagram(analysis_h5: "str | Path", *, x_axis: str = "frame"
     out: Dict[str, Any] = {
         "ok": False, "error": "", "frame": None, "x": None, "cluster": None,
         "group": None, "track": None, "center": None, "amplitude": None, "fwhm": None,
-        "clusters": [], "cluster_ids": [], "x_label": "frame index",
+        "clusters": [], "cluster_ids": [], "x_label": "Frame index",
         "x_axis": x_axis, "n_frames": 0, "n_obs": 0,
         "n_frames_with_unknowns": 0,
     }
@@ -748,7 +748,7 @@ def pattern_image(analysis_h5: "str | Path", *, source: str = "clean",
     source = (source or "clean").strip().lower()
     p = Path(analysis_h5).expanduser()
     out: Dict[str, Any] = {"ok": False, "error": "", "Z": None, "radial": None,
-                           "x": None, "x_label": "frame index", "unit": "",
+                           "x": None, "x_label": "Frame index", "unit": "",
                            "source": source, "n_frames": 0}
     if not p.is_file():
         out["error"] = f"File does not exist: {p}"

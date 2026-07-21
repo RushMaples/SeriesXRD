@@ -7,8 +7,10 @@ on headless systems.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
+import webbrowser
 from pathlib import Path
 
 from .core.config import (
@@ -20,12 +22,29 @@ from .analysis.session import seed_analysis_config
 
 DEFAULT_WORKSPACE = Path.home() / "seriesxrd_workspace"
 STAGE_TABS = ("1 Calibration", "2 Reduction", "3 Analysis")
+REPO_URL = "https://github.com/RushMaples/SeriesXRD"
 
 
 def workspace_launch_args(workspace: "str | Path", executable: str | None = None) -> list[str]:
     """Return the platform-neutral command used to open another workspace."""
     path = Path(workspace).expanduser().resolve()
     return [executable or sys.executable, "-m", "seriesxrd.app", "--workspace", str(path)]
+
+
+def _ellipsize_path(path: "str | Path", max_chars: int = 44) -> str:
+    """Shorten a filesystem path for display, keeping the leaf end readable."""
+    s = str(path)
+    if len(s) <= max_chars:
+        return s
+    parts = Path(s).parts
+    tail = parts[-1]
+    # Grow the tail with parent components while it still fits.
+    for j in range(len(parts) - 2, 0, -1):
+        candidate = str(Path(*parts[j:]))
+        if len(candidate) + 2 > max_chars:
+            break
+        tail = candidate
+    return f"…{os.sep}{tail}"
 
 
 def _seed_calibration_config(workspace: Path) -> Path:
@@ -71,9 +90,18 @@ class SeriesXRDApp:
         ttk.Label(
             header, text=TOOL_NAME, font=("TkDefaultFont", 16, "bold"),
         ).pack(side="left")
-        ttk.Label(
-            header, text=f"  {self.workspace}", foreground=MUTED,
-        ).pack(side="left")
+        # Ellipsized workspace: the full path stays in a tooltip and one
+        # click copies it — long paths were cluttering the header and leaking
+        # usernames into screenshots.
+        from .guikit.tooltip import ToolTip
+        self._ws_label = ttk.Label(
+            header, text=f"  {_ellipsize_path(self.workspace)}",
+            foreground=MUTED, cursor="hand2",
+        )
+        self._ws_label.pack(side="left")
+        ToolTip(self._ws_label,
+                f"Workspace: {self.workspace}\nClick to copy the full path.")
+        self._ws_label.bind("<Button-1>", lambda _e: self._copy_workspace_path())
         ttk.Label(
             header, text="1  Calibrate   →   2  Reduce   →   3  Analyze",
             foreground=MUTED,
@@ -157,9 +185,28 @@ class SeriesXRDApp:
         menubar.add_cascade(label="Tools", menu=tools_menu)
         tools_menu.add_command(label="Check environment", command=self._check_environment)
         tools_menu.add_command(label="Inspect detector image…", command=self._inspect_image)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Model development…",
+                               command=self._model_development)
 
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(
+            label="User guide (workflow)",
+            command=lambda: self._open_doc("docs/workflow.md"))
+        help_menu.add_command(
+            label="Run the demonstration (Ti-6Al-4V)",
+            command=lambda: self._open_doc("examples/ti64_demo/README.md"))
+        help_menu.add_command(
+            label="Validation and limitations",
+            command=lambda: self._open_doc("docs/validation.md"))
+        help_menu.add_separator()
+        help_menu.add_command(label="Cite SeriesXRD…", command=self._citation)
+        help_menu.add_command(
+            label="Report a problem…",
+            command=lambda: self._open_url(f"{REPO_URL}/issues/new"))
+        help_menu.add_separator()
+        help_menu.add_command(label="Copy diagnostics", command=self._copy_diagnostics)
         help_menu.add_command(label="About", command=self._about)
 
     # ------------------------------------------------------------------
@@ -256,6 +303,220 @@ class SeriesXRDApp:
         txt.configure(state="disabled")
         txt.pack(fill="both", expand=True)
 
+    def _open_url(self, url: str):
+        try:
+            webbrowser.open(url)
+        except Exception:
+            self._copy_to_clipboard(url, note="Could not open a browser — the "
+                                               "URL is on the clipboard.")
+
+    def _open_doc(self, repo_relative: str):
+        """Open a documentation page — the local file when running from a
+        source checkout, else the repository copy on GitHub."""
+        local = Path(__file__).resolve().parents[1] / repo_relative
+        if local.is_file():
+            self._open_url(local.as_uri())
+        else:
+            self._open_url(f"{REPO_URL}/blob/main/{repo_relative}")
+
+    def _copy_to_clipboard(self, text: str, note: str = "Copied to clipboard."):
+        from tkinter import messagebox
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update_idletasks()
+        except Exception as exc:
+            messagebox.showerror("Clipboard", f"Could not copy: {exc}")
+            return
+        # Non-modal confirmation: flash the workspace label instead of a popup.
+        try:
+            prev = self._ws_label.cget("text")
+            self._ws_label.configure(text=f"  {note}")
+            self._ws_label.after(2000, lambda: self._ws_label.configure(text=prev))
+        except Exception:
+            pass
+
+    def _copy_workspace_path(self):
+        self._copy_to_clipboard(str(self.workspace), note="Workspace path copied.")
+
+    def _copy_diagnostics(self):
+        """Copy a support-ready diagnostics block: versions, dependencies,
+        platform, workspace, and the analysis file's recorded provenance."""
+        from .core.provenance import provenance_report
+        analysis_h5 = ""
+        try:
+            self.analysis_pane.pull_vars()
+            analysis_h5 = str(
+                self.analysis_pane.config.get("analysis_h5_file", "")
+                or self.analysis_pane.config.get("reduced_h5_file", "") or "")
+        except Exception:
+            pass
+        report = provenance_report(analysis_h5 if analysis_h5
+                                   and Path(analysis_h5).is_file() else None)
+        report = f"{report}\n\nWorkspace: {self.workspace}"
+        self._copy_to_clipboard(report, note="Diagnostics copied.")
+
+    def _citation(self):
+        from tkinter import messagebox
+        citation = (
+            f"Maples, R. SeriesXRD (version {VERSION}) [Computer software]. "
+            f"{REPO_URL}\n\n"
+            "Machine-readable metadata: CITATION.cff in the repository "
+            "(GitHub's 'Cite this repository' button uses it). A DOI is "
+            "minted per release via Zenodo once the repository is public.")
+        if messagebox.askyesno(
+                f"Cite {TOOL_NAME}",
+                f"{citation}\n\nCopy this citation to the clipboard?"):
+            self._copy_to_clipboard(citation, note="Citation copied.")
+
+    def _model_development(self):
+        """Tools → Model development: GUI access to the training-side CLIs
+        (corpus building, benchmarking, learned-scorer training) as command
+        builders that stream their output — the workflow tabs stay focused on
+        measurement analysis."""
+        import tkinter as tk
+        from tkinter import ttk, filedialog
+        from .guikit.theme import BG, BG2, FG, MUTED
+
+        win = tk.Toplevel(self.root)
+        win.title("Model development")
+        win.geometry("860x640")
+        win.configure(bg=BG)
+
+        nb = ttk.Notebook(win)
+        nb.pack(fill="both", expand=True, padx=8, pady=8)
+
+        out_text = tk.Text(win, height=14, bg=BG2, fg=FG, insertbackground=FG,
+                           relief="flat", state="disabled",
+                           font=("TkFixedFont", 9))
+        out_text.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        state = {"proc": None}
+
+        def _append(line: str):
+            out_text.configure(state="normal")
+            out_text.insert("end", line)
+            out_text.see("end")
+            out_text.configure(state="disabled")
+
+        def _run(cmd: "list[str]"):
+            if state["proc"] is not None:
+                _append("[busy] a tool is already running — wait for it to "
+                        "finish\n")
+                return
+            _append("\n$ " + " ".join(cmd) + "\n")
+            import threading
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True,
+                                        bufsize=1)
+            except Exception as exc:
+                _append(f"[failed to start] {exc!r}\n")
+                return
+            state["proc"] = proc
+
+            def _pump():
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    win.after(0, _append, line)
+                rc = proc.wait()
+                def _done():
+                    state["proc"] = None
+                    _append(f"[exit {rc}]\n")
+                win.after(0, _done)
+            threading.Thread(target=_pump, daemon=True).start()
+
+        def _row(parent, label, var, browse=None, width=48):
+            row = ttk.Frame(parent)
+            row.pack(fill="x", pady=2)
+            ttk.Label(row, text=label, width=18, anchor="w").pack(side="left")
+            ttk.Entry(row, textvariable=var, width=width).pack(
+                side="left", fill="x", expand=True)
+            if browse:
+                def _pick():
+                    if browse == "dir":
+                        p = filedialog.askdirectory(parent=win)
+                    elif browse == "save":
+                        p = filedialog.asksaveasfilename(parent=win)
+                    else:
+                        p = filedialog.askopenfilename(parent=win)
+                    if p:
+                        var.set(p)
+                ttk.Button(row, text="…", width=3, command=_pick).pack(
+                    side="left", padx=2)
+            return row
+
+        ws = str(self.workspace)
+
+        # --- Corpus tab -------------------------------------------------
+        pg = ttk.Frame(nb, padding=10)
+        nb.add(pg, text="CIF corpus")
+        ttk.Label(pg, foreground=MUTED, wraplength=760, justify="left", text=(
+            "Screen a directory of CIFs (parse/dedupe/size-screen) into a "
+            "training-only corpus manifest for seriesxrd-ml-train --cif-dir. "
+            "Fetching from COD needs network access.")).pack(anchor="w")
+        c_dir = tk.StringVar()
+        _row(pg, "CIF directory", c_dir, browse="dir")
+        ttk.Label(pg, foreground=MUTED, text=(
+            "Writes corpus_manifest.json into the CIF directory.")).pack(
+            anchor="w")
+        ttk.Button(pg, text="Screen corpus", command=lambda: _run(
+            [sys.executable, "-m", "seriesxrd.analysis.corpus", "screen",
+             c_dir.get()],
+        )).pack(anchor="w", pady=6)
+
+        # --- Benchmark tab ----------------------------------------------
+        pg = ttk.Frame(nb, padding=10)
+        nb.add(pg, text="Benchmark")
+        ttk.Label(pg, foreground=MUTED, wraplength=760, justify="left", text=(
+            "Score a scorer against labelled XY patterns (RRUFF/opXRD-style) "
+            "through the real Step-1/2 preprocessing — the gate a trained "
+            "scorer must pass against the cosine baseline. See "
+            "docs/ml-training.md.")).pack(anchor="w")
+        b_labels = tk.StringVar(); b_scorer = tk.StringVar()
+        _row(pg, "Labels file/dir", b_labels, browse="open")
+        _row(pg, "Scorer (optional)", b_scorer, browse="open")
+        ttk.Button(pg, text="Run benchmark", command=lambda: _run(
+            [sys.executable, "-m", "seriesxrd.analysis.benchmark",
+             "--labels", b_labels.get(), "--workspace", ws]
+            + (["--ml-scorer", f"torch:{b_scorer.get()}"]
+               if b_scorer.get() else []),
+        )).pack(anchor="w", pady=6)
+
+        # --- Training tab -----------------------------------------------
+        pg = ttk.Frame(nb, padding=10)
+        nb.add(pg, text="Train scorer")
+        ttk.Label(pg, foreground=MUTED, wraplength=760, justify="left", text=(
+            "Train the Step-3b learned pair scorer (requires the [ml] extra / "
+            "PyTorch; heavy — a cluster or GPU workstation is the usual "
+            "venue). The deterministic cosine ranker remains the default "
+            "until a trained model beats it on the benchmark.")).pack(
+            anchor="w")
+        t_out = tk.StringVar(value=str(Path(ws) / "scorer.pt"))
+        t_cif = tk.StringVar()
+        _row(pg, "Model output", t_out, browse="save")
+        _row(pg, "CIF corpus (optional)", t_cif, browse="dir")
+        ttk.Button(pg, text="Train", command=lambda: _run(
+            [sys.executable, "-m", "seriesxrd.analysis.ml_train",
+             "--workspace", ws, "--out", t_out.get()]
+            + (["--cif-dir", t_cif.get()] if t_cif.get() else []),
+        )).pack(anchor="w", pady=6)
+
+        def _on_close():
+            proc = state.get("proc")
+            if proc is not None and proc.poll() is None:
+                from tkinter import messagebox
+                if not messagebox.askyesno(
+                        "Tool running",
+                        "A model-development tool is still running. "
+                        "Terminate it and close?", parent=win):
+                    return
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+
     def _about(self):
         from tkinter import messagebox
         try:
@@ -266,7 +527,8 @@ class SeriesXRDApp:
             ver = f"  seriesxrd: {VERSION}"
         messagebox.showinfo(
             f"About {TOOL_NAME}",
-            f"{TOOL_NAME} {VERSION}\n\nWorkspace:\n  {self.workspace}\n\nVersions:\n{ver}")
+            f"{TOOL_NAME} {VERSION} — MIT license\n{REPO_URL}\n\n"
+            f"Workspace:\n  {self.workspace}\n\nVersions:\n{ver}")
 
     # ------------------------------------------------------------------
 

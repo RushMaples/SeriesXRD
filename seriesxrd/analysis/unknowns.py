@@ -37,6 +37,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from .identify import radial_to_d
+from ..core.config import VERSION
+from ..core.provenance import manifest_provenance, write_step_provenance
 
 SCHEMA_VERSION = "1"
 TRACKING_AXES = ("frame", "pressure", "temperature", "time")
@@ -72,7 +74,7 @@ def _tracking_values(h5, axis: str, n_frames: int) -> "Tuple[str, np.ndarray, st
         raise ValueError(f"Unknown unknown-tracking axis {axis!r} "
                          f"(choose from {', '.join(TRACKING_AXES)}).")
     if key == "frame":
-        return key, np.arange(int(n_frames), dtype=float), "frame index"
+        return key, np.arange(int(n_frames), dtype=float), "Frame index"
     fr = h5.get("frames")
     if fr is None:
         raise ValueError(f"No /frames group — cannot track unknowns by {key}.")
@@ -81,18 +83,18 @@ def _tracking_values(h5, axis: str, n_frames: int) -> "Tuple[str, np.ndarray, st
             raise ValueError("No /frames/pressure — import/extract pressures before "
                              "using pressure-aware unknown tracking.")
         vals = np.asarray(fr["pressure"][:], dtype=float)
-        label = "pressure (GPa)"
+        label = "Pressure (GPa)"
     elif key == "temperature":
         if "temperature" not in fr:
             raise ValueError("No /frames/temperature — import a temperature_K column "
                              "before using temperature-aware unknown tracking.")
         vals = np.asarray(fr["temperature"][:], dtype=float)
-        label = "temperature (K)"
+        label = "Temperature (K)"
     else:
         if "timestamp" not in fr:
             raise ValueError("No /frames/timestamp — cannot track unknowns by time.")
         vals = _elapsed_seconds(fr["timestamp"][:])
-        label = "elapsed time (s)"
+        label = "Elapsed time (s)"
     if vals.size != int(n_frames):
         raise ValueError(f"/frames/{key} length ({vals.size}) does not match the "
                          f"residual frame count ({n_frames}).")
@@ -461,7 +463,11 @@ def run_unknowns(
             if "unknowns" in o:
                 del o["unknowns"]
             g = o.create_group("unknowns")
+            write_step_provenance(o, "unknowns",
+                                  tool="seriesxrd.analysis.unknowns",
+                                  schema_version=SCHEMA_VERSION)
             g.attrs.update({"schema_version": SCHEMA_VERSION,
+                            "seriesxrd_version": VERSION,
                             "link_tol_fwhm": float(link_tol_fwhm),
                             "max_gap": int(max_gap),
                             "min_track_frames": int(min_track_frames),
@@ -539,7 +545,8 @@ def run_unknowns(
             tmp.unlink()
         raise
 
-    manifest = {"tool_version": SCHEMA_VERSION, "out_h5": str(dst),
+    manifest = {**manifest_provenance("seriesxrd.analysis.unknowns", SCHEMA_VERSION),
+                "out_h5": str(dst),
                 "n_residual_peaks": int(frames.size),
                 "n_tracks": len(tracks), "n_clusters": n_clusters,
                 "tracking_axis": axis_key, "tracking_axis_label": axis_label,

@@ -33,9 +33,9 @@
         "type": "BM3",
         "V0": 67.847,
         "K0": 167.0,
-        "K0p": 5.0
+        "K0p": 5.5
       },
-      "source": "Anderson, Isaak & Yamamoto (1989), J. Appl. Phys. 65, 1534.",
+      "source": "Anderson, Isaak & Yamamoto (1989), J. Appl. Phys. 65, 1534, doi:10.1063/1.342969 (K0T = 167 GPa, K0' = 5.5).",
       "notes": "Classic FCC pressure marker; many alternative scales exist (e.g. Tsuchiya 2003, Fei 2007, Dorogokupets & Dewaele 2007)."
     },
     {
@@ -61,12 +61,12 @@
         }
       ],
       "eos": {
-        "type": "BM3",
+        "type": "Vinet",
         "V0": 60.383,
-        "K0": 277.0,
-        "K0p": 5.08
+        "K0": 273.0,
+        "K0p": 5.2
       },
-      "source": "Holmes, Gathers & Bassett (1989), J. Appl. Phys. 66, 2962.",
+      "source": "Fei, Ricolleau, Frank, Mibe, Shen & Prakapenka (2007), Proc. Natl. Acad. Sci. USA 104, 9182, doi:10.1073/pnas.0609013104 (Vinet, K0T = 273 GPa, K0T' = 5.20).",
       "notes": "FCC. Stiff and chemically inert; good high-pressure marker. See also Dorogokupets & Dewaele (2007)."
     },
     {
@@ -293,12 +293,12 @@
         }
       ],
       "eos": {
-        "type": "BM3",
+        "type": "Vinet",
         "V0": 29.43,
-        "K0": 350.0,
-        "K0p": 4.5
+        "K0": 352.6,
+        "K0p": 4.56
       },
-      "source": "Anzellini et al. (2014); Dubrovinsky et al.",
+      "source": "Anzellini, Dewaele, Occelli, Loubeyre & Mezouar (2014), J. Appl. Phys. 115, 043511, doi:10.1063/1.4863300 (Vinet, K0 = 352.6 GPa, K0' = 4.56, He medium to 144 GPa).",
       "notes": "HCP. The most common DAC gasket; its rings nearly always appear in the pattern, so it is useful both as a contaminant to recognize and as a secondary marker."
     },
     {
@@ -572,7 +572,7 @@
         "V0": 160.2,
         "p_max": 11.0
       },
-      "source": "Hu, Liu & Vohra (1986); diamond-cubic Si (valid below the ~11 GPa transition).",
+      "source": "Hu, Merkle, Menoni & Spain (1986), Phys. Rev. B 34, 4679, doi:10.1103/PhysRevB.34.4679; diamond-cubic Si (valid below the ~11 GPa transition).",
       "notes": "Diamond-cubic silicon; transforms to beta-Sn near 11 GPa."
     },
     {

@@ -477,7 +477,8 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
             # SCHEMA: root-level version attr for forward-compatibility.
             h5.attrs["schema_version"] = "1"
             h5.attrs.update({
-                "tool": "seriesxrd.reduce", "tool_version": VERSION, "created_at": now_iso(),
+                "tool": "seriesxrd.reduce", "tool_version": VERSION,
+                "seriesxrd_version": VERSION, "created_at": now_iso(),
                 "poni_file": str(handoff.accepted_poni), "poni_sha256": sha256_file(handoff.accepted_poni) or "",
                 "mask_file": mask_file, "mask_sha256": sha256_file(mask_file) or "" if mask_file else "",
                 "handoff_file": str(handoff.path), "unit": settings["unit"], "method": settings["method"],
@@ -660,6 +661,7 @@ def reduce_dataset(config: Dict[str, Any]) -> Dict[str, Any]:
     elapsed = time.time() - t_start
     manifest: Dict[str, Any] = {
         "tool_version": VERSION,
+        "seriesxrd_version": VERSION,
         "created_at": now_iso(),
         "session_name": session_name,
         "handoff_file": str(handoff.path),

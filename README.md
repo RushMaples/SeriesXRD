@@ -7,9 +7,9 @@ any calibrant, any detector pyFAI supports, and any beamline-specific frame
 naming or metadata convention (see "Site adoption" in
 [`docs/roadmap.md`](docs/roadmap.md) for exactly what a new site needs to
 supply). A single unified desktop application (`seriesxrd`) hosts all pipeline
-stages in one window. Heavy pyFAI work still runs in crash-isolated
-`worker.py` subprocesses so a pyFAI or matplotlib crash never takes down the
-GUI.
+stages in one window. Heavy pyFAI work runs in separate `worker.py`
+subprocesses, so a crash in pyFAI or matplotlib is contained in the worker
+process rather than in the GUI.
 
 ![SeriesXRD Analysis pattern review showing an integrated diffraction pattern, a two-dimensional cake, and the frame-series contamination trend](docs/images/seriesxrd-analysis-pattern-review.png)
 
@@ -140,9 +140,9 @@ manual file-picking step. The workspace folder holds the stage configs and
 all outputs. On first launch the configs are auto-created with sensible
 defaults.
 
-The GUI embeds all three stage panes in one process; heavy pyFAI work still
-runs in `worker.py` subprocesses (one per stage) so a worker crash never
-affects the host window or another stage.
+The GUI embeds all three stage panes in one process; heavy pyFAI work runs
+in `worker.py` subprocesses (one per stage), so a worker crash is isolated
+from the host window and from the other stages.
 
 ### End-to-end demonstration data
 
@@ -217,11 +217,19 @@ python -m pytest
 ## Documentation
 
 - [`docs/workflow.md`](docs/workflow.md) — end-to-end analysis workflow.
+- [`docs/architecture.md`](docs/architecture.md) — how the stages fit
+  together and the design decisions behind the pipeline.
+- [`docs/file-format.md`](docs/file-format.md) — the HDF5 layouts and JSON
+  manifests each stage reads and writes.
+- [`docs/validation.md`](docs/validation.md) — what is validated against
+  what, expected tolerances, and the limits of each output.
+- [`docs/phase-sources.md`](docs/phase-sources.md) — bibliography and
+  provenance for every value in the bundled phase library.
 - [`docs/ml-training.md`](docs/ml-training.md) — training, validating, and
   deploying the Step-3b learned scorer (cluster-agnostic — works on any
   cluster or workstation).
 - [`docs/roadmap.md`](docs/roadmap.md) — implemented vs. planned features,
-  and what a new facility needs to provide to adopt seriesxrd.
+  and what a new facility needs to provide to adopt SeriesXRD.
 - [`docs/test-data.md`](docs/test-data.md) — open datasets you can download to
   exercise each stage (calibration frames, measured patterns, CIFs, simulated
   patterns) and which command each one feeds.
@@ -243,6 +251,8 @@ Feature status and planned work are maintained in
 ## Contributing and support
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) to set up a development environment
-and submit changes. Report defects through the GitHub issue tracker; report
-security concerns according to [`SECURITY.md`](SECURITY.md). Community
-participation is governed by [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+and submit changes, and [`GOVERNANCE.md`](GOVERNANCE.md) for how decisions
+and releases are made. Report defects through the GitHub issue tracker;
+report security concerns according to [`SECURITY.md`](SECURITY.md).
+Community participation is governed by
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).

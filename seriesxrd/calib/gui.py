@@ -80,7 +80,7 @@ class CalibrationApp:
             # Initial geometry derived from screen size, capped so the window always fits.
             sw = self.root.winfo_screenwidth()
             sh = self.root.winfo_screenheight()
-            # FIX C7: reduced from 1420 to 1100 since help column is replaced by tooltips
+            # reduced from 1420 to 1100 since help column is replaced by tooltips
             win_w = min(1100, sw - 80)
             win_h = min(920,  sh - 120)
             self.root.geometry(f"{win_w}x{win_h}")
@@ -121,25 +121,25 @@ class CalibrationApp:
         self._polygon_mask_cache: Dict[Any, np.ndarray] = {}
         # Last-applied workspace string, used to detect user-customized paths.
         self._last_workspace = ""
-        # FIX A17b: debounce viewer resize — pending after-id and last width.
+        # Debounce viewer resize — pending after-id and last width.
         self._resize_after_id: Optional[str] = None
         self._last_viewer_width: int = 0
         self._build_gui()
         self._drain_log_queue()
         self.log("GUI initialized")
         self.save_config(silent=True)
-        # FIX A9: load prior generations from metadata folder after GUI is ready.
+        # Load prior generations from the metadata folder after the GUI is ready.
         self._load_existing_generations()
-        # FIX C2: initial status bar refresh.
+        # initial status bar refresh.
         self._update_status_bar()
 
     # ------------------------------------------------------------------
-    # FIX C2: Status bar
+    # Status bar
     # ------------------------------------------------------------------
 
     def _build_status_bar(self, _parent=None):
         """Populate the persistent status bar (frame already packed at bottom)."""
-        # FIX C2: the frame was pre-packed as side="bottom" before the notebook,
+        # the frame was pre-packed as side="bottom" before the notebook,
         # ensuring Tk allocates space for it before the expanding notebook fills the rest.
         ttk = self.ttk
         bar = self._status_bar_frame
@@ -155,6 +155,26 @@ class CalibrationApp:
         # Worker status (right-aligned)
         self.status_worker = ttk.Label(bar, text="idle", foreground=MUTED, anchor="e")
         self.status_worker.pack(side="right", padx=6)
+        # Transient non-modal notifications (successful saves) land here.
+        self.status_notify = ttk.Label(bar, text="", foreground=ACCENT2, anchor="w")
+        self.status_notify.pack(side="left", padx=(0, 12))
+        self._notify_after_id = None
+
+    def notify(self, text: str, *, level: str = "INFO", seconds: int = 8):
+        """Non-modal notification: one status-bar line plus the log entry."""
+        one_line = " ".join(str(text).split())
+        self.log(one_line, level)
+        lbl = getattr(self, "status_notify", None)
+        if lbl is None:
+            return
+        if self._notify_after_id is not None:
+            try:
+                lbl.after_cancel(self._notify_after_id)
+            except Exception:
+                pass
+        lbl.configure(text=one_line[:160])
+        self._notify_after_id = lbl.after(
+            int(seconds * 1000), lambda: lbl.configure(text=""))
 
     def _update_status_bar(self):
         """Refresh all status bar labels from current app state."""
@@ -187,7 +207,7 @@ class CalibrationApp:
             pass
 
     # ------------------------------------------------------------------
-    # FIX A9: Reload prior generations on startup
+    # Reload prior generations on startup
     # ------------------------------------------------------------------
 
     def _load_existing_generations(self):
@@ -325,11 +345,11 @@ class CalibrationApp:
         # Minimal top bar for Window Controls
         topbar = ttk.Frame(outer)
         topbar.pack(fill="x", pady=(0, 6))
-        # FIX C8: use portable cross-platform font instead of "Segoe UI"
+        # use portable cross-platform font instead of "Segoe UI"
         ttk.Label(topbar, text="Calibration", font=("TkDefaultFont", 14, "bold")).pack(side="left")
         ttk.Button(topbar, text="View log", command=self.open_console_logs).pack(side="right", padx=4)
 
-        # FIX C2: status bar frame must be packed before the notebook so that
+        # status bar frame must be packed before the notebook so that
         # side="bottom" carves space before the expanding notebook fills the rest.
         self._status_bar_frame = ttk.Frame(outer, relief="sunken")
         self._status_bar_frame.pack(side="bottom", fill="x", pady=(2, 0))
@@ -391,7 +411,7 @@ class CalibrationApp:
         # TAB 5: Accept calibration
         self._tab_final(self.tabs["5 Accept calibration"])
 
-        # FIX C2: persistent status bar at the very bottom of the main window.
+        # persistent status bar at the very bottom of the main window.
         self._build_status_bar(outer)
 
         # Bind the save shortcut (standalone only; embedded, the host owns Ctrl-S).
@@ -465,7 +485,7 @@ class CalibrationApp:
         return frame
     
     def field(self, parent, key, label, browse=None, row=None, width=80, help_key=None):
-        # FIX C7: replaced permanent column-3 help label with a _ToolTip on the
+        # replaced permanent column-3 help label with a _ToolTip on the
         # label and entry widgets, narrowing the window layout.
         tk, ttk = self.tk, self.ttk
         if row is None:
@@ -487,7 +507,7 @@ class CalibrationApp:
         return var
 
     def checkbox(self, parent, key, label, row=None, help_text=""):
-        # FIX C7: replaced permanent column-2 help label with a _ToolTip on the
+        # replaced permanent column-2 help label with a _ToolTip on the
         # checkbutton widget, narrowing the window layout.
         tk, ttk = self.tk, self.ttk
         if row is None:
@@ -502,7 +522,7 @@ class CalibrationApp:
         return var
 
     def combobox(self, parent, key, label, values, row=None, width=30, help_key=None):
-        # FIX C7: replaced permanent column-3 help label with a _ToolTip.
+        # replaced permanent column-3 help label with a _ToolTip.
         tk, ttk = self.tk, self.ttk
         if row is None:
             row = len(parent.grid_slaves())
@@ -545,7 +565,7 @@ class CalibrationApp:
             self.vars[key].set(value)
             self.config[key] = value
             self.log(f"Set {key} = {value}")
-            # FIX C10a: track poni/image recently used files.
+            # track poni/image recently used files.
             if mode == "poni":
                 self._add_recent("poni", value)
             elif mode == "image":
@@ -618,7 +638,7 @@ class CalibrationApp:
             self.config["workspace_root"] = str(output_base(self.config))
             
         ws_var = self.field(frame, "workspace_root", "Main workspace folder", "dir")
-        # FIX E: initialise _last_workspace from config so we know the original baseline.
+        # initialise _last_workspace from config so we know the original baseline.
         self._last_workspace = self.config.get("workspace_root", "")
 
         # 2. Auto-Update Logic — only overwrites derived paths when their current value
@@ -732,12 +752,12 @@ class CalibrationApp:
         ttk.Button(frame, text="Check dependencies",     command=self.check_deps).grid(row=row, column=0, padx=4, pady=8, sticky="w")
         ttk.Button(frame, text="Install missing packages", command=self.install_missing).grid(row=row, column=1, padx=4, pady=8, sticky="w")
         
-        # FIX C8: portable font
+        # portable font
         ttk.Label(frame, text="Checks numpy, pyFAI, fabio, matplotlib, Pillow, tkinter.", foreground=MUTED).grid(row=row+1, column=0, columnspan=4, sticky="w", padx=4)
         ttk.Label(frame, text="Installs any missing required packages using conda or pip.", foreground=MUTED).grid(row=row+2, column=0, columnspan=4, sticky="w", padx=4)
 
     # ------------------------------------------------------------------
-    # FIX B6: PONI inspector
+    # PONI inspector
     # ------------------------------------------------------------------
 
     def _inspect_poni(self, force: bool = True):
@@ -773,7 +793,7 @@ class CalibrationApp:
                 + (f"  ({wl_ang:.4g} A)  => Energy: {e_kev:.4f} keV" if e_kev else ""),
                 f"Poni1={_g(p1)}  Poni2={_g(p2)}",
             ]
-            # FIX B6: compare with form energy_kev / wavelength_m and warn on mismatch.
+            # compare with form energy_kev / wavelength_m and warn on mismatch.
             form_e   = str(self.config.get("energy_kev",   "")).strip()
             form_wl  = str(self.config.get("wavelength_m", "")).strip()
             mismatches = []
@@ -1007,7 +1027,7 @@ class CalibrationApp:
         img_var = self.field(frame, "image_file", "Calibration image", "image")
         self.field(frame, "poni_file",      "Input PONI",         "poni")
 
-        # FIX B6: Inspect PONI button + read-only info label below the poni_file field.
+        # Inspect PONI button + read-only info label below the poni_file field.
         poni_btn_row = len(frame.grid_slaves())
         self.ttk.Button(frame, text="Inspect PONI", command=self._inspect_poni).grid(
             row=poni_btn_row, column=0, padx=4, pady=4, sticky="w")
@@ -1211,7 +1231,7 @@ class CalibrationApp:
             ("Undo polygon",       self.undo_mask_polygon),
             ("Clear manual mask",  self.clear_manual_mask),
             ("Save current mask",  self.save_current_mask),
-            # FIX B4: load accepted mask back, and intensity histogram for threshold choice.
+            # load accepted mask back, and intensity histogram for threshold choice.
             ("Load accepted mask", self._load_accepted_mask_into_editor),
             ("Intensity histogram", self._show_intensity_histogram),
         ]
@@ -1219,12 +1239,12 @@ class CalibrationApp:
         for text, cmd in btn_configs:
             ttk.Button(left, text=text, command=cmd).pack(fill="x", padx=6, pady=3)
 
-        # --- 4. Status Label + FIX B4: mask stats ---
+        # --- 4. Status label + mask stats ---
         self.mask_mode = "None"
         self.mask_points: List[Tuple[float, float]] = []
         self.mask_status = ttk.Label(left, text="Mode: None", foreground=MUTED, font=("TkDefaultFont", 9, "italic"))
         self.mask_status.pack(fill="x", padx=6, pady=8)
-        # FIX B4a: masked-pixel stats label — updated in refresh_mask_display.
+        # masked-pixel stats label — updated in refresh_mask_display.
         self.mask_stats_label = ttk.Label(left, text="", foreground=MUTED, wraplength=170)
         self.mask_stats_label.pack(fill="x", padx=6, pady=2)
         
@@ -1285,7 +1305,7 @@ class CalibrationApp:
         self.entry_widgets.get("radial_max") and self.entry_widgets["radial_max"].configure(state="normal")
         self.generation_label = self.ttk.Label(frame, text="No generations yet")
         self.generation_label.grid(row=50, column=0, columnspan=4, sticky="w", padx=4, pady=8)
-        # FIX A2: store button ref + indeterminate progress bar (busy state during a run).
+        # Store button ref + indeterminate progress bar (busy state during a run).
         self.generate_btn = self.ttk.Button(frame, text="Generate QA run", command=self.generate_qa)
         self.generate_btn.grid(row=51, column=0, padx=4, pady=8, sticky="w")
         self.generate_progress = self.ttk.Progressbar(frame, mode="indeterminate", length=180)
@@ -1306,7 +1326,7 @@ class CalibrationApp:
         # ---- top control bar ----
         top = ttk.Frame(parent)
         top.pack(fill="x", pady=(0, 4))
-        # FIX C8: replace emoji with plain ASCII text
+        # replace emoji with plain ASCII text
         ttk.Button(top, text="← Previous gen", command=self.show_previous_generation).pack(side="left", padx=3)
         ttk.Button(top, text="Next gen →",     command=self.show_next_generation).pack(side="left", padx=3)
         ttk.Button(top, text="Zoom +",  command=lambda: self._viewer_zoom_by(1.2)).pack(side="left", padx=2)
@@ -1321,7 +1341,7 @@ class CalibrationApp:
         left_sb = ttk.Frame(body, width=180)
         left_sb.pack(side="left", fill="y", padx=(0, 4))
         left_sb.pack_propagate(False)
-        # FIX C8: portable font
+        # portable font
         ttk.Label(left_sb, text="Show panels:", font=("TkDefaultFont", 10, "bold")).pack(anchor="w", padx=4, pady=(4, 2))
         self._panel_vars: Dict[str, Any] = {}
         _panel_names = [
@@ -1342,7 +1362,7 @@ class CalibrationApp:
         right_sb = ttk.Frame(body, width=210)
         right_sb.pack(side="right", fill="y", padx=(4, 0))
         right_sb.pack_propagate(False)
-        # FIX C8: portable font
+        # portable font
         ttk.Label(right_sb, text="Replot controls:", font=("TkDefaultFont", 10, "bold")).pack(anchor="w", padx=4, pady=(4, 2))
         ctrl_frame = ttk.Frame(right_sb)
         ctrl_frame.pack(fill="x", padx=4)
@@ -1381,12 +1401,12 @@ class CalibrationApp:
         self.viewer_vsb.pack(side="right",  fill="y")
         self.viewer_hsb.pack(side="bottom", fill="x")
         self.viewer_canvas.pack(fill="both", expand=True)
-        # FIX A17b: debounce viewer resize — avoid LANCZOS re-render on every pixel.
+        # Debounce viewer resize — avoid LANCZOS re-render on every pixel.
         self.viewer_canvas.bind("<Configure>", self._on_viewer_configure)
         self.viewer_canvas.bind("<MouseWheel>",    self._viewer_mousewheel)
         self.viewer_canvas.bind("<Button-4>",      self._viewer_mousewheel)
         self.viewer_canvas.bind("<Button-5>",      self._viewer_mousewheel)
-        # FIX J: bind arrow keys on canvas widget only (not globally) to avoid
+        # bind arrow keys on canvas widget only (not globally) to avoid
         # firing while typing in Entry fields.  Canvas must take focus first.
         self.viewer_canvas.bind("<Button-1>",      lambda e: self.viewer_canvas.focus_set())
         self.viewer_canvas.bind("<Left>",          lambda e: self.show_previous_generation())
@@ -1682,7 +1702,7 @@ class CalibrationApp:
             ax.plot(xs, ys, "o-", lw=1.2)
         ax.set_title(f"Mask editor — mode: {self.mask_mode}. Double-click to finish polygon.")
         request_canvas_draw(self.mask_canvas)
-        # FIX B4a: update mask stats label.
+        # update mask stats label.
         if hasattr(self, "mask_stats_label") and mask is not None:
             n_masked = int(mask.sum())
             pct = 100.0 * mask.mean()
@@ -1725,13 +1745,13 @@ class CalibrationApp:
         if event.xdata is None or event.ydata is None:
             return
         self.mask_points.append((float(event.xdata), float(event.ydata)))
-        # FIX B: a polygon point was added → mask is now different from last accepted.
+        # a polygon point was added → mask is now different from last accepted.
         self._mask_dirty = True
         if getattr(event, "dblclick", False) and len(self.mask_points) >= 3:
             self.mask_polygons.append((self.mask_mode, list(self.mask_points)))
             self.log(f"Added {self.mask_mode} polygon with {len(self.mask_points)} points")
             self.mask_points = []
-            # FIX F2: clear polygon cache when a new polygon is completed.
+            # clear polygon cache when a new polygon is completed.
             self._polygon_mask_cache.clear()
         self.refresh_mask_display()
 
@@ -1749,7 +1769,7 @@ class CalibrationApp:
         if self.manual_mask is not None and self.manual_mask.shape == base.shape:
             base |= self.manual_mask
         for mode, pts in self.mask_polygons:
-            # FIX F2: cache each polygon's rasterized mask keyed by (points, shape).
+            # cache each polygon's rasterized mask keyed by (points, shape).
             cache_key = (tuple(map(tuple, pts)), base.shape)
             pm = self._polygon_mask_cache.get(cache_key)
             if pm is None:
@@ -1770,7 +1790,7 @@ class CalibrationApp:
                 loaded = np.load(p).astype(bool)
             else:
                 loaded = load_mask_npz(p)
-            # FIX C: shape check against loaded image.
+            # shape check against loaded image.
             if self.image_cache is not None and loaded.shape != self.image_cache.shape:
                 self.messagebox.showerror(
                     "Shape mismatch",
@@ -1782,7 +1802,7 @@ class CalibrationApp:
             self.config["input_mask_file"] = p
             if "input_mask_file" in self.vars:
                 self.vars["input_mask_file"].set(p)
-            # FIX B: mark mask as dirty (un-accepted edits present).
+            # mark mask as dirty (un-accepted edits present).
             self._mask_dirty = True
             self.refresh_mask_display()
         except Exception as e:
@@ -1793,7 +1813,7 @@ class CalibrationApp:
         if self.mask_polygons:
             self.mask_polygons.pop()
             self.log("Undid last mask polygon")
-        # FIX B: mark dirty; FIX F2: clear polygon cache.
+        # Mark dirty and clear the polygon cache.
         self._mask_dirty = True
         self._polygon_mask_cache.clear()
         self.refresh_mask_display()
@@ -1803,7 +1823,7 @@ class CalibrationApp:
         self.mask_polygons = []
         self.active_mask   = None
         self.log("Cleared manual mask and polygons")
-        # FIX B: mark dirty; FIX F2: clear polygon cache.
+        # Mark dirty and clear the polygon cache.
         self._mask_dirty = True
         self._polygon_mask_cache.clear()
         self.refresh_mask_display()
@@ -1831,12 +1851,12 @@ class CalibrationApp:
         save_mask_npz(npz_path, mask, metadata=meta)
         saved["npz"] = str(npz_path)
         self.log(f"Saved mask NPZ: {npz_path}")
-        # FIX C: plain .npy (unflipped) so reloading the GUI's own export is lossless.
+        # plain .npy (unflipped) so reloading the GUI's own export is lossless.
         npy_path = self._sibling(base_path, ".npy")
         np.save(str(npy_path), mask.astype(bool))
         saved["npy"] = str(npy_path)
         self.log(f"Saved mask NPY: {npy_path}")
-        # FIX C: separate flipud copy for Dioptas (bottom-left origin).
+        # separate flipud copy for Dioptas (bottom-left origin).
         stem = self._sibling(base_path, "").name  # strip extension to get bare stem
         dioptas_npy_path = base_path.parent / (stem + "_dioptas.npy")
         np.save(str(dioptas_npy_path), np.flipud(mask.astype(bool)))
@@ -1863,10 +1883,10 @@ class CalibrationApp:
                                                  filetypes=[("NumPy mask", "*.npz")])
         if not p:
             return
-        # FIX C: use _sibling to strip one known extension, so we don't double-suffix.
+        # use _sibling to strip one known extension, so we don't double-suffix.
         base = Path(p)
         self._save_mask_all_formats(base, mask, {"created_at": now_iso(), "source": "mask tab"})
-        self.messagebox.showinfo("Mask saved", f"Saved formats to:\n{self._sibling(base, '.*')}")
+        self.notify(f"Mask saved: {self._sibling(base, '.*')}")
 
     def accept_final_mask(self):
         if self.image_cache is None:
@@ -1885,18 +1905,16 @@ class CalibrationApp:
         self.config["active_mask_npy_dioptas"] = saved["npy_dioptas"]  # flipud for Dioptas
         self.config["accepted_mask_tiff"]   = saved["tif"]
         self.config["active_mask_preview"]  = saved["png"]
-        # FIX B: accepted — no un-accepted edits pending.
+        # accepted — no un-accepted edits pending.
         self._mask_dirty = False
         self.save_config(silent=True)
         self.log(f"Accepted final mask: {saved['npz']}")
-        # FIX C2: refresh status bar after mask acceptance.
+        # refresh status bar after mask acceptance.
         self._update_status_bar()
-        self.messagebox.showinfo("Mask accepted",
-                                 f"Active mask saved:\n{base_path}.*\n\n"
-                                 f"NPZ: {saved['npz']}\nNPY: {saved['npy']}\n"
-                                 f"NPY (Dioptas): {saved['npy_dioptas']}\nTIF: {saved['tif']}")
+        self.notify(f"Mask accepted: {base_path}.* "
+                    f"(npz/npy/npy-dioptas/tif written)")
 
-    # FIX B4b: Load accepted mask back into the editor.
+    # Load accepted mask back into the editor.
     def _load_accepted_mask_into_editor(self):
         amf = self.config.get("active_mask_file", "")
         if not amf or not Path(amf).exists():
@@ -1920,7 +1938,7 @@ class CalibrationApp:
             self.log(f"Failed to load accepted mask into editor: {e}", "ERROR")
             self.messagebox.showerror("Load failed", str(e))
 
-    # FIX B4c: Intensity histogram popup.
+    # Intensity histogram popup.
     def _show_intensity_histogram(self):
         if self.image_cache is None:
             self.messagebox.showerror("No image", "Load a calibration image first.")
@@ -2002,7 +2020,7 @@ class CalibrationApp:
                 image_file=img_f, poni_file=poni_f, mask_file=mask_f,
             )
             self.log(f"Launched Dioptas PID {proc.pid}")
-            # FIX C10b: show manual loading instructions after launch.
+            # show manual loading instructions after launch.
             instructions = dioptas_manual_instructions(img_f, poni_f, mask_f)
             self.messagebox.showinfo("Load files in Dioptas manually", instructions)
         except Exception as e:
@@ -2010,7 +2028,7 @@ class CalibrationApp:
             self.messagebox.showerror("Dioptas launch failed", str(e))
 
     # ------------------------------------------------------------------
-    # FIX C10a: Recent files helpers
+    # Recent files helpers
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -2113,7 +2131,7 @@ class CalibrationApp:
             pass
 
     def _open_session_config_dialog(self):
-        """FIX C10a: Open a different session config — show safe relaunch instructions."""
+        """Open a different session config — show safe relaunch instructions."""
         try:
             path = self.filedialog.askopenfilename(
                 title="Open session config",
@@ -2220,7 +2238,7 @@ class CalibrationApp:
             self.log(f"Integration bins from geometry ({shape[0]}x{shape[1]} px): " + ", ".join(changed))
 
     def generate_qa(self):
-        # FIX A1: busy guard.
+        # Busy guard: one run at a time.
         if self._qa_running:
             self.log("A QA generation is already running", "WARN")
             return
@@ -2231,7 +2249,7 @@ class CalibrationApp:
             return
         self.save_config(silent=True)
 
-        # FIX A4: validate inputs before launching.
+        # Validate inputs before launching.
         errors = []
         for key in ("npt_1d", "npt_radial", "npt_azimuthal"):
             val = str(self.config.get(key, "")).strip()
@@ -2268,7 +2286,7 @@ class CalibrationApp:
                                       "Please fix the following before generating:\n\n" + "\n".join(errors))
             return
 
-        # FIX B / Accept & Generate: handle un-accepted mask edits with a 3-way
+        # Accept & Generate: handle un-accepted mask edits with a 3-way
         # choice instead of a bare warning.
         if self._mask_dirty:
             choice = self.messagebox.askyesnocancel(
@@ -2315,7 +2333,7 @@ class CalibrationApp:
             if Path(_d).is_dir() and _d.lower() not in worker_env.get("PATH", "").lower():
                 worker_env["PATH"] = _d + _os.pathsep + worker_env.get("PATH", "")
 
-        # FIX A1: mark as running; FIX A2: disable button, start progress bar.
+        # Mark as running; disable button, start progress bar.
         self._qa_running = True
         if hasattr(self, "generate_btn"):
             self.generate_btn.configure(state="disabled")
@@ -2327,7 +2345,7 @@ class CalibrationApp:
         self.log(f"Worker command: {' '.join(cmd)}")
         def _worker_thread():
             try:
-                # FIX A3: stream stdout line-by-line into the log.
+                # Stream stdout line-by-line into the log.
                 proc = worker_popen(
                     cmd, cwd=backend_dir, env=worker_env,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -2349,7 +2367,7 @@ class CalibrationApp:
         threading.Thread(target=_worker_thread, daemon=True).start()
 
     def _qa_worker_done(self, returncode: int, out_json: str, gen_idx: int):
-        # FIX A1/A2: clear busy flag, re-enable button, stop progress bar.
+        # Clear busy flag, re-enable button, stop progress bar.
         self._qa_running = False
         self._qa_proc = None
         if hasattr(self, "generate_btn"):
@@ -2357,11 +2375,10 @@ class CalibrationApp:
         if hasattr(self, "generate_progress"):
             self.generate_progress.stop()
             self.generate_progress.grid_remove()
-        # FIX C2: update status bar worker state.
+        # update status bar worker state.
         self._update_status_bar()
         self.log(f"Worker gen{gen_idx:03d} finished, returncode={returncode}")
         if returncode != 0:
-            # FIX A5: removed stale "Tab 7" reference.
             self.messagebox.showerror(
                 "QA generation failed",
                 f"Worker return code {returncode}\n"
@@ -2387,7 +2404,7 @@ class CalibrationApp:
             self.messagebox.showerror("QA output load failed", str(e))
 
     def _qa_worker_error(self, err_msg: str, gen_idx: int):
-        # FIX A1/A2: clear busy flag, re-enable button, stop progress bar.
+        # Clear busy flag, re-enable button, stop progress bar.
         self._qa_running = False
         self._qa_proc = None
         if hasattr(self, "generate_btn"):
@@ -2395,7 +2412,7 @@ class CalibrationApp:
         if hasattr(self, "generate_progress"):
             self.generate_progress.stop()
             self.generate_progress.grid_remove()
-        # FIX C2: update status bar worker state.
+        # update status bar worker state.
         self._update_status_bar()
         self.log(f"Worker gen{gen_idx:03d} error: {err_msg}", "ERROR")
         self.messagebox.showerror("QA worker error", err_msg)
@@ -2405,7 +2422,7 @@ class CalibrationApp:
     # ------------------------------------------------------------------
 
     def _on_viewer_configure(self, event):
-        # FIX A17b: debounce <Configure> so we don't LANCZOS-resize every panel
+        # Debounce <Configure> so we don't LANCZOS-resize every panel
         # PNG on every intermediate pixel during a drag resize.
         # Only re-render when width changed by more than 4 px (height-only changes
         # like scrollbar appearance/disappearance are ignored).
@@ -2429,7 +2446,7 @@ class CalibrationApp:
     def render_current_generation(self):
         if not hasattr(self, "viewer_canvas"):
             return
-        # FIX C2: refresh status bar on render.
+        # refresh status bar on render.
         self._update_status_bar()
         self.viewer_canvas.delete("all")
         self._viewer_photos = []
@@ -2481,7 +2498,7 @@ class CalibrationApp:
         self.render_current_generation()
 
     def _viewer_mousewheel(self, event):
-        # FIX G: mirror _scrollable's platform handling.
+        # mirror _scrollable's platform handling.
         # On macOS delta is ±1..±3 (not multiples of 120), on Linux use Button-4/5.
         import sys as _sys
         if event.num == 4:
@@ -2539,7 +2556,7 @@ class CalibrationApp:
             ymax = self._replot_ymax.get().strip()
             xsc  = self._replot_xscale.get()
             ysc  = self._replot_yscale.get()
-            # FIX H: use non-interactive Figure + FigureCanvasAgg — never touch
+            # use non-interactive Figure + FigureCanvasAgg — never touch
             # matplotlib.use() which would flip the global backend under TkAgg.
             from matplotlib.figure import Figure as _MplFig
             from matplotlib.backends.backend_agg import FigureCanvasAgg as _AggCanvas
@@ -2557,7 +2574,7 @@ class CalibrationApp:
             ax.set_xscale(xsc)
             ax.set_yscale(ysc)
             fig.tight_layout()
-            # FIX H: save into the generation's figures dir, not the CSV's parent dir.
+            # save into the generation's figures dir, not the CSV's parent dir.
             official_png = md.get("paths", {}).get("intensity_difference_png", "")
             if official_png:
                 fig_dir = Path(official_png).parent
@@ -2566,13 +2583,13 @@ class CalibrationApp:
             out_png = next_available_path(fig_dir / f"replot_{now_timestamp()}.png")
             fig.savefig(str(out_png))
             self.log(f"Replot saved: {out_png}")
-            # FIX H: store under a NEW key so the official figure is not clobbered.
+            # store under a NEW key so the official figure is not clobbered.
             if "paths" not in md or md["paths"] is None:
                 md["paths"] = {}
             md["paths"]["replot_png"] = str(out_png)
             self.render_current_generation()
             self.log(f"Replot saved: {out_png}")
-            self.messagebox.showinfo("Replot saved", f"Saved replot to:\n{out_png}")
+            self.notify(f"Replot saved: {out_png}")
         except Exception as e:
             self.log("Replot failed: " + repr(e), "ERROR")
             self.messagebox.showerror("Replot failed", str(e))
@@ -2601,7 +2618,7 @@ class CalibrationApp:
         md         = self.generations[idx]
         out_root   = self._resolve_final_root()
         folder_name = self.config.get("final_folder_name") or f"accepted_calibration_{safe_stem(self.config.get('session_name','calibration'))}_{now_timestamp()}"
-        # FIX D: if nothing is checked, abort with an error instead of silently
+        # if nothing is checked, abort with an error instead of silently
         # passing None (which means "export ALL") downstream.
         selected_keys = [k for k, v in self._final_item_vars.items() if v.get()]
         if not selected_keys:
@@ -2633,7 +2650,8 @@ class CalibrationApp:
                 except Exception as _e:
                     self.log(f"Accept listener failed: {_e!r}", "WARN")
             if ver.get("ok"):
-                self.messagebox.showinfo("Saved", f"Accepted calibration saved and verified.\n{handoff.get('accepted_folder')}")
+                self.notify(f"Accepted calibration saved and verified: "
+                            f"{handoff.get('accepted_folder')}")
             else:
                 self.messagebox.showwarning("Saved with missing files", json.dumps(ver, indent=2))
         except Exception as e:

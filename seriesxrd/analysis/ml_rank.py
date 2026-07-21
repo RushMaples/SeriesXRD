@@ -41,6 +41,8 @@ from .phases import Phase, pymatgen_available
 from .identify import phase_reflections, _h5_safe
 from .ml_features import frame_features
 from .ml_scorer import PhaseScorer, CosineScorer, make_scorer
+from ..core.config import VERSION
+from ..core.provenance import manifest_provenance, write_step_provenance
 
 SCHEMA_VERSION = "1"
 Reflections = Tuple[np.ndarray, np.ndarray, list]
@@ -308,7 +310,8 @@ def rank_candidates(
     live = ~excluded
     shortlist = sorted({nm for i in range(n) if live[i] for nm in topk_names[i] if nm})
     manifest = {
-        "tool_version": SCHEMA_VERSION, "source": str(src), "out_h5": str(dst),
+        **manifest_provenance("seriesxrd.analysis.ml_rank", SCHEMA_VERSION),
+        "source": str(src), "out_h5": str(dst),
         "requested_source": requested, "ranking_source": want,
         "resolved_source": feats.source,
         "n_frames": int(n), "top_k": int(top_k),
@@ -335,7 +338,11 @@ def _write_candidates(src, dst, names, score, pmat, topk_names, topk_score,
                 del o["ml"]["candidates"]
             gml = o.require_group("ml")
             g = gml.create_group("candidates")
+            write_step_provenance(o, "ml_candidates",
+                                  tool="seriesxrd.analysis.ml_rank",
+                                  schema_version=SCHEMA_VERSION)
             g.attrs.update({"schema_version": SCHEMA_VERSION,
+                            "seriesxrd_version": VERSION,
                             # Source provenance, most abstract to most concrete:
                             # what was asked for, the rank level it mapped to,
                             # and the channel the features actually came from.

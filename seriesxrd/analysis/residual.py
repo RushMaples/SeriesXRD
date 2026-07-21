@@ -35,6 +35,8 @@ import numpy as np
 from .identify import radial_to_d, predicted_d, _parse_hkl, _h5_safe, DEFAULT_MIN_MATCHED
 from .peaks import pseudo_voigt, fit_pattern, build_fit_source
 from .phases import Phase
+from ..core.config import VERSION
+from ..core.provenance import manifest_provenance, write_step_provenance
 
 SCHEMA_VERSION = "1"
 
@@ -373,8 +375,12 @@ def run_residual(
             if "residual" in o:
                 del o["residual"]
             g = o.create_group("residual")
+            write_step_provenance(o, "residual",
+                                  tool="seriesxrd.analysis.residual",
+                                  schema_version=SCHEMA_VERSION)
             g.attrs.update({
-                "schema_version": SCHEMA_VERSION, "seen_conf": float(seen_conf),
+                "schema_version": SCHEMA_VERSION,
+                "seriesxrd_version": VERSION, "seen_conf": float(seen_conf),
                 "rel_tol": float(rel_tol), "min_snr": float(r_min_snr),
                 "window_factor": float(r_window), "max_chi2": float(r_chi2),
                 "min_prominence_snr": float(r_prom) if r_prom is not None else np.nan,
@@ -412,7 +418,8 @@ def run_residual(
     n_explained = int(explained_counts.sum())
     n_unexplained = int(unexplained_counts.sum())
     manifest = {
-        "tool_version": SCHEMA_VERSION, "source": str(src), "out_h5": str(dst),
+        **manifest_provenance("seriesxrd.analysis.residual", SCHEMA_VERSION),
+        "source": str(src), "out_h5": str(dst),
         "n_frames": int(n), "seen_conf": float(seen_conf), "rel_tol": float(rel_tol),
         "fit_source": str(used_source), "min_snr": float(r_min_snr),
         "min_prominence_snr": float(r_prom) if r_prom is not None else None,

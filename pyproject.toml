@@ -24,14 +24,17 @@ classifiers = [
 
 # Core runtime dependencies (mirrors REQUIRED_IMPORTS in seriesxrd/core/env.py).
 # tkinter is also required but ships with the Python interpreter itself.
+# Minimum versions are validated by the lowest-supported-dependencies CI job
+# (.github/workflows/ci.yml, "floor-versions") — raise a floor only together
+# with that job's pins.
 dependencies = [
-    "numpy",
-    "scipy",
-    "Pillow",
-    "matplotlib",
-    "pyFAI",
-    "fabio",
-    "h5py",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "Pillow>=10.0",
+    "matplotlib>=3.7",
+    "pyFAI>=2024.1",
+    "fabio>=2023.10",
+    "h5py>=3.8",
 ]
 
 [project.urls]

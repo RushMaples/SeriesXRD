@@ -22,12 +22,12 @@ credit for each set are on its own page.
 
 ## A note on downloading these
 
-Most of these hosts (silx.org, rruff.info, zenodo.org, crystallography.net,
-huggingface.co) are reachable from a normal workstation but are blocked by the
-sandboxed proxy an automated agent runs behind — so download them on your own
-machine, not from inside an agent session. The two GitHub-hosted sets
+Download these datasets from a normal workstation with unrestricted
+internet access. Some of the hosts (silx.org, rruff.info, zenodo.org,
+crystallography.net, huggingface.co) are commonly blocked by restrictive
+institutional or sandboxed proxies; the GitHub-hosted sets
 (XRD-AutoAnalyzer, NeXus exampledata) are served from
-`raw.githubusercontent.com` and work from either.
+`raw.githubusercontent.com`, which such proxies usually allow.
 
 ---
 
@@ -43,7 +43,7 @@ labels CSV. See `docs/ml-training.md` "Gate A" for the harness.
 Already wired up. 8 measured lab patterns + 18 reference CIFs in the
 Li-Mn-Ti-O-F space (three of them multi-phase mixtures, plus polymorph
 decoys), from the open [XRD-AutoAnalyzer](https://github.com/njszym/XRD-AutoAnalyzer)
-repository. Reachable from an agent sandbox.
+repository. GitHub-hosted, so it downloads even behind restrictive proxies.
 
 ```bash
 bash examples/fetch_benchmark_example.sh ./benchdata
@@ -133,7 +133,8 @@ many NeXus layouts. Use them to exercise the HDF5/NeXus stack ingestion path
 #   file.h5::entry/data/data#000123   (a single frame)
 ```
 
-Reachable from an agent sandbox (GitHub-hosted). Layouts vary, so this is the
+GitHub-hosted, so it downloads even behind restrictive proxies. Layouts
+vary, so this is the
 right set for checking that `h5_*_path` config keys pin an unusual detector
 path and that timestamp/position/temperature harvesting finds the NeXus
 locations.
@@ -175,10 +176,11 @@ corpus (`--cif-dir`, synthetic BM3 EOS auto-assigned). See
 from 119,569 Materials Project structures across 33 measurement conditions
 (Cao et al., ICLR 2025; arXiv:2406.15469). The reference design seriesxrd's
 Step-3b simulator follows, and a pretraining set if you build your own model.
-Note the gap seriesxrd's simulator fills that SimXRD does not: lattice
+Note the gap SeriesXRD's simulator fills that SimXRD does not: lattice
 compression under pressure (the EOS peak-shift manifold) — see
-`docs/ml-training.md` and CLAUDE.md "Step 3 design". The open-source
-simulator behind it is PysimXRD.
+`docs/ml-training.md` and the analysis-pipeline section of
+[`docs/architecture.md`](architecture.md). The open-source simulator behind
+it is PysimXRD.
 
 ---
 

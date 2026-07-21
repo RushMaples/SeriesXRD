@@ -157,5 +157,10 @@ def _test_spotty_sample_auto_source(td, q, rng):
         assert h["peaks"].attrs["source"] == "clean"
 
 
+def test_main():
+    """Pytest entry point — this file predates the test_* function convention."""
+    main()
+
+
 if __name__ == "__main__":
     main()

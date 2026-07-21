@@ -37,6 +37,8 @@ from .phases import (Phase, simulate_pattern, compression_at_pressure,
                      pymatgen_available, has_axial_eos, has_pressure_dof, axial_scales,
                      valid_pressure_max, thermal_scale)
 from .parallel import resolve_workers, chunk_ranges
+from ..core.config import VERSION
+from ..core.provenance import manifest_provenance, write_step_provenance
 
 SCHEMA_VERSION = "1"
 
@@ -1062,8 +1064,12 @@ def run_identification(
             if "identify" in o:
                 del o["identify"]
             gid = o.create_group("identify")
+            write_step_provenance(o, "identify",
+                                  tool="seriesxrd.analysis.identify",
+                                  schema_version=SCHEMA_VERSION)
             gid.attrs.update({
-                "schema_version": SCHEMA_VERSION, "unit": unit,
+                "schema_version": SCHEMA_VERSION,
+                "seriesxrd_version": VERSION, "unit": unit,
                 "wavelength": float(wavelength) if wavelength else 0.0,
                 "p_min": float(p_min), "p_max": float(p_max), "rel_tol": float(rel_tol),
                 "phases": ", ".join(p.name for p in phases),
@@ -1144,7 +1150,8 @@ def run_identification(
         }
 
     manifest = {
-        "tool_version": SCHEMA_VERSION, "source": str(src), "out_h5": str(dst),
+        **manifest_provenance("seriesxrd.analysis.identify", SCHEMA_VERSION),
+        "source": str(src), "out_h5": str(dst),
         "n_frames": int(n), "unit": unit,
         "wavelength": float(wavelength) if wavelength else None,
         "p_min": float(p_min), "p_max": float(p_max), "rel_tol": float(rel_tol),

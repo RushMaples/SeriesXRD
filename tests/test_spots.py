@@ -488,8 +488,19 @@ def main() -> None:
         _test_matcher_parsing(tmp)
         _test_end_to_end(tmp)
         _test_export(tmp)
-        _test_export_masks(tmp)
+        try:
+            import tifffile  # noqa: F401
+        except ImportError:
+            print("test_spots: skipping _test_export_masks (no tifffile — "
+                  "install the [io] extra to cover masked re-integration)")
+        else:
+            _test_export_masks(tmp)
     print("test_spots: all assertions passed")
+
+
+def test_main():
+    """Pytest entry point — this file predates the test_* function convention."""
+    main()
 
 
 if __name__ == "__main__":
