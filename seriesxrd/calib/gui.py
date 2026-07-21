@@ -121,14 +121,14 @@ class CalibrationApp:
         self._polygon_mask_cache: Dict[Any, np.ndarray] = {}
         # Last-applied workspace string, used to detect user-customized paths.
         self._last_workspace = ""
-        # FIX A17b: debounce viewer resize — pending after-id and last width.
+        # Debounce viewer resize — pending after-id and last width.
         self._resize_after_id: Optional[str] = None
         self._last_viewer_width: int = 0
         self._build_gui()
         self._drain_log_queue()
         self.log("GUI initialized")
         self.save_config(silent=True)
-        # FIX A9: load prior generations from metadata folder after GUI is ready.
+        # Load prior generations from the metadata folder after the GUI is ready.
         self._load_existing_generations()
         # FIX C2: initial status bar refresh.
         self._update_status_bar()
@@ -187,7 +187,7 @@ class CalibrationApp:
             pass
 
     # ------------------------------------------------------------------
-    # FIX A9: Reload prior generations on startup
+    # Reload prior generations on startup
     # ------------------------------------------------------------------
 
     def _load_existing_generations(self):
@@ -1285,7 +1285,7 @@ class CalibrationApp:
         self.entry_widgets.get("radial_max") and self.entry_widgets["radial_max"].configure(state="normal")
         self.generation_label = self.ttk.Label(frame, text="No generations yet")
         self.generation_label.grid(row=50, column=0, columnspan=4, sticky="w", padx=4, pady=8)
-        # FIX A2: store button ref + indeterminate progress bar (busy state during a run).
+        # Store button ref + indeterminate progress bar (busy state during a run).
         self.generate_btn = self.ttk.Button(frame, text="Generate QA run", command=self.generate_qa)
         self.generate_btn.grid(row=51, column=0, padx=4, pady=8, sticky="w")
         self.generate_progress = self.ttk.Progressbar(frame, mode="indeterminate", length=180)
@@ -1381,7 +1381,7 @@ class CalibrationApp:
         self.viewer_vsb.pack(side="right",  fill="y")
         self.viewer_hsb.pack(side="bottom", fill="x")
         self.viewer_canvas.pack(fill="both", expand=True)
-        # FIX A17b: debounce viewer resize — avoid LANCZOS re-render on every pixel.
+        # Debounce viewer resize — avoid LANCZOS re-render on every pixel.
         self.viewer_canvas.bind("<Configure>", self._on_viewer_configure)
         self.viewer_canvas.bind("<MouseWheel>",    self._viewer_mousewheel)
         self.viewer_canvas.bind("<Button-4>",      self._viewer_mousewheel)
@@ -2220,7 +2220,7 @@ class CalibrationApp:
             self.log(f"Integration bins from geometry ({shape[0]}x{shape[1]} px): " + ", ".join(changed))
 
     def generate_qa(self):
-        # FIX A1: busy guard.
+        # Busy guard: one run at a time.
         if self._qa_running:
             self.log("A QA generation is already running", "WARN")
             return
@@ -2231,7 +2231,7 @@ class CalibrationApp:
             return
         self.save_config(silent=True)
 
-        # FIX A4: validate inputs before launching.
+        # Validate inputs before launching.
         errors = []
         for key in ("npt_1d", "npt_radial", "npt_azimuthal"):
             val = str(self.config.get(key, "")).strip()
@@ -2315,7 +2315,7 @@ class CalibrationApp:
             if Path(_d).is_dir() and _d.lower() not in worker_env.get("PATH", "").lower():
                 worker_env["PATH"] = _d + _os.pathsep + worker_env.get("PATH", "")
 
-        # FIX A1: mark as running; FIX A2: disable button, start progress bar.
+        # Mark as running; disable button, start progress bar.
         self._qa_running = True
         if hasattr(self, "generate_btn"):
             self.generate_btn.configure(state="disabled")
@@ -2327,7 +2327,7 @@ class CalibrationApp:
         self.log(f"Worker command: {' '.join(cmd)}")
         def _worker_thread():
             try:
-                # FIX A3: stream stdout line-by-line into the log.
+                # Stream stdout line-by-line into the log.
                 proc = worker_popen(
                     cmd, cwd=backend_dir, env=worker_env,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -2349,7 +2349,7 @@ class CalibrationApp:
         threading.Thread(target=_worker_thread, daemon=True).start()
 
     def _qa_worker_done(self, returncode: int, out_json: str, gen_idx: int):
-        # FIX A1/A2: clear busy flag, re-enable button, stop progress bar.
+        # Clear busy flag, re-enable button, stop progress bar.
         self._qa_running = False
         self._qa_proc = None
         if hasattr(self, "generate_btn"):
@@ -2361,7 +2361,6 @@ class CalibrationApp:
         self._update_status_bar()
         self.log(f"Worker gen{gen_idx:03d} finished, returncode={returncode}")
         if returncode != 0:
-            # FIX A5: removed stale "Tab 7" reference.
             self.messagebox.showerror(
                 "QA generation failed",
                 f"Worker return code {returncode}\n"
@@ -2387,7 +2386,7 @@ class CalibrationApp:
             self.messagebox.showerror("QA output load failed", str(e))
 
     def _qa_worker_error(self, err_msg: str, gen_idx: int):
-        # FIX A1/A2: clear busy flag, re-enable button, stop progress bar.
+        # Clear busy flag, re-enable button, stop progress bar.
         self._qa_running = False
         self._qa_proc = None
         if hasattr(self, "generate_btn"):
@@ -2405,7 +2404,7 @@ class CalibrationApp:
     # ------------------------------------------------------------------
 
     def _on_viewer_configure(self, event):
-        # FIX A17b: debounce <Configure> so we don't LANCZOS-resize every panel
+        # Debounce <Configure> so we don't LANCZOS-resize every panel
         # PNG on every intermediate pixel during a drag resize.
         # Only re-render when width changed by more than 4 px (height-only changes
         # like scrollbar appearance/disappearance are ignored).

@@ -28,7 +28,9 @@ def main() -> None:
     noisy = clean + rng.normal(0.0, 2.0, q.size)
 
     # analytic area sanity: numeric integral matches closed form within 1%.
-    a_num = np.trapezoid(pseudo_voigt(q, 5.10, 520.0, 0.035, 0.0), q)
+    # np.trapezoid arrived in numpy 2.0 (renamed from trapz); support the 1.24 floor.
+    _trapezoid = getattr(np, "trapezoid", None) or np.trapz
+    a_num = _trapezoid(pseudo_voigt(q, 5.10, 520.0, 0.035, 0.0), q)
     a_ana = float(pseudo_voigt_area(520.0, 0.035, 0.0))
     assert abs(a_num - a_ana) / a_ana < 0.01, (a_num, a_ana)
 
