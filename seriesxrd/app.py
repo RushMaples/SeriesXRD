@@ -7,8 +7,10 @@ on headless systems.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
+import webbrowser
 from pathlib import Path
 
 from .core.config import (
@@ -20,12 +22,29 @@ from .analysis.session import seed_analysis_config
 
 DEFAULT_WORKSPACE = Path.home() / "seriesxrd_workspace"
 STAGE_TABS = ("1 Calibration", "2 Reduction", "3 Analysis")
+REPO_URL = "https://github.com/RushMaples/SeriesXRD"
 
 
 def workspace_launch_args(workspace: "str | Path", executable: str | None = None) -> list[str]:
     """Return the platform-neutral command used to open another workspace."""
     path = Path(workspace).expanduser().resolve()
     return [executable or sys.executable, "-m", "seriesxrd.app", "--workspace", str(path)]
+
+
+def _ellipsize_path(path: "str | Path", max_chars: int = 44) -> str:
+    """Shorten a filesystem path for display, keeping the leaf end readable."""
+    s = str(path)
+    if len(s) <= max_chars:
+        return s
+    parts = Path(s).parts
+    tail = parts[-1]
+    # Grow the tail with parent components while it still fits.
+    for j in range(len(parts) - 2, 0, -1):
+        candidate = str(Path(*parts[j:]))
+        if len(candidate) + 2 > max_chars:
+            break
+        tail = candidate
+    return f"…{os.sep}{tail}"
 
 
 def _seed_calibration_config(workspace: Path) -> Path:
@@ -71,9 +90,18 @@ class SeriesXRDApp:
         ttk.Label(
             header, text=TOOL_NAME, font=("TkDefaultFont", 16, "bold"),
         ).pack(side="left")
-        ttk.Label(
-            header, text=f"  {self.workspace}", foreground=MUTED,
-        ).pack(side="left")
+        # Ellipsized workspace: the full path stays in a tooltip and one
+        # click copies it — long paths were cluttering the header and leaking
+        # usernames into screenshots.
+        from .guikit.tooltip import ToolTip
+        self._ws_label = ttk.Label(
+            header, text=f"  {_ellipsize_path(self.workspace)}",
+            foreground=MUTED, cursor="hand2",
+        )
+        self._ws_label.pack(side="left")
+        ToolTip(self._ws_label,
+                f"Workspace: {self.workspace}\nClick to copy the full path.")
+        self._ws_label.bind("<Button-1>", lambda _e: self._copy_workspace_path())
         ttk.Label(
             header, text="1  Calibrate   →   2  Reduce   →   3  Analyze",
             foreground=MUTED,
@@ -160,6 +188,22 @@ class SeriesXRDApp:
 
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(
+            label="User guide (workflow)",
+            command=lambda: self._open_doc("docs/workflow.md"))
+        help_menu.add_command(
+            label="Run the demonstration (Ti-6Al-4V)",
+            command=lambda: self._open_doc("examples/ti64_demo/README.md"))
+        help_menu.add_command(
+            label="Validation and limitations",
+            command=lambda: self._open_doc("docs/validation.md"))
+        help_menu.add_separator()
+        help_menu.add_command(label="Cite SeriesXRD…", command=self._citation)
+        help_menu.add_command(
+            label="Report a problem…",
+            command=lambda: self._open_url(f"{REPO_URL}/issues/new"))
+        help_menu.add_separator()
+        help_menu.add_command(label="Copy diagnostics", command=self._copy_diagnostics)
         help_menu.add_command(label="About", command=self._about)
 
     # ------------------------------------------------------------------
@@ -256,6 +300,72 @@ class SeriesXRDApp:
         txt.configure(state="disabled")
         txt.pack(fill="both", expand=True)
 
+    def _open_url(self, url: str):
+        try:
+            webbrowser.open(url)
+        except Exception:
+            self._copy_to_clipboard(url, note="Could not open a browser — the "
+                                               "URL is on the clipboard.")
+
+    def _open_doc(self, repo_relative: str):
+        """Open a documentation page — the local file when running from a
+        source checkout, else the repository copy on GitHub."""
+        local = Path(__file__).resolve().parents[1] / repo_relative
+        if local.is_file():
+            self._open_url(local.as_uri())
+        else:
+            self._open_url(f"{REPO_URL}/blob/main/{repo_relative}")
+
+    def _copy_to_clipboard(self, text: str, note: str = "Copied to clipboard."):
+        from tkinter import messagebox
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update_idletasks()
+        except Exception as exc:
+            messagebox.showerror("Clipboard", f"Could not copy: {exc}")
+            return
+        # Non-modal confirmation: flash the workspace label instead of a popup.
+        try:
+            prev = self._ws_label.cget("text")
+            self._ws_label.configure(text=f"  {note}")
+            self._ws_label.after(2000, lambda: self._ws_label.configure(text=prev))
+        except Exception:
+            pass
+
+    def _copy_workspace_path(self):
+        self._copy_to_clipboard(str(self.workspace), note="Workspace path copied.")
+
+    def _copy_diagnostics(self):
+        """Copy a support-ready diagnostics block: versions, dependencies,
+        platform, workspace, and the analysis file's recorded provenance."""
+        from .core.provenance import provenance_report
+        analysis_h5 = ""
+        try:
+            self.analysis_pane.pull_vars()
+            analysis_h5 = str(
+                self.analysis_pane.config.get("analysis_h5_file", "")
+                or self.analysis_pane.config.get("reduced_h5_file", "") or "")
+        except Exception:
+            pass
+        report = provenance_report(analysis_h5 if analysis_h5
+                                   and Path(analysis_h5).is_file() else None)
+        report = f"{report}\n\nWorkspace: {self.workspace}"
+        self._copy_to_clipboard(report, note="Diagnostics copied.")
+
+    def _citation(self):
+        from tkinter import messagebox
+        citation = (
+            f"Maples, R. SeriesXRD (version {VERSION}) [Computer software]. "
+            f"{REPO_URL}\n\n"
+            "Machine-readable metadata: CITATION.cff in the repository "
+            "(GitHub's 'Cite this repository' button uses it). A DOI is "
+            "minted per release via Zenodo once the repository is public.")
+        if messagebox.askyesno(
+                f"Cite {TOOL_NAME}",
+                f"{citation}\n\nCopy this citation to the clipboard?"):
+            self._copy_to_clipboard(citation, note="Citation copied.")
+
     def _about(self):
         from tkinter import messagebox
         try:
@@ -266,7 +376,8 @@ class SeriesXRDApp:
             ver = f"  seriesxrd: {VERSION}"
         messagebox.showinfo(
             f"About {TOOL_NAME}",
-            f"{TOOL_NAME} {VERSION}\n\nWorkspace:\n  {self.workspace}\n\nVersions:\n{ver}")
+            f"{TOOL_NAME} {VERSION} — MIT license\n{REPO_URL}\n\n"
+            f"Workspace:\n  {self.workspace}\n\nVersions:\n{ver}")
 
     # ------------------------------------------------------------------
 
