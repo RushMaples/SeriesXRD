@@ -375,33 +375,138 @@ class AnalysisApp:
         self._status_bar_frame = ttk.Frame(outer, relief="sunken")
         self._status_bar_frame.pack(side="bottom", fill="x", pady=(2, 0))
 
-        self.nb = ttk.Notebook(outer)
-        self.nb.pack(fill="both", expand=True)
-        self.tabs: Dict[str, Any] = {}
-        for name, builder in [
-            # Workflow order: configure everything (input → background → peaks
-            # → phases → frame metadata → identify), then run, then inspect the
-            # results (review → peak map → pattern map → grid map). Result tabs
-            # that need Step-3a output sit AFTER the tabs that configure it.
-            ("1 Data",       self._tab_input),
-            ("2 Background", self._tab_background),
-            ("3 Peaks",      self._tab_peaks),
-            ("4 Phases",     self._tab_phases),
-            ("5 Metadata",   self._tab_frame_metadata),
-            ("6 Identification", self._tab_identify),
-            ("7 Run",        self._tab_run),
-            ("8 Pattern review", self._tab_review),
-            ("9 Peak map",   self._tab_heatmap),
-            ("10 Phase map", self._tab_patternmap),
-            ("11 Unknowns",   self._tab_unknowns),
-            ("12 Spatial map", self._tab_gridmap),
-        ]:
-            frame = ttk.Frame(self.nb, padding=10)
-            builder(frame)
-            self.nb.add(frame, text=name)
-            self.tabs[name] = frame
+        self._build_navigation(outer)
 
         self._build_status_bar()
+
+    def _build_navigation(self, outer):
+        """Hierarchical navigation: a left rail (Configure → Run → Review →
+        Export, with sub-pages) and a raised-frame content area.
+
+        Replaces the previous single row of 12 numbered tabs, which hid later
+        tabs at small window widths and 200% display scaling. Page builders
+        are unchanged — each old tab body is now a page.
+        """
+        tk, ttk = self.tk, self.ttk
+
+        body = ttk.Frame(outer)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        rail = ttk.Treeview(body, show="tree", selectmode="browse")
+        rail.grid(row=0, column=0, sticky="nsw", padx=(0, 6))
+        rail.column("#0", width=170, stretch=False)
+        self._nav_rail = rail
+
+        content = ttk.Frame(body)
+        content.grid(row=0, column=1, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        sections = [
+            ("Configure", [
+                ("data",       "Data",           self._tab_input),
+                ("background", "Background",     self._tab_background),
+                ("peaks",      "Peaks",          self._tab_peaks),
+                ("phases",     "Phases",         self._tab_phases),
+                ("metadata",   "Frame metadata", self._tab_frame_metadata),
+                ("identify",   "Identification", self._tab_identify),
+            ]),
+            ("Run", [
+                ("run",        "Run analysis",   self._tab_run),
+            ]),
+            ("Review", [
+                ("pattern",    "Pattern review", self._tab_review),
+                ("peakmap",    "Peak map",       self._tab_heatmap),
+                ("phasemap",   "Phase map",      self._tab_patternmap),
+                ("unknowns",   "Unknowns",       self._tab_unknowns),
+                ("spatial",    "Spatial map",    self._tab_gridmap),
+            ]),
+            ("Export", [
+                ("export",     "Export",         self._tab_export),
+            ]),
+        ]
+
+        self.pages: Dict[str, Any] = {}
+        self._nav_items: Dict[str, str] = {}      # page key -> tree item id
+        self._nav_first_child: Dict[str, str] = {}  # section item id -> page key
+        for section_label, pages in sections:
+            sec_id = rail.insert("", "end", text=section_label, open=True)
+            for key, label, builder in pages:
+                frame = ttk.Frame(content, padding=10)
+                builder(frame)
+                frame.grid(row=0, column=0, sticky="nsew")
+                self.pages[key] = frame
+                item = rail.insert(sec_id, "end", text=label,
+                                   values=(key,), tags=(key,))
+                self._nav_items[key] = item
+                self._nav_first_child.setdefault(sec_id, key)
+
+        # Legacy aliases so older call sites / muscle memory keep working.
+        self.tabs = {
+            "1 Data": self.pages["data"], "2 Background": self.pages["background"],
+            "3 Peaks": self.pages["peaks"], "4 Phases": self.pages["phases"],
+            "5 Metadata": self.pages["metadata"],
+            "6 Identification": self.pages["identify"],
+            "7 Run": self.pages["run"], "8 Pattern review": self.pages["pattern"],
+            "9 Peak map": self.pages["peakmap"],
+            "10 Phase map": self.pages["phasemap"],
+            "11 Unknowns": self.pages["unknowns"],
+            "12 Spatial map": self.pages["spatial"],
+        }
+
+        def _on_select(_event=None):
+            sel = rail.selection()
+            if not sel:
+                return
+            item = sel[0]
+            vals = rail.item(item, "values")
+            if vals:
+                self.pages[vals[0]].tkraise()
+            else:
+                # A section header: forward to its first page.
+                first = self._nav_first_child.get(item)
+                if first:
+                    rail.selection_set(self._nav_items[first])
+        rail.bind("<<TreeviewSelect>>", _on_select)
+        self.select_page("data")
+
+    def select_page(self, key: str) -> None:
+        """Raise a navigation page by key (e.g. 'data', 'run', 'pattern')."""
+        item = self._nav_items.get(key)
+        if item is None:
+            return
+        try:
+            self._nav_rail.selection_set(item)
+            self._nav_rail.see(item)
+        except Exception:
+            pass
+        self.pages[key].tkraise()
+
+    def _tab_export(self, frame):
+        """Whole-series export actions. Frame- and result-specific exports
+        stay on their own pages (Pattern review, Unknowns, Phase map)."""
+        ttk = self.ttk
+        box = ttk.LabelFrame(frame, text="Whole-series exports", padding=10)
+        box.pack(fill="x", anchor="n")
+        ttk.Button(box, text="Refinement bundle (GSAS-II)…",
+                   command=self.export_refinement_clicked).pack(
+            side="left", padx=4)
+        ttk.Button(box, text="GSAS-ready raw patterns…",
+                   command=self.export_gsas_raw_clicked).pack(
+            side="left", padx=4)
+        _ToolTip(box, "Rietveld hand-off: per-frame patterns, phase CIFs, and "
+                      "a GSAS-II instrument file — see docs/validation.md for "
+                      "what the export is (and is not).")
+        note = ttk.Label(
+            frame, foreground=MUTED, justify="left", wraplength=680,
+            text=("Context-bound exports live with their results:\n"
+                  "  • Pattern review — per-frame .xy patterns and stacked "
+                  "figures\n"
+                  "  • Unknowns — cluster diagrams, spot tracks, spot masks\n"
+                  "  • Frame metadata — selected-frame metadata CSV"))
+        note.pack(anchor="w", pady=(10, 0))
 
     def _build_status_bar(self):
         ttk = self.ttk
@@ -762,7 +867,7 @@ class AnalysisApp:
         self.save_config(silent=True)
         self.log(f"Reduced HDF5 received: {p}")
         try:
-            self.nb.select(self.tabs["1 Data"])
+            self.select_page("data")
         except Exception:
             pass
         if Path(p).is_file():
