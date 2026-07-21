@@ -25,7 +25,7 @@ FRAME_LABEL = "Frame index"
 # The contamination score is Σ max(mean − robust, 0) per frame: the
 # integrated positive diamond-spot residual. Unitless; compare within a
 # series, not across experiments.
-CONTAMINATION_LABEL = "Spot-contamination score (Σ spot residual)"
+CONTAMINATION_LABEL = "Contamination score"
 
 
 def unit_label(unit: str | None) -> str:

@@ -9,6 +9,7 @@
   "conda_env_name": "",
   "dioptas_command": "",
   "dioptas_python": "",
+  "dioptas_image_flip": false,
   "workspace_root": "C:\\path\\to\\my_session",
   "raw_data_dir": "C:\\path\\to\\my_session\\data\\raw",
   "processed_root": "C:\\path\\to\\my_session\\data\\processed",

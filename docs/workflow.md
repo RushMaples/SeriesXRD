@@ -364,7 +364,7 @@ table follows each stage's knobs.
 | `npt_radial` / `npt_azimuthal` (cake bins) | auto / 360 | Increase azimuthal bins for a finer waviness diagnosis; rarely needed otherwise. |
 | `coverage_threshold_pct` | 10 | Raise it if the coverage diagnostic shows too many low-statistics radial bins passing through as real signal; lower it if real high-angle data is getting zeroed. |
 | `saturated_threshold` | blank (off) | Set it to your detector's saturation counts if hot/saturated pixels are visible in the raw detector panel and not caught by the negative/zero/non-finite rules. |
-| cake orientation (flip) | ON (Dioptas alignment) | Use "Preview cake orientation" whenever calibrant rings look wavy in the QA cake — pick whichever flip renders them as straight vertical lines. |
+| cake orientation (flip) | OFF (file orientation) | Use "Preview cake orientation" whenever calibrant rings look wavy in the QA cake — pick whichever orientation renders them as straight vertical lines. Enable Dioptas alignment only when that preview is correct for the detector data. |
 
 ### 4.2 Reduction
 

@@ -3,8 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from seriesxrd.app import SeriesXRDApp, workspace_launch_args
+from seriesxrd.app import (
+    SeriesXRDApp,
+    _workspace_display_name,
+    workspace_launch_args,
+)
 from seriesxrd.analysis.gui import AnalysisApp
+from seriesxrd.calib.gui import CalibrationApp
 from seriesxrd.reduce.gui import ReductionApp
 
 
@@ -71,6 +76,23 @@ def test_workspace_launch_args_use_module_entry_point(tmp_path):
     assert Path(args[4]) == tmp_path.resolve()
 
 
+def test_workspace_header_uses_only_the_folder_name(tmp_path):
+    workspace = tmp_path / "institution" / "researcher" / "SeriesXRD-Demo"
+    assert _workspace_display_name(workspace) == "SeriesXRD-Demo"
+
+
+def test_pattern_review_contamination_panel_can_be_collapsed():
+    assert AnalysisApp._review_panel_layout(True, True) == (
+        ("pattern", "cake", "contamination"),
+        (3, 2, 1),
+    )
+    assert AnalysisApp._review_panel_layout(True, False) == (
+        ("pattern", "cake"),
+        (3, 2),
+    )
+    assert AnalysisApp._review_panel_layout(False, False) == (("pattern",), (3,))
+
+
 def test_scientific_tools_are_exposed_by_gui_controllers():
     for name in (
         "export_refinement_clicked",
@@ -81,3 +103,9 @@ def test_scientific_tools_are_exposed_by_gui_controllers():
     ):
         assert callable(getattr(AnalysisApp, name))
     assert callable(getattr(ReductionApp, "_run_texture_job"))
+
+
+def test_all_workflow_stages_expose_left_rail_navigation():
+    for controller in (CalibrationApp, ReductionApp, AnalysisApp):
+        assert callable(getattr(controller, "_build_navigation"))
+        assert callable(getattr(controller, "select_page"))

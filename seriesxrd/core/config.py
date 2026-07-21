@@ -211,6 +211,7 @@ class SessionConfig:
     conda_env_name: str = ""
     dioptas_command: str = ""
     dioptas_python: str = ""
+    dioptas_image_flip: bool = False
     workspace_root: str = ""
     raw_data_dir: str = ""
     processed_root: str = ""

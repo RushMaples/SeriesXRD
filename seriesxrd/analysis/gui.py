@@ -1503,6 +1503,7 @@ class AnalysisApp:
         self._show_residual_peaks = tk.BooleanVar(value=False)
         self._show_unknowns = tk.BooleanVar(value=False)
         self._show_cake = tk.BooleanVar(value=False)
+        self._show_contamination = tk.BooleanVar(value=True)
         for var, label in [
             (self._show_mean, "mean"),
             (self._show_robust, "robust"),
@@ -1514,6 +1515,7 @@ class AnalysisApp:
             (self._show_residual_peaks, "residual peaks"),
             (self._show_unknowns, "unknown peaks"),
             (self._show_cake, "cake (2D)"),
+            (self._show_contamination, "contamination"),
         ]:
             cb = ttk.Checkbutton(togglerow, text=label, variable=var,
                                  command=self._schedule_review_render)
@@ -1524,6 +1526,8 @@ class AnalysisApp:
                 _ToolTip(cb, "Peaks re-fitted on /residual/clean.")
             elif label == "unknown peaks":
                 _ToolTip(cb, "Step-3c unknown-track observations for this frame.")
+            elif label == "contamination":
+                _ToolTip(cb, "Show or collapse the frame-series contamination score plot.")
         self._review_source_reduced = ""
 
         # Matplotlib area
@@ -1611,8 +1615,21 @@ class AnalysisApp:
         self._sync_review_scale()   # typed entry / programmatic changes move the slider too
         self._render_review(idx)
 
+    @staticmethod
+    def _review_panel_layout(show_cake: bool, show_contamination: bool):
+        """Return ordered review-panel names and their relative heights."""
+        panels = ["pattern"]
+        ratios = [3]
+        if show_cake:
+            panels.append("cake")
+            ratios.append(2)
+        if show_contamination:
+            panels.append("contamination")
+            ratios.append(1)
+        return tuple(panels), tuple(ratios)
+
     def _render_review(self, frame_index: int):
-        """Render the two-axis review figure for one frame."""
+        """Render the configurable review figure for one frame."""
         # Close previous figure to avoid leaks.
         prev = getattr(self, "_review_fig", None)
         if prev is not None:
@@ -1676,19 +1693,16 @@ class AnalysisApp:
         # constrained layout recomputes margins on every resize (one-shot
         # tight_layout leaves labels clipped/overlapping when the pane resizes).
         show_cake = bool(self._show_cake.get())
+        show_contamination = bool(self._show_contamination.get())
         fig = Figure(figsize=(7, 6), dpi=100, layout="constrained")
         self._review_fig = fig
         fig.patch.set_facecolor(BG)
-        if show_cake:
-            gs = fig.add_gridspec(3, 1, height_ratios=[3, 2, 1])
-            ax1 = fig.add_subplot(gs[0])    # pattern traces
-            ax_cake = fig.add_subplot(gs[1])  # 2D cake (azimuth × radial)
-            ax2 = fig.add_subplot(gs[2])    # contamination strip
-        else:
-            gs = fig.add_gridspec(2, 1, height_ratios=[3, 1])
-            ax1 = fig.add_subplot(gs[0])   # pattern traces get the bulk of the height
-            ax2 = fig.add_subplot(gs[1])   # contamination strip below
-            ax_cake = None
+        panels, ratios = self._review_panel_layout(show_cake, show_contamination)
+        gs = fig.add_gridspec(len(panels), 1, height_ratios=ratios)
+        axes = {name: fig.add_subplot(gs[index]) for index, name in enumerate(panels)}
+        ax1 = axes["pattern"]
+        ax_cake = axes.get("cake")
+        ax2 = axes.get("contamination")
 
         def _plot(ax, arr, label, color, lw=0.9, alpha=0.85):
             if arr is None:
@@ -1783,18 +1797,19 @@ class AnalysisApp:
             self._style_ax(ax_cake)
 
         # Bottom axis: contamination across series.
-        contam = self._review_contamination
-        if contam is not None and len(contam):
-            c_arr = np.asarray(contam, dtype=float)
-            ax2.plot(c_arr, lw=0.8, color=CLR_DIFF, alpha=0.85)
-            ax2.axvline(frame_index, color=ACCENT, lw=1.2, alpha=0.8)
-            ax2.set_xlabel(FRAME_LABEL)
-            ax2.set_ylabel(CONTAMINATION_LABEL)
-            ax2.set_title("Contamination vs frame", color=FG)
-        else:
-            ax2.set_title("Contamination (not available)", color=FG)
-            ax2.set_xlabel(FRAME_LABEL)
-        self._style_ax(ax2)
+        if ax2 is not None:
+            contam = self._review_contamination
+            if contam is not None and len(contam):
+                c_arr = np.asarray(contam, dtype=float)
+                ax2.plot(c_arr, lw=0.8, color=CLR_DIFF, alpha=0.85)
+                ax2.axvline(frame_index, color=ACCENT, lw=1.2, alpha=0.8)
+                ax2.set_xlabel(FRAME_LABEL)
+                ax2.set_ylabel(CONTAMINATION_LABEL)
+                ax2.set_title("Contamination vs frame", color=FG)
+            else:
+                ax2.set_title("Contamination (not available)", color=FG)
+                ax2.set_xlabel(FRAME_LABEL)
+            self._style_ax(ax2)
 
         self._review_canvas = self._embed_figure(self.review_plot_frame, fig)
 
@@ -3522,10 +3537,10 @@ class AnalysisApp:
                 "frame's peak list and reports a match confidence (and, for "
                 "pressure series, a best-fit pressure). Needs pymatgen.\n\n"
                 "To run it:\n"
-                "  1. Phases tab — enable the candidate phases (or tick Search "
+                "  1. Configure → Phases — enable the candidate phases (or tick Search "
                 "entire library here).\n"
                 "  2. Tick 'Enable phase identification' above.\n"
-                "  3. Run tab — Run analysis.\n"
+                "  3. Run → Run analysis — start the analysis.\n"
                 "  4. Click 'Load identification' to see the results.\n"
                 "The residual step then subtracts confirmed phases and re-fits, "
                 "and the unknowns step clusters whatever is left."
@@ -3566,13 +3581,11 @@ class AnalysisApp:
         self._identify_status.pack(side="left", padx=12)
 
         # -- body: per-frame phase table (left) + plot (right) ------------
-        # NOTE: the body has its own row. The help label above shares no cell
-        # with it — sharing a row was the bug that made the 'Show
-        # instructions' checkbox appear to do nothing (the label toggled
-        # underneath the body frame).
+        # Keep the body below the optional help row. When help is hidden, row
+        # 13 collapses automatically; when shown, the results move down.
         body = ttk.Frame(frame)
-        body.grid(row=13, column=0, columnspan=6, sticky="nsew")
-        frame.rowconfigure(13, weight=1)
+        body.grid(row=14, column=0, columnspan=6, sticky="nsew")
+        frame.rowconfigure(14, weight=1)
         frame.columnconfigure(0, weight=1)
 
         # Left: two browse modes in a sub-notebook. Stacking the per-frame
