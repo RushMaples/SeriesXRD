@@ -35,7 +35,7 @@
         "K0": 167.0,
         "K0p": 5.0
       },
-      "source": "Anderson, Isaak & Yamamoto (1989), J. Appl. Phys. 65, 1534.",
+      "source": "Anderson, Isaak & Yamamoto (1989), J. Appl. Phys. 65, 1534, doi:10.1063/1.342969. Bundled K0' differs from this source's recommendation — see docs/phase-sources.md.",
       "notes": "Classic FCC pressure marker; many alternative scales exist (e.g. Tsuchiya 2003, Fei 2007, Dorogokupets & Dewaele 2007)."
     },
     {
@@ -66,7 +66,7 @@
         "K0": 277.0,
         "K0p": 5.08
       },
-      "source": "Holmes, Gathers & Bassett (1989), J. Appl. Phys. 66, 2962.",
+      "source": "Holmes, Moriarty, Gathers & Nellis (1989), J. Appl. Phys. 66, 2962, doi:10.1063/1.344177. Bundled K0/K0' differ from this source's fit — see docs/phase-sources.md.",
       "notes": "FCC. Stiff and chemically inert; good high-pressure marker. See also Dorogokupets & Dewaele (2007)."
     },
     {
@@ -298,7 +298,7 @@
         "K0": 350.0,
         "K0p": 4.5
       },
-      "source": "Anzellini et al. (2014); Dubrovinsky et al.",
+      "source": "Anzellini, Dewaele, Occelli, Loubeyre & Mezouar (2014), J. Appl. Phys. 115, 043511, doi:10.1063/1.4863300 (rounded parameters).",
       "notes": "HCP. The most common DAC gasket; its rings nearly always appear in the pattern, so it is useful both as a contaminant to recognize and as a secondary marker."
     },
     {
@@ -572,7 +572,7 @@
         "V0": 160.2,
         "p_max": 11.0
       },
-      "source": "Hu, Liu & Vohra (1986); diamond-cubic Si (valid below the ~11 GPa transition).",
+      "source": "Hu, Merkle, Menoni & Spain (1986), Phys. Rev. B 34, 4679, doi:10.1103/PhysRevB.34.4679; diamond-cubic Si (valid below the ~11 GPa transition).",
       "notes": "Diamond-cubic silicon; transforms to beta-Sn near 11 GPa."
     },
     {

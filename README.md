@@ -221,6 +221,10 @@ python -m pytest
   together and the design decisions behind the pipeline.
 - [`docs/file-format.md`](docs/file-format.md) — the HDF5 layouts and JSON
   manifests each stage reads and writes.
+- [`docs/validation.md`](docs/validation.md) — what is validated against
+  what, expected tolerances, and the limits of each output.
+- [`docs/phase-sources.md`](docs/phase-sources.md) — bibliography and
+  provenance for every value in the bundled phase library.
 - [`docs/ml-training.md`](docs/ml-training.md) — training, validating, and
   deploying the Step-3b learned scorer (cluster-agnostic — works on any
   cluster or workstation).
