@@ -41,6 +41,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .parallel import resolve_workers, chunk_ranges
+from ..core.config import VERSION
+from ..core.provenance import manifest_provenance, write_step_provenance
 
 
 # Rejection flags (bitwise-OR-able).
@@ -1206,7 +1208,10 @@ def run_peak_fitting(
             if "peaks" in o:
                 del o["peaks"]
             gp = o.create_group("peaks")
+            write_step_provenance(o, "peaks", tool="seriesxrd.analysis.peaks",
+                                  schema_version=SCHEMA_VERSION)
             gp.attrs.update({"schema_version": SCHEMA_VERSION,
+                             "seriesxrd_version": VERSION,
                              "source": str(used_source),
                              "sensitivity": str(preset),
                              "hybrid_spike_bins": int(hybrid_spike_bins),
@@ -1266,7 +1271,8 @@ def run_peak_fitting(
                  ("no_converge", FLAG_NO_CONVERGE))
     flag_counts = {name: int(np.sum((flags & bit) != 0)) for name, bit in flag_defs}
     manifest = {
-        "tool_version": SCHEMA_VERSION, "source": str(src), "out_h5": str(dst),
+        **manifest_provenance("seriesxrd.analysis.peaks", SCHEMA_VERSION),
+        "source": str(src), "out_h5": str(dst),
         "n_frames": int(n), "n_peaks": P, "n_good": n_good,
         "n_flagged": P - n_good, "unit": unit, "flag_counts": flag_counts,
         "fit_source": str(used_source), "sensitivity": str(preset),

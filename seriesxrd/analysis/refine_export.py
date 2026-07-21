@@ -51,6 +51,7 @@ import numpy as np
 from .heatmap import _peaks_fit_source
 from .peaks import build_fit_source
 from .phases import Phase, load_library, pymatgen_available, structure_from_phase
+from ..core.provenance import manifest_provenance
 
 # q-axis unit spellings understood by identify.radial_to_d / heatmap — kept in
 # sync so the same file is never treated as q by one module and something else
@@ -488,11 +489,13 @@ def export_frames(analysis_h5: "str | Path", out_dir: "str | Path", *,
     out = Path(out_dir).expanduser()
     patterns_dir = out / "patterns"
     patterns_dir.mkdir(parents=True, exist_ok=True)
-    manifest: Dict[str, Any] = {"n_frames": 0, "files_written": [],
-                                "n_peaks": 0, "n_residual_peaks": 0,
-                                "n_unknown_obs": 0,
-                                "unit": "", "wavelength": None,
-                                "source": source, "excluded_windows": []}
+    manifest: Dict[str, Any] = {
+        **manifest_provenance("seriesxrd.analysis.refine_export", "1"),
+        "n_frames": 0, "files_written": [],
+        "n_peaks": 0, "n_residual_peaks": 0,
+        "n_unknown_obs": 0,
+        "unit": "", "wavelength": None,
+        "source": source, "excluded_windows": []}
 
     with h5py.File(str(src), "r") as h5:
         unit = str(h5.attrs.get("unit", ""))

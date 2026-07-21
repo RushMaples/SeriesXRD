@@ -182,5 +182,10 @@ def _test_frame_data_residual_unknowns():
         assert fd["unknown_obs"][0]["cluster"] == 2
 
 
+def test_main():
+    """Pytest entry point — this file predates the test_* function convention."""
+    main()
+
+
 if __name__ == "__main__":
     main()

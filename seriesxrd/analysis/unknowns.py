@@ -37,6 +37,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from .identify import radial_to_d
+from ..core.config import VERSION
+from ..core.provenance import manifest_provenance, write_step_provenance
 
 SCHEMA_VERSION = "1"
 TRACKING_AXES = ("frame", "pressure", "temperature", "time")
@@ -461,7 +463,11 @@ def run_unknowns(
             if "unknowns" in o:
                 del o["unknowns"]
             g = o.create_group("unknowns")
+            write_step_provenance(o, "unknowns",
+                                  tool="seriesxrd.analysis.unknowns",
+                                  schema_version=SCHEMA_VERSION)
             g.attrs.update({"schema_version": SCHEMA_VERSION,
+                            "seriesxrd_version": VERSION,
                             "link_tol_fwhm": float(link_tol_fwhm),
                             "max_gap": int(max_gap),
                             "min_track_frames": int(min_track_frames),
@@ -539,7 +545,8 @@ def run_unknowns(
             tmp.unlink()
         raise
 
-    manifest = {"tool_version": SCHEMA_VERSION, "out_h5": str(dst),
+    manifest = {**manifest_provenance("seriesxrd.analysis.unknowns", SCHEMA_VERSION),
+                "out_h5": str(dst),
                 "n_residual_peaks": int(frames.size),
                 "n_tracks": len(tracks), "n_clusters": n_clusters,
                 "tracking_axis": axis_key, "tracking_axis_label": axis_label,

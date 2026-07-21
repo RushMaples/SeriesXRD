@@ -93,6 +93,7 @@ class _LiveWriter:
         with h5py.File(str(self.path), "w") as h5:
             h5.attrs.update({
                 "tool": "seriesxrd.reduce", "tool_version": _proc.VERSION,
+                "seriesxrd_version": _proc.VERSION,
                 "created_at": now_iso(), "unit": settings["unit"],
                 "npt_1d": self.npt,
                 "npt_1d_suggested": int(npt_suggested or 0),

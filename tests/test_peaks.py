@@ -391,5 +391,10 @@ def _test_prominence_decoupling():
     assert 2 in dd and 4 in dd, f"decoupled should keep both: {dd}"
 
 
+def test_main():
+    """Pytest entry point — this file predates the test_* function convention."""
+    main()
+
+
 if __name__ == "__main__":
     main()

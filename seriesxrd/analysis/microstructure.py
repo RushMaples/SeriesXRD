@@ -34,6 +34,9 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
+from ..core.config import VERSION
+from ..core.provenance import manifest_provenance, write_step_provenance
+
 SCHEMA_VERSION = "1"
 TWO_PI = 2.0 * np.pi
 
@@ -139,7 +142,8 @@ def williamson_hall(
             size[i] = np.inf                      # no resolvable size broadening
 
     manifest: Dict[str, Any] = {
-        "tool_version": SCHEMA_VERSION, "k_shape": float(k_shape),
+        **manifest_provenance("seriesxrd.analysis.microstructure", SCHEMA_VERSION),
+        "k_shape": float(k_shape),
         "instrument_corrected": bool(corrected),
         "convention": "dq = 2*pi*K/D + 2*eps*q (eps = dd/d)",
         "n_frames": int(n),
@@ -162,7 +166,11 @@ def williamson_hall(
                 if "microstructure" in o:
                     del o["microstructure"]
                 g = o.create_group("microstructure")
+                write_step_provenance(o, "microstructure",
+                                      tool="seriesxrd.analysis.microstructure",
+                                      schema_version=SCHEMA_VERSION)
                 g.attrs.update({"schema_version": SCHEMA_VERSION,
+                                "seriesxrd_version": VERSION,
                                 "k_shape": float(k_shape),
                                 "instrument_corrected": bool(corrected),
                                 "convention": manifest["convention"]})
