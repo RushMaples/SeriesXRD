@@ -185,6 +185,9 @@ class SeriesXRDApp:
         menubar.add_cascade(label="Tools", menu=tools_menu)
         tools_menu.add_command(label="Check environment", command=self._check_environment)
         tools_menu.add_command(label="Inspect detector image…", command=self._inspect_image)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Model development…",
+                               command=self._model_development)
 
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
@@ -365,6 +368,154 @@ class SeriesXRDApp:
                 f"Cite {TOOL_NAME}",
                 f"{citation}\n\nCopy this citation to the clipboard?"):
             self._copy_to_clipboard(citation, note="Citation copied.")
+
+    def _model_development(self):
+        """Tools → Model development: GUI access to the training-side CLIs
+        (corpus building, benchmarking, learned-scorer training) as command
+        builders that stream their output — the workflow tabs stay focused on
+        measurement analysis."""
+        import tkinter as tk
+        from tkinter import ttk, filedialog
+        from .guikit.theme import BG, BG2, FG, MUTED
+
+        win = tk.Toplevel(self.root)
+        win.title("Model development")
+        win.geometry("860x640")
+        win.configure(bg=BG)
+
+        nb = ttk.Notebook(win)
+        nb.pack(fill="both", expand=True, padx=8, pady=8)
+
+        out_text = tk.Text(win, height=14, bg=BG2, fg=FG, insertbackground=FG,
+                           relief="flat", state="disabled",
+                           font=("TkFixedFont", 9))
+        out_text.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        state = {"proc": None}
+
+        def _append(line: str):
+            out_text.configure(state="normal")
+            out_text.insert("end", line)
+            out_text.see("end")
+            out_text.configure(state="disabled")
+
+        def _run(cmd: "list[str]"):
+            if state["proc"] is not None:
+                _append("[busy] a tool is already running — wait for it to "
+                        "finish\n")
+                return
+            _append("\n$ " + " ".join(cmd) + "\n")
+            import threading
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True,
+                                        bufsize=1)
+            except Exception as exc:
+                _append(f"[failed to start] {exc!r}\n")
+                return
+            state["proc"] = proc
+
+            def _pump():
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    win.after(0, _append, line)
+                rc = proc.wait()
+                def _done():
+                    state["proc"] = None
+                    _append(f"[exit {rc}]\n")
+                win.after(0, _done)
+            threading.Thread(target=_pump, daemon=True).start()
+
+        def _row(parent, label, var, browse=None, width=48):
+            row = ttk.Frame(parent)
+            row.pack(fill="x", pady=2)
+            ttk.Label(row, text=label, width=18, anchor="w").pack(side="left")
+            ttk.Entry(row, textvariable=var, width=width).pack(
+                side="left", fill="x", expand=True)
+            if browse:
+                def _pick():
+                    if browse == "dir":
+                        p = filedialog.askdirectory(parent=win)
+                    elif browse == "save":
+                        p = filedialog.asksaveasfilename(parent=win)
+                    else:
+                        p = filedialog.askopenfilename(parent=win)
+                    if p:
+                        var.set(p)
+                ttk.Button(row, text="…", width=3, command=_pick).pack(
+                    side="left", padx=2)
+            return row
+
+        ws = str(self.workspace)
+
+        # --- Corpus tab -------------------------------------------------
+        pg = ttk.Frame(nb, padding=10)
+        nb.add(pg, text="CIF corpus")
+        ttk.Label(pg, foreground=MUTED, wraplength=760, justify="left", text=(
+            "Screen a directory of CIFs (parse/dedupe/size-screen) into a "
+            "training-only corpus manifest for seriesxrd-ml-train --cif-dir. "
+            "Fetching from COD needs network access.")).pack(anchor="w")
+        c_dir = tk.StringVar()
+        _row(pg, "CIF directory", c_dir, browse="dir")
+        ttk.Label(pg, foreground=MUTED, text=(
+            "Writes corpus_manifest.json into the CIF directory.")).pack(
+            anchor="w")
+        ttk.Button(pg, text="Screen corpus", command=lambda: _run(
+            [sys.executable, "-m", "seriesxrd.analysis.corpus", "screen",
+             c_dir.get()],
+        )).pack(anchor="w", pady=6)
+
+        # --- Benchmark tab ----------------------------------------------
+        pg = ttk.Frame(nb, padding=10)
+        nb.add(pg, text="Benchmark")
+        ttk.Label(pg, foreground=MUTED, wraplength=760, justify="left", text=(
+            "Score a scorer against labelled XY patterns (RRUFF/opXRD-style) "
+            "through the real Step-1/2 preprocessing — the gate a trained "
+            "scorer must pass against the cosine baseline. See "
+            "docs/ml-training.md.")).pack(anchor="w")
+        b_labels = tk.StringVar(); b_scorer = tk.StringVar()
+        _row(pg, "Labels file/dir", b_labels, browse="open")
+        _row(pg, "Scorer (optional)", b_scorer, browse="open")
+        ttk.Button(pg, text="Run benchmark", command=lambda: _run(
+            [sys.executable, "-m", "seriesxrd.analysis.benchmark",
+             "--labels", b_labels.get(), "--workspace", ws]
+            + (["--ml-scorer", f"torch:{b_scorer.get()}"]
+               if b_scorer.get() else []),
+        )).pack(anchor="w", pady=6)
+
+        # --- Training tab -----------------------------------------------
+        pg = ttk.Frame(nb, padding=10)
+        nb.add(pg, text="Train scorer")
+        ttk.Label(pg, foreground=MUTED, wraplength=760, justify="left", text=(
+            "Train the Step-3b learned pair scorer (requires the [ml] extra / "
+            "PyTorch; heavy — a cluster or GPU workstation is the usual "
+            "venue). The deterministic cosine ranker remains the default "
+            "until a trained model beats it on the benchmark.")).pack(
+            anchor="w")
+        t_out = tk.StringVar(value=str(Path(ws) / "scorer.pt"))
+        t_cif = tk.StringVar()
+        _row(pg, "Model output", t_out, browse="save")
+        _row(pg, "CIF corpus (optional)", t_cif, browse="dir")
+        ttk.Button(pg, text="Train", command=lambda: _run(
+            [sys.executable, "-m", "seriesxrd.analysis.ml_train",
+             "--workspace", ws, "--out", t_out.get()]
+            + (["--cif-dir", t_cif.get()] if t_cif.get() else []),
+        )).pack(anchor="w", pady=6)
+
+        def _on_close():
+            proc = state.get("proc")
+            if proc is not None and proc.poll() is None:
+                from tkinter import messagebox
+                if not messagebox.askyesno(
+                        "Tool running",
+                        "A model-development tool is still running. "
+                        "Terminate it and close?", parent=win):
+                    return
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _on_close)
 
     def _about(self):
         from tkinter import messagebox
