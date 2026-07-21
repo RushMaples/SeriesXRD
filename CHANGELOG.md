@@ -30,8 +30,11 @@ semantic versioning once a stable public API is declared.
 - HDF5 inspection shows a human-readable summary by default, with the raw
   tree and full attributes behind an "Advanced details" toggle.
 - Corrected phase-library source attributions (Pt and Si author lists,
-  Re citation) and flagged bundled Au/Pt EOS parameters that do not match
-  their cited sources — see `docs/phase-sources.md`.
+  Re citation) and pinned the marker EOS parameters to named literature
+  scales: Au to Anderson et al. 1989 as recommended (167 GPa / 5.5), Pt
+  re-cited to the Fei et al. 2007 Vinet scale (273 GPa / 5.20), Re to
+  Anzellini et al. 2014's Vinet fit unrounded (352.6 GPa / 4.56) — see
+  `docs/phase-sources.md`.
 
 ### Added
 

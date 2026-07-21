@@ -12,15 +12,15 @@ never fitted or simulated.
 > *identified* across a pressure series. If you need pressures at
 > marker-scale accuracy, choose your own preferred pressure scale for the
 > marker and verify the parameters below against the primary literature —
-> several widely-used scales disagree at the few-percent level, and three
-> bundled entries are explicitly flagged below.
+> several widely-used scales disagree at the few-percent level (see the
+> correction history below the table).
 
 ## Pressure markers
 
 | Phase | Structure (ambient a, Å) | EOS values (V0 Å³, K0 GPa, K0′) | Experimental range of the source | Source |
 |---|---|---|---|---|
-| Au | fcc, 4.0782 | 67.847, 167.0, 5.0 ⚠ | thermodynamic analysis (not a single compression run) | Anderson, Isaak & Yamamoto (1989) [1] |
-| Pt | fcc, 3.9231 | 60.383, 277.0, 5.08 ⚠ | shock to 660 GPa | Holmes, Moriarty, Gathers & Nellis (1989) [2] |
+| Au | fcc, 4.0782 | 67.847, 167.0, 5.5 | thermodynamic analysis (not a single compression run) | Anderson, Isaak & Yamamoto (1989) [1] |
+| Pt | fcc, 3.9231 | **Vinet**: 60.383, 273.0, 5.20 | internally consistent P–V–T scale (static + shock constraints) | Fei et al. (2007) [12] |
 | Cu | fcc, 3.6149 | 47.241, 133.0, 5.01 | quasi-hydrostatic DAC to ~94 GPa | Dewaele, Loubeyre & Mezouar (2004) [3] |
 | Ag | fcc, 4.0857 | 68.204, 100.0, 6.0 | quasi-hydrostatic DAC to ~94 GPa | [3] |
 | W | bcc, 3.1652 | 31.708, 308.0, 4.2 | quasi-hydrostatic DAC to ~94 GPa | [3] |
@@ -33,24 +33,23 @@ never fitted or simulated.
 | Ni | fcc, 3.5240 | structure only (no EOS bundled) | — | Wyckoff, *Crystal Structures* (1963) [8] |
 | Fe (α, bcc) | bcc, 2.8665 | structure only; α→ε near 13 GPa | — | standard ambient lattice [8] |
 
-⚠ **Flagged for verification** (bundled values vs the cited source):
-
-- **Au**: the bundle carries K0′ = 5.0; Anderson et al. [1] recommend
-  (∂K/∂P) ≈ 5.5. Other common Au scales differ again (Fei et al. 2007
-  [12]; Dorogokupets & Dewaele 2007 [13]).
-- **Pt**: the bundle carries K0 = 277 GPa, K0′ = 5.08; Holmes et al. [2]
-  is commonly quoted as a Vinet fit with K0 ≈ 266 GPa, K0′ ≈ 5.8, and
-  Fei et al. [12] as 273 GPa / 5.20. The bundled pair is closest to
-  Dorogokupets & Dewaele [13]. The attribution needs to be pinned to one
-  scale before any quantitative marker use.
-- **Re** (below): bundled 350 GPa / 4.5 are rounded from Anzellini et
-  al. [9] (352.6 GPa / 4.56).
+**Correction history.** Earlier revisions carried Au K0′ = 5.0 (vs the
+cited source's ≈ 5.5), a Pt pair (277 GPa / 5.08, BM3) matching neither
+its cited source nor any single named scale, and Re parameters rounded
+from the source fit. These were pinned to named scales in the
+pre-release audit: Au now uses Anderson et al. [1] as recommended
+(167 GPa / 5.5), Pt is re-cited to the Fei et al. [12] Vinet scale
+(273 GPa / 5.20), and Re carries Anzellini et al. [9]'s Vinet fit
+unrounded (352.6 GPa / 4.56). Alternative scales (Holmes et al. [2],
+Dorogokupets & Dewaele [13]) remain in the bibliography; users needing a
+different scale for cross-study consistency can override any entry from
+the Phases tab.
 
 ## Gaskets, media, anvil, calibrants
 
 | Phase | Structure (ambient a, c Å) | EOS values | Notes | Source |
 |---|---|---|---|---|
-| Re (gasket) | hcp, 2.7609 / 4.4576 | 29.43, 350.0, 4.5 ⚠ (rounded) | DAC to 144 GPa | Anzellini et al. (2014) [9] |
+| Re (gasket) | hcp, 2.7609 / 4.4576 | **Vinet**: 29.43, 352.6, 4.56 | DAC to 144 GPa (He medium) | Anzellini et al. (2014) [9] |
 | Stainless steel (gasket) | — | none | generic contaminant category; grade-dependent | — |
 | Ne (medium) | fcc, 4.464 | **Vinet**: 88.967, 1.16, 8.23 | DAC to 209 GPa; V0/K0 are zero-pressure extrapolations of the solid | Dewaele et al. (2008) [10] |
 | Ar (medium) | fcc, 5.30 | 148.88, 2.7, 7.2 (zero-pressure extrapolation) | shock + static comparison | Ross, Mao, Bell & Xu (1986) [11]; see also [10] |
@@ -128,6 +127,6 @@ never fitted or simulated.
 - New entries need: EOS form, all fitted parameters, the source's
   experimental pressure range, a `p_max` if the phase transforms, and a
   DOI.
-- The ⚠ flags above are open items: either re-derive those parameters from
-  the cited sources or re-cite them to the scale actually used, before any
-  publication that leans on marker pressures from these entries.
+- When comparing against studies that used a different marker scale,
+  override the marker entry with that study's parameters (Phases tab)
+  rather than mixing pressures from two scales.

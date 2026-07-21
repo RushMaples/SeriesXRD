@@ -10,9 +10,9 @@
 
 ## Acknowledgments
 
-- **Zack Rehfuss** — scientific advisor and initial contributor.
-  <!-- ORCID/profile link to be added -->
-
+- **Zack Rehfuss**
+  ([ORCID 0000-0003-4180-1106](https://orcid.org/0000-0003-4180-1106)) —
+  scientific advisor and initial contributor.
 
 ## Funding
 
