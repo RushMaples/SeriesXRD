@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 import time
+from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _display import tk_display_available
 
 
 def _pump_events(root, seconds: float) -> None:
@@ -17,6 +22,10 @@ def _pump_events(root, seconds: float) -> None:
 def test_plot_fits_when_notebook_tab_first_becomes_visible(monkeypatch):
     """A plot created on a hidden tab must fit on its first visible draw."""
     tkinter = pytest.importorskip("tkinter")
+    # Probe in a subprocess first: on headless macOS Tk can segfault inside
+    # TkpInit, which no except clause can catch.
+    if not tk_display_available():
+        pytest.skip("no usable Tk display")
     try:
         root = tkinter.Tk()
     except tkinter.TclError as exc:

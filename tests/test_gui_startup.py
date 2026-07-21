@@ -12,19 +12,12 @@ from pathlib import Path
 
 import pytest
 
-
-def _display_available() -> bool:
-    try:
-        import tkinter
-        r = tkinter.Tk()
-        r.destroy()
-        return True
-    except Exception:
-        return False
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _display import tk_display_available
 
 
-@pytest.mark.skipif(not _display_available(),
-                    reason="no display (run under xvfb-run to enable)")
+@pytest.mark.skipif(not tk_display_available(),
+                    reason="no usable Tk display (run under xvfb-run to enable)")
 def test_unified_app_constructs_and_closes():
     script = (
         "import sys\n"
