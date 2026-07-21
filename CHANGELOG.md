@@ -5,6 +5,8 @@ semantic versioning once a stable public API is declared.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-21
+
 ### Changed
 
 - Adopted SeriesXRD as the project, Python package, application, and
