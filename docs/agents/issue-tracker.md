@@ -1,5 +1,8 @@
 # Issue tracker
 
+> Development-automation configuration (see "Development transparency" in
+> the repository's `GOVERNANCE.md`) — not user documentation.
+
 Issues for this repository are tracked in **GitHub Issues** on `RushMaples/SeriesXRD`.
 
 ## How skills interact with it

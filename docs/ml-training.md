@@ -242,9 +242,9 @@ or a bad flag.
 
 ## 6. Simulation physics conventions
 
-These are implementation details, not flags — see `CLAUDE.md` ("Simulation
-physics conventions") for the authoritative description. Kept short here on
-purpose:
+These are implementation details, not flags — see the "Simulation physics
+conventions" section of [`docs/architecture.md`](architecture.md) for the
+authoritative description. Kept short here on purpose:
 
 * **Peak widths are q-constant, not d-constant.** Resolution is
   approximately constant in q, so each simulated peak gets `Δd = d²·Δq/2π`.

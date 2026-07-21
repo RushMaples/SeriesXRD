@@ -1,5 +1,12 @@
 # seriesxrd — Claude Code Project Brief
 
+> **Note:** This file is development-automation configuration — the working
+> brief for AI coding assistants used in this project's development (see
+> "Development transparency" in `GOVERNANCE.md`). It is not user
+> documentation and may lag the code. Users should start at `README.md`;
+> the maintained references are `docs/architecture.md`,
+> `docs/file-format.md`, and `docs/workflow.md`.
+
 ## What this is
 
 Open-source Python package (`seriesxrd`) for automated high-pressure powder X-ray diffraction analysis from diamond-anvil cell (DAC) experiments. Processes thousands of raw 2D detector frames → calibrate → reduce to 1D patterns → **iteratively isolate and identify signal sources** → per-substance heatmaps across a pressure/frame series.

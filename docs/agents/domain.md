@@ -1,5 +1,8 @@
 # Domain docs
 
+> Development-automation configuration (see "Development transparency" in
+> the repository's `GOVERNANCE.md`) — not user documentation.
+
 This repository is **single-context**: one domain context covering the whole
 `seriesxrd` package.
 

@@ -217,6 +217,10 @@ python -m pytest
 ## Documentation
 
 - [`docs/workflow.md`](docs/workflow.md) — end-to-end analysis workflow.
+- [`docs/architecture.md`](docs/architecture.md) — how the stages fit
+  together and the design decisions behind the pipeline.
+- [`docs/file-format.md`](docs/file-format.md) — the HDF5 layouts and JSON
+  manifests each stage reads and writes.
 - [`docs/ml-training.md`](docs/ml-training.md) — training, validating, and
   deploying the Step-3b learned scorer (cluster-agnostic — works on any
   cluster or workstation).
@@ -243,6 +247,8 @@ Feature status and planned work are maintained in
 ## Contributing and support
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) to set up a development environment
-and submit changes. Report defects through the GitHub issue tracker; report
-security concerns according to [`SECURITY.md`](SECURITY.md). Community
-participation is governed by [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+and submit changes, and [`GOVERNANCE.md`](GOVERNANCE.md) for how decisions
+and releases are made. Report defects through the GitHub issue tracker;
+report security concerns according to [`SECURITY.md`](SECURITY.md).
+Community participation is governed by
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
