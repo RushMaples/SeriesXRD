@@ -523,6 +523,31 @@ class AnalysisApp:
         self.status_frames.pack(side="left", padx=(0, 12))
         self.status_worker = ttk.Label(bar, text="idle", foreground=MUTED, anchor="e")
         self.status_worker.pack(side="right", padx=6)
+        # Transient non-modal notifications (successful saves/exports) land
+        # here instead of interrupting with a dialog.
+        self.status_notify = ttk.Label(bar, text="", foreground=ACCENT2, anchor="w")
+        self.status_notify.pack(side="left", padx=(0, 12))
+        self._notify_after_id = None
+
+    def notify(self, text: str, *, level: str = "INFO", seconds: int = 8):
+        """Non-modal notification: one line in the status bar plus the log.
+
+        For successful saves/loads/exports — outcomes the user should see
+        without having to dismiss anything. Errors stay modal.
+        """
+        one_line = " ".join(str(text).split())
+        self.log(one_line, level)
+        lbl = getattr(self, "status_notify", None)
+        if lbl is None:
+            return
+        if self._notify_after_id is not None:
+            try:
+                lbl.after_cancel(self._notify_after_id)
+            except Exception:
+                pass
+        lbl.configure(text=one_line[:160])
+        self._notify_after_id = lbl.after(
+            int(seconds * 1000), lambda: lbl.configure(text=""))
 
     def _update_status_bar(self):
         try:
@@ -2005,11 +2030,8 @@ class AnalysisApp:
         fitted = sum(int(n) >= 5 for n in result.get("n_peaks", []))
         qualifier = "instrument-corrected" if result.get("instrument_corrected") else "uncorrected"
         self.log(f"Williamson–Hall analysis saved: {fitted} frames ({qualifier})")
-        self.messagebox.showinfo(
-            "Size / strain",
-            f"Saved {qualifier} size and strain estimates for {fitted} frame(s).\n\n"
-            "Results are stored in the analysis file under /microstructure.",
-        )
+        self.notify(f"Size/strain: saved {qualifier} estimates for {fitted} "
+                    f"frame(s) to /microstructure.")
 
     def load_heatmap(self):
         """Render the peak-map scatter plot from the analysis HDF5."""
@@ -5281,8 +5303,11 @@ class AnalysisApp:
         )
         if skipped:
             message += f"\n\n{len(skipped)} phase file(s) could not be resolved."
-        self.log(f"Refinement bundle exported: {out_dir}")
-        self.messagebox.showinfo("Refinement export complete", message)
+        self.log(message.replace("\n", " "))
+        self.notify(f"Refinement bundle: {result.get('n_frames', 0)} patterns, "
+                    f"{written} files → {out_dir}"
+                    + (f" ({len(skipped)} phase file(s) unresolved — see log)"
+                       if skipped else ""))
 
     def export_gsas_raw_clicked(self):
         """Re-integrate raw frames with uncertainties for GSAS import."""
@@ -5350,8 +5375,7 @@ class AnalysisApp:
             count = int(result.get("n_groups", 0))
             self._pm_status.configure(text=f"Exported {count} GSAS pattern(s)", foreground=MUTED)
             self.log(f"GSAS raw patterns exported: {out_dir}")
-            self.messagebox.showinfo(
-                "GSAS export complete", f"Exported {count} pattern(s) to:\n{out_dir}")
+            self.notify(f"GSAS export: {count} pattern(s) → {out_dir}")
 
         self.root.after(250, _poll)
 
@@ -5388,11 +5412,9 @@ class AnalysisApp:
             f"ML dataset exported: {man['n_frames']} frames × {man['n_channels']} channels "
             f"→ {out}  labels: {'yes' if man['has_labels'] else 'no'}"
         )
-        self.messagebox.showinfo(
-            "Export complete",
-            f"{man['n_frames']} frames × {man['n_channels']} channels → {out}\n"
-            f"Labels: {'yes' if man['has_labels'] else 'no (run Step 3a first)'}",
-        )
+        self.notify(f"ML export: {man['n_frames']} frames × "
+                    f"{man['n_channels']} channels → {out} "
+                    f"(labels: {'yes' if man['has_labels'] else 'no'})")
 
     def export_sim_clicked(self):
         """Export a pressure-augmented simulated training set as .npz."""
@@ -5441,10 +5463,8 @@ class AnalysisApp:
             f"Simulated dataset exported: {man['n_samples']} patterns "
             f"({len(man['phases'])} phases) → {out}"
         )
-        self.messagebox.showinfo(
-            "Export complete",
-            f"{man['n_samples']} simulated patterns ({len(man['phases'])} phases) → {out}",
-        )
+        self.notify(f"Simulated set: {man['n_samples']} patterns "
+                    f"({len(man['phases'])} phases) → {out}")
 
     # ------------------------------------------------------------------
     # Lifecycle
