@@ -2820,6 +2820,7 @@ class AnalysisApp:
     def _do_export_frames(self, indices, out_dir, *, source="fit", peaks=True,
                           residual_unknowns=True, stack=False,
                           stack_style="panels", exclude_d=None,
+                          fig_preset="screen", fig_format="",
                           status_label=None):
         """Run the frame export (patterns + optional peaks.csv + optional
         stacked figure). Returns the manifest, or None on failure."""
@@ -2852,16 +2853,33 @@ class AnalysisApp:
             msg += " + " + " + ".join(extra)
         if stack:
             try:
-                from .stackplot import stack_figure
-                sman = stack_figure(path, Path(out_dir) / "stack.png",
+                from .stackplot import stack_figure, FIGURE_PRESETS
+                preset = FIGURE_PRESETS.get(fig_preset,
+                                            FIGURE_PRESETS["screen"])
+                fmt = (fig_format or preset["format"]).lstrip(".")
+                out_name = f"stack.{fmt}"
+                sman = stack_figure(path, Path(out_dir) / out_name,
                                     source=source, frames=indices,
-                                    style=stack_style, exclude_d=exclude_d)
-                extra_msg = (f" + stack.png ({sman['n_panels']} "
-                             f"{sman['style']} panels)")
+                                    style=stack_style, exclude_d=exclude_d,
+                                    dpi=int(preset["dpi"]))
+                extra_msg = (f" + {out_name} ({sman['n_panels']} "
+                             f"{sman['style']} panels, {fig_preset} preset)")
             except Exception as e:
                 self.log(f"Stacked figure failed: {e!r}", "WARN")
                 extra_msg = " (stacked figure FAILED, see log)"
             msg += extra_msg
+        # Provenance sidecar: what produced this export, from which file, with
+        # which settings — so a figure folder found months later explains itself.
+        try:
+            from ..core.provenance import provenance_report
+            sidecar = Path(out_dir) / "export_provenance.txt"
+            settings = (f"source={source}  frames={list(indices)}\n"
+                        f"exclude_d={exclude_d}  stack={stack} "
+                        f"style={stack_style} preset={fig_preset}\n")
+            sidecar.write_text(provenance_report(path) + "\n\nExport settings:\n"
+                               + settings, encoding="utf-8")
+        except Exception as e:
+            self.log(f"Provenance sidecar failed: {e!r}", "WARN")
         msg += f" -> {out_dir}"
         if status is not None:
             status.configure(text=msg)
@@ -2944,6 +2962,26 @@ class AnalysisApp:
                             "subplots (journal layout); waterfall = offset "
                             "traces on one axes (best for tracking peak "
                             "drift across many frames).")
+        from .stackplot import FIGURE_PRESETS, FIGURE_FORMATS
+        ttk.Label(_stack_row, text="  preset:").pack(side="left")
+        v_fig_preset = tk.StringVar(
+            value=str(self.config.get("fig_preset", "screen")))
+        _fig_preset = ttk.Combobox(_stack_row, textvariable=v_fig_preset,
+                                   state="readonly", width=12,
+                                   values=list(FIGURE_PRESETS))
+        _fig_preset.pack(side="left", padx=(2, 0))
+        _ToolTip(_fig_preset, "screen 110 dpi PNG · presentation 200 dpi PNG "
+                              "· publication 600 dpi, vector by default. "
+                              "Every export writes an export_provenance.txt "
+                              "sidecar recording versions and settings.")
+        ttk.Label(_stack_row, text="format:").pack(side="left", padx=(6, 0))
+        v_fig_format = tk.StringVar(
+            value=str(self.config.get("fig_format", "")))
+        _fig_format = ttk.Combobox(_stack_row, textvariable=v_fig_format,
+                                   state="readonly", width=5,
+                                   values=[""] + list(FIGURE_FORMATS))
+        _fig_format.pack(side="left", padx=(2, 0))
+        _ToolTip(_fig_format, "Blank = the preset's default format.")
         ttk.Label(content, text="Destination").grid(row=6, column=0,
                                                     sticky="w", pady=2)
         v_dir = tk.StringVar(value=str(self.config.get("export_frames_dir", "")))
@@ -2975,6 +3013,8 @@ class AnalysisApp:
             self.config["export_frames_dir"] = dest
             self.config["export_exclude_d"] = v_exd.get().strip()
             self.config["stack_style"] = v_stack_style.get()
+            self.config["fig_preset"] = v_fig_preset.get()
+            self.config["fig_format"] = v_fig_format.get()
             self.save_config(silent=True)
             dlg.destroy()
             self._do_export_frames(indices, dest, source=v_src.get(),
@@ -2982,7 +3022,9 @@ class AnalysisApp:
                                    residual_unknowns=bool(v_resunk.get()),
                                    stack=bool(v_stack.get()),
                                    stack_style=v_stack_style.get(),
-                                   exclude_d=exd or None)
+                                   exclude_d=exd or None,
+                                   fig_preset=v_fig_preset.get(),
+                                   fig_format=v_fig_format.get())
 
         btns = ttk.Frame(content)
         btns.grid(row=7, column=0, columnspan=3, sticky="e", pady=(8, 0))
