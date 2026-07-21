@@ -1,5 +1,11 @@
 # SeriesXRD
 
+[![PyPI](https://img.shields.io/pypi/v/seriesxrd.svg)](https://pypi.org/project/seriesxrd/)
+[![Python versions](https://img.shields.io/pypi/pyversions/seriesxrd.svg)](https://pypi.org/project/seriesxrd/)
+[![CI](https://github.com/RushMaples/SeriesXRD/actions/workflows/ci.yml/badge.svg)](https://github.com/RushMaples/SeriesXRD/actions/workflows/ci.yml)
+[![DOI](https://zenodo.org/badge/1270485939.svg)](https://doi.org/10.5281/zenodo.21479736)
+[![License: MIT](https://img.shields.io/pypi/l/seriesxrd.svg)](LICENSE)
+
 GUI-driven workflow for powder X-ray diffraction: detector calibration review,
 dataset reduction, and pattern analysis. Facility-neutral by design — it works
 the same way for a synchrotron beamline or a lab (in-house) diffractometer,
@@ -104,7 +110,7 @@ conda env create -f environment.yml
 conda activate seriesxrd
 ```
 
-After publication, install the core package from PyPI:
+Install SeriesXRD from PyPI:
 
 ```bash
 python -m pip install seriesxrd
@@ -240,8 +246,16 @@ python -m pytest
 
 ## Citation
 
-Citation metadata is provided in [`CITATION.cff`](CITATION.cff). GitHub can
-use this file to generate a formatted software citation.
+If SeriesXRD contributes to published research, please cite the exact version
+used:
+
+> Maples, R. (2026). *SeriesXRD* (Version 0.2.0) [Computer software].
+> Zenodo. https://doi.org/10.5281/zenodo.21479737
+
+Machine-readable citation metadata is provided in
+[`CITATION.cff`](CITATION.cff). GitHub can use this file to generate a
+formatted software citation. The DOI badge at the top of this page links to
+the permanent record for all SeriesXRD versions.
 
 Project roles and acknowledgments are listed in [`CREDITS.md`](CREDITS.md).
 
