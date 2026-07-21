@@ -465,8 +465,12 @@ def identify_tracks(h5_path: "str | Path") -> Dict[str, Any]:
     return out
 
 
-def structure_report(review: Dict[str, Any]) -> str:
-    """Human-readable text block for the GUI."""
+def structure_report(review: Dict[str, Any], advanced: bool = False) -> str:
+    """Human-readable text block for the GUI.
+
+    The default is a person-level summary; ``advanced=True`` appends the raw
+    HDF5 tree, root attributes, and per-step parameter dumps.
+    """
     L: List[str] = [f"File: {review['path']}"]
     if not review.get("ok_to_read"):
         L.append("")
@@ -491,30 +495,36 @@ def structure_report(review: Dict[str, Any]) -> str:
                  f"{review.get('n_unknown_obs', 0)} observation(s)")
     if review.get("source_reduced"):
         L.append(f"Source reduced file: {review['source_reduced']}")
-    L.append("")
-    L.append("HDF5 structure:")
-    L += review.get("structure_lines", [])
     attrs = review.get("attrs", {})
-    if attrs:
+    ver = attrs.get("seriesxrd_version")
+    if ver:
+        when = attrs.get("created_at", "")
+        L.append(f"Written by: SeriesXRD {ver}"
+                 + (f"    on {when}" if when else ""))
+    if advanced:
         L.append("")
-        L.append("Root attributes:")
-        for k, v in attrs.items():
-            L.append(f"  {k}: {v}")
-    if review.get("peak_attrs"):
-        L.append("")
-        L.append("Peak-fit parameters:")
-        for k, v in review["peak_attrs"].items():
-            L.append(f"  {k}: {v}")
-    if review.get("residual_attrs"):
-        L.append("")
-        L.append("Residual parameters:")
-        for k, v in review["residual_attrs"].items():
-            L.append(f"  {k}: {v}")
-    if review.get("unknowns_attrs"):
-        L.append("")
-        L.append("Unknown-clustering parameters:")
-        for k, v in review["unknowns_attrs"].items():
-            L.append(f"  {k}: {v}")
+        L.append("HDF5 structure:")
+        L += review.get("structure_lines", [])
+        if attrs:
+            L.append("")
+            L.append("Root attributes:")
+            for k, v in attrs.items():
+                L.append(f"  {k}: {v}")
+        if review.get("peak_attrs"):
+            L.append("")
+            L.append("Peak-fit parameters:")
+            for k, v in review["peak_attrs"].items():
+                L.append(f"  {k}: {v}")
+        if review.get("residual_attrs"):
+            L.append("")
+            L.append("Residual parameters:")
+            for k, v in review["residual_attrs"].items():
+                L.append(f"  {k}: {v}")
+        if review.get("unknowns_attrs"):
+            L.append("")
+            L.append("Unknown-clustering parameters:")
+            for k, v in review["unknowns_attrs"].items():
+                L.append(f"  {k}: {v}")
     L.append("")
     L.append("Anomalies:")
     L += [f"  - {x}" for x in review.get("anomalies", [])]
@@ -525,5 +535,5 @@ def review_analysis(h5_path: "str | Path") -> Dict[str, Any]:
     """Print the structure/anomaly report for an analysis HDF5 and return the
     full inspection dict."""
     review = inspect_analysis(h5_path)
-    print(structure_report(review), flush=True)
+    print(structure_report(review, advanced=True), flush=True)
     return review

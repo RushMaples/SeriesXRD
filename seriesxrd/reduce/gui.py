@@ -867,6 +867,11 @@ class ReductionApp:
         self._review_overlay = tk.BooleanVar(value=bool(self.config.get("review_overlay", False)))
         ttk.Checkbutton(ctrl, text="Overlay patterns", variable=self._review_overlay,
                         command=self._on_review_overlay_toggle).pack(side="left", padx=(12, 0))
+        # Raw HDF5 tree + full attributes are implementation detail — summary
+        # by default, one click away when needed.
+        self._review_advanced = tk.BooleanVar(value=False)
+        ttk.Checkbutton(ctrl, text="Advanced details", variable=self._review_advanced,
+                        command=self._render_review_report).pack(side="left", padx=(12, 0))
         _diag_btn = ttk.Button(ctrl, text="Diagnose waviness",
                                command=lambda: self._run_straighten_job("diagnose"))
         _diag_btn.pack(side="left", padx=(12, 0))
@@ -924,19 +929,32 @@ class ReductionApp:
         if not path or not Path(path).is_file():
             self.messagebox.showerror("Review", "Select a reduced .h5 file first.")
             return
-        from .review import inspect_reduction, structure_report
+        from .review import inspect_reduction
         self.log(f"Inspecting reduced HDF5: {path}")
         try:
             review = inspect_reduction(path)
         except Exception as e:
             self.messagebox.showerror("Review failed", repr(e))
             return
-        self.review_text.configure(state="normal")
-        self.review_text.delete("1.0", "end")
-        self.review_text.insert("end", structure_report(review) + "\n")
-        self.review_text.configure(state="disabled")
+        self._last_review = review
+        self._render_review_report()
         self._render_review_plots(review)
         self.save_config(silent=True)
+
+    def _render_review_report(self):
+        """Render the cached inspection honoring the Advanced-details toggle."""
+        review = getattr(self, "_last_review", None)
+        if review is None:
+            return
+        from .review import structure_report
+        text = structure_report(review, advanced=bool(self._review_advanced.get()))
+        if not self._review_advanced.get():
+            text += ("\n\n(Enable “Advanced details” for the raw HDF5 tree "
+                     "and all attributes.)")
+        self.review_text.configure(state="normal")
+        self.review_text.delete("1.0", "end")
+        self.review_text.insert("end", text + "\n")
+        self.review_text.configure(state="disabled")
 
     def _on_review_overlay_toggle(self):
         """Re-render the loaded review when the overlay toggle flips."""

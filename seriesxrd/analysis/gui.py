@@ -784,6 +784,13 @@ class AnalysisApp:
         ttk.Button(
             btns, text="Inspect input", command=self.inspect_input_clicked,
         ).pack(side="left", padx=2)
+        # The raw HDF5 tree and attribute dumps are implementation detail —
+        # off by default, one click away when needed.
+        self._inspect_advanced = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            btns, text="Advanced details", variable=self._inspect_advanced,
+            command=self._render_input_report,
+        ).pack(side="left", padx=8)
 
         # Warn if robust pattern is missing — analysis requires it.
         self._robust_warn_label = ttk.Label(btns, text="", foreground=WARN)
@@ -806,15 +813,14 @@ class AnalysisApp:
             self.messagebox.showerror(
                 "Input", "Select a reduced .h5 file first (1 Data tab).")
             return
-        from ..reduce.review import inspect_reduction, structure_report as reduce_report
+        from ..reduce.review import inspect_reduction
         self.log(f"Inspecting reduced HDF5: {reduced}")
         try:
             review_r = inspect_reduction(reduced)
         except Exception as e:
             self.messagebox.showerror("Inspect failed", repr(e))
             return
-
-        lines = ["=== Reduced HDF5 ===", reduce_report(review_r)]
+        self._last_review_reduced = review_r
 
         # Warn about missing robust pattern.
         robust_ok = bool(review_r.get("robust_present"))
@@ -831,26 +837,49 @@ class AnalysisApp:
         if nf:
             self._frame_count = int(nf)
 
-        # If an analysis HDF5 already exists, append its summary too.
+        # If an analysis HDF5 already exists, summarize it too.
+        self._last_review_analysis = None
+        self._last_review_analysis_error = ""
         analysis = str(self.config.get("analysis_h5_file", "") or "").strip()
         if analysis and Path(analysis).is_file():
-            from .review import inspect_analysis, structure_report as analysis_report
+            from .review import inspect_analysis
             self.log(f"Inspecting analysis HDF5: {analysis}")
             try:
                 review_a = inspect_analysis(analysis)
-                lines += ["", "=== Analysis HDF5 ===", analysis_report(review_a)]
+                self._last_review_analysis = review_a
                 if review_a.get("n_frames"):
                     self._frame_count = int(review_a["n_frames"])
             except Exception as e:
-                lines += ["", f"[Could not inspect analysis HDF5: {e!r}]"]
+                self._last_review_analysis_error = repr(e)
 
-        combined = "\n".join(lines)
-        self.input_text.configure(state="normal")
-        self.input_text.delete("1.0", "end")
-        self.input_text.insert("end", combined + "\n")
-        self.input_text.configure(state="disabled")
+        self._render_input_report()
         self._update_status_bar()
         self.save_config(silent=True)
+
+    def _render_input_report(self):
+        """Render the cached inspection results into the Data page, honoring
+        the Advanced-details toggle (no file re-read on toggle)."""
+        review_r = getattr(self, "_last_review_reduced", None)
+        if review_r is None:
+            return
+        from ..reduce.review import structure_report as reduce_report
+        from .review import structure_report as analysis_report
+        advanced = bool(self._inspect_advanced.get())
+        lines = ["=== Reduced HDF5 ===", reduce_report(review_r, advanced=advanced)]
+        review_a = getattr(self, "_last_review_analysis", None)
+        if review_a is not None:
+            lines += ["", "=== Analysis HDF5 ===",
+                      analysis_report(review_a, advanced=advanced)]
+        elif getattr(self, "_last_review_analysis_error", ""):
+            lines += ["", f"[Could not inspect analysis HDF5: "
+                          f"{self._last_review_analysis_error}]"]
+        if not advanced:
+            lines += ["", "(Enable “Advanced details” for the raw HDF5 tree "
+                          "and all attributes.)"]
+        self.input_text.configure(state="normal")
+        self.input_text.delete("1.0", "end")
+        self.input_text.insert("end", "\n".join(lines) + "\n")
+        self.input_text.configure(state="disabled")
 
     def set_reduced(self, path: "str | Path") -> None:
         """Called by the host app to wire in the reduced file after reduction.

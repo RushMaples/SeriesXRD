@@ -234,12 +234,17 @@ def review_reduction(h5_path: "str | Path") -> Dict[str, Any]:
     """Print the structure/anomaly report for a reduced HDF5 file and return the
     full review dict (radial axis, sampled patterns, cake sample, anomalies)."""
     review = inspect_reduction(h5_path)
-    print(structure_report(review), flush=True)
+    print(structure_report(review, advanced=True), flush=True)
     return review
 
 
-def structure_report(review: Dict[str, Any]) -> str:
-    """Human-readable text block for the GUI/notebook."""
+def structure_report(review: Dict[str, Any], advanced: bool = False) -> str:
+    """Human-readable text block for the GUI/notebook.
+
+    The default is a person-level summary; ``advanced=True`` appends the raw
+    HDF5 tree and full root attributes (implementation detail most users
+    never need — the GUI puts it behind an "Advanced details" toggle).
+    """
     L: List[str] = [f"File: {review['path']}"]
     if not review.get("ok_to_read"):
         L.append("")
@@ -251,17 +256,23 @@ def structure_report(review: Dict[str, Any]) -> str:
     L.append(f"Unit: {review.get('unit') or '?'}    "
              f"Robust pattern: {'yes' if review['robust_present'] else 'no'}    "
              f"Cakes: {'yes' if review['cake_present'] else 'no'}")
-    L.append("")
-    L.append("HDF5 structure:")
-    L += review.get("structure_lines", [])
     attrs = review.get("attrs", {})
-    if attrs:
+    ver = attrs.get("seriesxrd_version") or attrs.get("tool_version")
+    if ver:
+        when = attrs.get("created_at", "")
+        L.append(f"Written by: SeriesXRD {ver}"
+                 + (f"    on {when}" if when else ""))
+    if advanced:
         L.append("")
-        L.append("Root attributes:")
-        for k, v in attrs.items():
-            if k == "poni_text":
-                continue
-            L.append(f"  {k}: {v}")
+        L.append("HDF5 structure:")
+        L += review.get("structure_lines", [])
+        if attrs:
+            L.append("")
+            L.append("Root attributes:")
+            for k, v in attrs.items():
+                if k == "poni_text":
+                    continue
+                L.append(f"  {k}: {v}")
     if review.get("failed_sample"):
         L.append("")
         L.append("Failed frames (sample):")
