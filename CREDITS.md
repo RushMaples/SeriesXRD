@@ -10,8 +10,9 @@
 
 ## Acknowledgments
 
-- **Zack Rehfuss** (`r.zack@email.wustl.edu`) — scientific advisor and initial
-  contributor.
+- **Zack Rehfuss** — scientific advisor and initial contributor.
+  <!-- ORCID/profile link to be added -->
+
 
 ## Funding
 
