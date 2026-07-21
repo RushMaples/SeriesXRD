@@ -10,6 +10,28 @@ semantic versioning once a stable public API is declared.
 - Adopted SeriesXRD as the project, Python package, application, and
   command-line tool name before the first public release.
 - Clarified the calibration → reduction → analysis workflow and GUI labels.
+- Analysis manifests now record the real SeriesXRD version
+  (`seriesxrd_version`) separately from the file-layout `schema_version`;
+  the analysis HDF5 carries root version attrs and a `/provenance` group
+  (effective configuration, dependency versions, platform, input-file
+  fingerprints), and each appending step records itself under
+  `/provenance/steps/<step>`.
+- Dependency declarations are truthful and tested: the environment check
+  covers scipy and h5py as core requirements, `pyproject.toml` declares
+  minimum versions validated by a lowest-supported-dependencies CI job,
+  and `environment.yml` lists scipy/h5py explicitly.
+- The Analysis stage navigates through a hierarchical left rail
+  (Configure / Run / Review / Export) instead of a single row of 12 tabs.
+- Plot axes use standard scientific notation — q (Å⁻¹), 2θ (°),
+  Azimuth (°), Intensity (counts) — everywhere a person reads them;
+  internal unit codes are unchanged.
+- Successful saves and exports notify through the status bar instead of
+  modal dialogs; errors remain modal.
+- HDF5 inspection shows a human-readable summary by default, with the raw
+  tree and full attributes behind an "Advanced details" toggle.
+- Corrected phase-library source attributions (Pt and Si author lists,
+  Re citation) and flagged bundled Au/Pt EOS parameters that do not match
+  their cited sources — see `docs/phase-sources.md`.
 
 ### Added
 
@@ -18,3 +40,31 @@ semantic versioning once a stable public API is declared.
   refinement export tools.
 - Continuous integration, distribution checks, citation metadata, and
   community contribution guidance.
+- Tag-triggered release pipeline: build once, install-test wheel and sdist,
+  TestPyPI, manual approval, PyPI Trusted Publishing with attestations, and
+  an automatic GitHub release (`.github/workflows/release.yml`;
+  `docs/releasing.md` documents the one-time setup).
+- CI matrix: Python 3.10–3.14 on Ubuntu plus the newest Python on Windows
+  and macOS, a dependency-floor job, wheel/sdist install smoke tests, a
+  headless GUI startup test under xvfb, and a weekly ML-extras run.
+- Documentation set for publication: `docs/architecture.md`,
+  `docs/file-format.md`, `docs/validation.md` (validation and limitations),
+  and `docs/phase-sources.md` (DOI-verified bibliography for every bundled
+  phase-library value).
+- Run page preflight (input, frame count, steps, output, warnings) and a
+  completion summary with "Review results" / "Open output folder" actions.
+- Help menu: user guide, demonstration, validation/limitations, citation,
+  Report a problem, and Copy diagnostics (a support-ready provenance
+  report); About states license and repository.
+- Tools → Model development dialog: GUI access to corpus screening,
+  benchmarking, and learned-scorer training with live output.
+- Figure-export presets (screen / presentation / publication with
+  PNG/SVG/PDF) and an `export_provenance.txt` sidecar on frame exports.
+- Keyboard-accessible tooltips (focus shows, Escape dismisses) and an
+  ellipsized workspace path in the header (full path in tooltip,
+  click to copy).
+- Governance/maintainer policy (`GOVERNANCE.md`), pull-request template,
+  and the NSF REU funding acknowledgment (Award No. 2547979) in
+  `CREDITS.md`.
+- Six test files that pytest previously never collected (background,
+  peaks, fit-source, analysis-review, spots, smoke) now run in CI.
