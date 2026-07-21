@@ -17,6 +17,7 @@ def test_smoke():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         cfg = SessionConfig.default(td, PKG_DIR)
+        assert cfg.dioptas_image_flip is False
         cfg.python_exe = sys.executable
         cfg.raw_data_dir = str(td)
         cfg.processed_root = str(td / 'processed')
@@ -26,6 +27,7 @@ def test_smoke():
         cfg.logs_root = str(td / 'logs')
         p = save_session_config(cfg, td / 'calibration_session_config.json')
         cfg2 = load_session_config(td)
+        assert cfg2.dioptas_image_flip is False
         problems = validate_session_config(cfg2)
         dep = check_dependencies(sys.executable)
         print('CONFIG:', p)

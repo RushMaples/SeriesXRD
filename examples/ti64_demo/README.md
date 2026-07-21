@@ -66,9 +66,9 @@ python -m seriesxrd.app --workspace examples\ti64_demo\workspace
    Select `CeO2` as the calibrant. Generate the QA result, inspect the ring
    overlay and residuals, then accept the calibration.
 
-   ![Calibration Review displaying the masked CeO2 detector image and diffraction rings](../../docs/images/seriesxrd-calibration-review.png)
+   ![Calibration Review displaying the CeO2 detector image and generated QA views](../../docs/images/seriesxrd-calibration-review.png)
 
-   *Calibration Review with the accepted detector mask and CeO2 rings.*
+   *Calibration Review of the CeO2 detector image and available QA views.*
 
 2. In **2 Reduction**, select `data/raw/sample` as the data folder and `*.cbf`
    as the pattern. The 12 frames should be detected. For a useful first run,
@@ -87,6 +87,11 @@ python -m seriesxrd.app --workspace examples\ti64_demo\workspace
    ![Analysis Pattern Review displaying fitted one-dimensional patterns, a two-dimensional cake, and contamination by frame](../../docs/images/seriesxrd-analysis-pattern-review.png)
 
    *Analysis Pattern Review for the one-second exposure.*
+
+   ![Analysis Peak Map displaying fitted peak centers across the 12-frame exposure series, colored by fitted area](../../docs/images/seriesxrd-analysis-peak-map.png)
+
+   *Fitted peak centers across the exposure series; marker color represents
+   fitted peak area.*
 
    ![Analysis Pattern Map displaying a waterfall heatmap across the 12-frame exposure series](../../docs/images/seriesxrd-analysis-waterfall.png)
 
@@ -107,4 +112,3 @@ values. Use the published source YAML and supplied PONI instead:
 - Nominal sample-to-detector distance: 908 mm
 - Detector: Pilatus 2M CdTe, 172 micrometre pixels
 - Calibration standard: CeO2, run 103764
-

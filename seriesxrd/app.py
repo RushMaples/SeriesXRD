@@ -7,7 +7,6 @@ on headless systems.
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 import webbrowser
@@ -31,20 +30,10 @@ def workspace_launch_args(workspace: "str | Path", executable: str | None = None
     return [executable or sys.executable, "-m", "seriesxrd.app", "--workspace", str(path)]
 
 
-def _ellipsize_path(path: "str | Path", max_chars: int = 44) -> str:
-    """Shorten a filesystem path for display, keeping the leaf end readable."""
-    s = str(path)
-    if len(s) <= max_chars:
-        return s
-    parts = Path(s).parts
-    tail = parts[-1]
-    # Grow the tail with parent components while it still fits.
-    for j in range(len(parts) - 2, 0, -1):
-        candidate = str(Path(*parts[j:]))
-        if len(candidate) + 2 > max_chars:
-            break
-        tail = candidate
-    return f"…{os.sep}{tail}"
+def _workspace_display_name(path: "str | Path") -> str:
+    """Return a concise workspace label without exposing its parent path."""
+    workspace = Path(path)
+    return workspace.name or workspace.anchor or str(workspace)
 
 
 def _seed_calibration_config(workspace: Path) -> Path:
@@ -90,12 +79,11 @@ class SeriesXRDApp:
         ttk.Label(
             header, text=TOOL_NAME, font=("TkDefaultFont", 16, "bold"),
         ).pack(side="left")
-        # Ellipsized workspace: the full path stays in a tooltip and one
-        # click copies it — long paths were cluttering the header and leaking
-        # usernames into screenshots.
+        # Show only the workspace name. The full path remains available from
+        # the tooltip and by clicking the label, without exposing it in images.
         from .guikit.tooltip import ToolTip
         self._ws_label = ttk.Label(
-            header, text=f"  {_ellipsize_path(self.workspace)}",
+            header, text=f"  {_workspace_display_name(self.workspace)}",
             foreground=MUTED, cursor="hand2",
         )
         self._ws_label.pack(side="left")

@@ -8,6 +8,11 @@ ambient-condition values used to simulate peak positions and relative
 intensities; `p_max` marks a stability ceiling beyond which the entry is
 never fitted or simulated.
 
+![SeriesXRD phase library showing the bundled phases, structures, equation-of-state parameters, and source citations](images/seriesxrd-analysis-phase-library.png)
+
+*The bundled reference library in Analysis → Configure → Phases. Entries can
+be reviewed, enabled, edited, removed, or supplemented with imported CIFs.*
+
 > **Semi-quantitative by design.** These entries exist so phases can be
 > *identified* across a pressure series. If you need pressures at
 > marker-scale accuracy, choose your own preferred pressure scale for the

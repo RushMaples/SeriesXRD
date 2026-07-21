@@ -797,7 +797,7 @@ def generate_qa_run(config: Dict[str, Any], generation_index: int) -> Dict[str, 
     ts    = now_timestamp()
     paths = generation_paths(base_dirs, generation_index, session_name, ts)
     print("[QA] load detector image", flush=True)
-    image = read_detector_image(image_file, flip_up_down = bool(config.get("dioptas_image_flip", True)))
+    image = read_detector_image(image_file, flip_up_down=bool(config.get("dioptas_image_flip", False)))
     poni_info = read_poni_info(poni_file)
     if poni_info["shape"] and tuple(image.shape) != poni_info["shape"]:
         raise ValueError(
@@ -1159,7 +1159,7 @@ def preview_cake_orientations(config: Dict[str, Any]) -> Dict[str, Any]:
     ts = now_timestamp()
     results: Dict[str, Any] = {
         "image_file": str(image_file), "poni_file": str(poni_file),
-        "current_flip": bool(config.get("dioptas_image_flip", True)),
+        "current_flip": bool(config.get("dioptas_image_flip", False)),
     }
     for flip, key, label in ((False, "flip_off_png", "Flip OFF (file orientation)"),
                              (True,  "flip_on_png",  "Flip ON (Dioptas alignment)")):

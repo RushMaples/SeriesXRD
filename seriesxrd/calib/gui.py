@@ -73,6 +73,7 @@ class CalibrationApp:
         self.config_path = Path(config_path).expanduser().resolve()
         self.config: Dict[str, Any] = read_json(self.config_path)
         self.config.setdefault("session_config_path", str(self.config_path))
+        self.config.setdefault("dioptas_image_flip", False)
         if parent is None:
             self._owns_root = True
             self.root = tk.Tk()
@@ -354,62 +355,7 @@ class CalibrationApp:
         self._status_bar_frame = ttk.Frame(outer, relief="sunken")
         self._status_bar_frame.pack(side="bottom", fill="x", pady=(2, 0))
 
-        # ---------------------------------------------------------
-        # 3. The 5-Step Notebook
-        # ---------------------------------------------------------
-        self.nb = ttk.Notebook(outer)
-        self.nb.pack(fill="both", expand=True)
-        self.tabs = {}
-        
-        for name in [
-            "1 Inputs",
-            "2 Mask",
-            "3 Generate",
-            "4 Review",
-            "5 Accept calibration",
-        ]:
-            frame = ttk.Frame(self.nb, padding=8)
-            self.nb.add(frame, text=name)
-            self.tabs[name] = frame
-
-        # ---------------------------------------------------------
-        # 4. Routing logic to combine old tabs into new ones
-        # ---------------------------------------------------------
-        
-        # TAB 1: Combine Paths and Inputs into ONE flowing page
-        t1_master = self._scrollable(self.tabs["1 Inputs"])
-        
-        # Create isolated sub-frames so their internal grid rows never collide
-        t1_paths_frame = ttk.Frame(t1_master)
-        t1_paths_frame.pack(fill="x", expand=True)
-        
-        t1_inputs_frame = ttk.Frame(t1_master)
-        t1_inputs_frame.pack(fill="both", expand=True)
-        
-        # Pass the isolated frames to the builder methods
-        self._tab_data_paths(t1_paths_frame)
-        self._tab_input(t1_inputs_frame)
-
-        # TAB 2: Combine Masking (main) and Dioptas Launch (bottom)
-        paned_2 = ttk.PanedWindow(self.tabs["2 Mask"], orient="vertical")
-        paned_2.pack(fill="both", expand=True)
-        
-        t2_top = ttk.Frame(paned_2)
-        t2_bot = ttk.Frame(paned_2)
-        paned_2.add(t2_top, weight=4)
-        paned_2.add(t2_bot, weight=1)
-        
-        self._tab_mask(t2_top)
-        self._tab_dioptas(t2_bot)
-
-        # TAB 3: Generation
-        self._tab_generate(self.tabs["3 Generate"])
-
-        # TAB 4: Viewer fills the full tab (log is now a separate top-bar window)
-        self._tab_viewer(self.tabs["4 Review"])
-
-        # TAB 5: Accept calibration
-        self._tab_final(self.tabs["5 Accept calibration"])
+        self._build_navigation(outer)
 
         # persistent status bar at the very bottom of the main window.
         self._build_status_bar(outer)
@@ -417,6 +363,117 @@ class CalibrationApp:
         # Bind the save shortcut (standalone only; embedded, the host owns Ctrl-S).
         if self._owns_root:
             self.root.bind("<Control-s>", lambda e: self.save_config())
+
+    def _build_navigation(self, outer):
+        """Build the shared left-rail workflow navigation."""
+        ttk = self.ttk
+
+        body = ttk.Frame(outer)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        rail = ttk.Treeview(body, show="tree", selectmode="browse")
+        rail.grid(row=0, column=0, sticky="nsw", padx=(0, 6))
+        rail.column("#0", width=170, stretch=False)
+        self._nav_rail = rail
+
+        content = ttk.Frame(body)
+        content.grid(row=0, column=1, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        sections = [
+            ("Configure", [
+                ("inputs", "Inputs", self._build_inputs_page),
+                ("mask", "Mask", self._build_mask_page),
+            ]),
+            ("Run", [
+                ("generate", "Generate QA", self._tab_generate),
+            ]),
+            ("Review", [
+                ("review", "Calibration review", self._tab_viewer),
+            ]),
+            ("Export", [
+                ("accept", "Accept calibration", self._tab_final),
+            ]),
+        ]
+
+        self.pages: Dict[str, Any] = {}
+        self._nav_items: Dict[str, str] = {}
+        self._nav_first_child: Dict[str, str] = {}
+        for section_label, pages in sections:
+            sec_id = rail.insert("", "end", text=section_label, open=True)
+            for key, label, builder in pages:
+                frame = ttk.Frame(content, padding=8)
+                builder(frame)
+                frame.grid(row=0, column=0, sticky="nsew")
+                self.pages[key] = frame
+                item = rail.insert(
+                    sec_id, "end", text=label, values=(key,), tags=(key,)
+                )
+                self._nav_items[key] = item
+                self._nav_first_child.setdefault(sec_id, key)
+
+        # Preserve the former numbered names for external callers.
+        self.tabs = {
+            "1 Inputs": self.pages["inputs"],
+            "2 Mask": self.pages["mask"],
+            "3 Generate": self.pages["generate"],
+            "4 Review": self.pages["review"],
+            "5 Accept calibration": self.pages["accept"],
+        }
+
+        def _on_select(_event=None):
+            selection = rail.selection()
+            if not selection:
+                return
+            item = selection[0]
+            values = rail.item(item, "values")
+            if values:
+                self.pages[values[0]].tkraise()
+                return
+            first = self._nav_first_child.get(item)
+            if first:
+                rail.selection_set(self._nav_items[first])
+
+        rail.bind("<<TreeviewSelect>>", _on_select)
+        self.select_page("inputs")
+
+    def _build_inputs_page(self, frame):
+        """Combine workspace paths and calibration inputs on one page."""
+        ttk = self.ttk
+        master = self._scrollable(frame)
+        paths_frame = ttk.Frame(master)
+        paths_frame.pack(fill="x", expand=True)
+        inputs_frame = ttk.Frame(master)
+        inputs_frame.pack(fill="both", expand=True)
+        self._tab_data_paths(paths_frame)
+        self._tab_input(inputs_frame)
+
+    def _build_mask_page(self, frame):
+        """Combine mask controls and the optional Dioptas launcher."""
+        ttk = self.ttk
+        paned = ttk.PanedWindow(frame, orient="vertical")
+        paned.pack(fill="both", expand=True)
+        mask_frame = ttk.Frame(paned)
+        dioptas_frame = ttk.Frame(paned)
+        paned.add(mask_frame, weight=4)
+        paned.add(dioptas_frame, weight=1)
+        self._tab_mask(mask_frame)
+        self._tab_dioptas(dioptas_frame)
+
+    def select_page(self, key: str) -> None:
+        """Raise a navigation page by its stable key."""
+        item = self._nav_items.get(key)
+        if item is None:
+            return
+        try:
+            self._nav_rail.selection_set(item)
+            self._nav_rail.see(item)
+        except Exception:
+            pass
+        self.pages[key].tkraise()
 
     def show_about(self):
         """Show an About dialog with runtime versions and the config path."""
@@ -624,7 +681,7 @@ class CalibrationApp:
         self.root.after(100, self._drain_log_queue)
 
     # ------------------------------------------------------------------
-    # Tab 1 — Session / Paths
+    # Configure — Session / Paths
     # ------------------------------------------------------------------
 
     def _tab_data_paths(self, frame): 
@@ -873,7 +930,7 @@ class CalibrationApp:
 
     def _orientation_text(self) -> str:
         """Return the current orientation status text for the label."""
-        flip = bool(self.config.get("dioptas_image_flip", True))
+        flip = bool(self.config.get("dioptas_image_flip", False))
         return ("Flip ON (Dioptas alignment)" if flip
                 else "Flip OFF (file orientation)  — click Preview to compare both orientations")
 
@@ -1017,7 +1074,7 @@ class CalibrationApp:
             pass
 
     # ------------------------------------------------------------------
-    # Tab 2 — Calibration Input
+    # Configure — Calibration Input
     # ------------------------------------------------------------------
 
     def _tab_input(self, frame):
@@ -1095,7 +1152,7 @@ class CalibrationApp:
                     return
 
         def _auto_detect_calibrant(*args):
-            # A failed autofill must never break the input tab, and Tk swallows
+            # A failed autofill must never break the input page, and Tk swallows
             # trace-callback exceptions silently — so catch and log everything.
             try:
                 img_path = img_var.get().strip()
@@ -1167,11 +1224,11 @@ class CalibrationApp:
                        foreground=MUTED, wraplength=600, justify="left").grid(
             row=len(frame.grid_slaves()), column=0, columnspan=4, sticky="w", padx=4, pady=(0, 6))
 
-        self.ttk.Button(frame, text="Load image preview into Mask tab", command=self.load_image_for_mask).grid(
+        self.ttk.Button(frame, text="Load image preview into Mask page", command=self.load_image_for_mask).grid(
             row=len(frame.grid_slaves()), column=0, padx=4, pady=8, sticky="w")
 
     # ------------------------------------------------------------------
-    # Tab 3 — Masking
+    # Configure — Mask
     # ------------------------------------------------------------------
 
     def _tab_mask(self, parent):
@@ -1254,7 +1311,7 @@ class CalibrationApp:
         self.mask_placeholder.pack(expand=True)
 
     # ------------------------------------------------------------------
-    # Tab 4 — Dioptas
+    # Configure — Dioptas
     # ------------------------------------------------------------------
 
     def _tab_dioptas(self, parent):
@@ -1269,7 +1326,7 @@ class CalibrationApp:
             row=r+1, column=0, columnspan=4, sticky="w", padx=4, pady=2)
 
     # ------------------------------------------------------------------
-    # Tab 3 — Generate
+    # Run — Generate QA
     # ------------------------------------------------------------------
 
     def _tab_generate(self, parent):
@@ -1318,7 +1375,7 @@ class CalibrationApp:
                        foreground=MUTED).grid(row=53, column=0, columnspan=4, sticky="w", padx=4)
 
     # ------------------------------------------------------------------
-    # Tab 6 — QA Viewer
+    # Review — Calibration review
     # ------------------------------------------------------------------
 
     def _tab_viewer(self, parent):
@@ -1332,7 +1389,7 @@ class CalibrationApp:
         ttk.Button(top, text="Zoom +",  command=lambda: self._viewer_zoom_by(1.2)).pack(side="left", padx=2)
         ttk.Button(top, text="Zoom -",  command=lambda: self._viewer_zoom_by(1/1.2)).pack(side="left", padx=2)
         ttk.Button(top, text="Fit",     command=self._viewer_fit).pack(side="left", padx=2)
-        self.viewer_label = ttk.Label(top, text="No generation loaded. Use arrow keys after clicking this tab.")
+        self.viewer_label = ttk.Label(top, text="No generation loaded. Use arrow keys after selecting this page.")
         self.viewer_label.pack(side="left", padx=12)
         # ---- main area: left sidebar | canvas | right sidebar ----
         body = ttk.Frame(parent)
@@ -1462,7 +1519,7 @@ class CalibrationApp:
                 pass
 
     # ------------------------------------------------------------------
-    # Tab 8 — Final Save
+    # Export — Accept calibration
     # ------------------------------------------------------------------
 
     def _tab_final(self, parent):
@@ -1614,17 +1671,17 @@ class CalibrationApp:
         threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------------------
-    # Mask tab logic
+    # Mask-page logic
     # ------------------------------------------------------------------
 
     def load_image_for_mask(self):
         self.pull_vars()
         image_file = self.config.get("image_file", "")
         if not image_file or not Path(image_file).exists():
-            self.messagebox.showerror("Missing image", "Select a calibration image in Tab 1 first.")
+            self.messagebox.showerror("Missing image", "Select a calibration image on Configure → Inputs first.")
             return
         try:
-            flip = bool(self.config.get("dioptas_image_flip", True))
+            flip = bool(self.config.get("dioptas_image_flip", False))
             self.image_cache = read_detector_image(image_file, flip_up_down=flip)
             
             self.log(f"Loaded image for masking: {image_file} shape={getattr(self.image_cache, 'shape', None)}")
@@ -1885,7 +1942,7 @@ class CalibrationApp:
             return
         # use _sibling to strip one known extension, so we don't double-suffix.
         base = Path(p)
-        self._save_mask_all_formats(base, mask, {"created_at": now_iso(), "source": "mask tab"})
+        self._save_mask_all_formats(base, mask, {"created_at": now_iso(), "source": "mask page"})
         self.notify(f"Mask saved: {self._sibling(base, '.*')}")
 
     def accept_final_mask(self):
@@ -1983,7 +2040,7 @@ class CalibrationApp:
             self.messagebox.showerror("Histogram error", str(e))
 
     # ------------------------------------------------------------------
-    # Dioptas tab logic
+    # Dioptas-page logic
     # ------------------------------------------------------------------
 
     def sync_dioptas_fields(self):
@@ -2193,7 +2250,7 @@ class CalibrationApp:
                     if mask_shape != image_shape:
                         problems.append(
                             f"Accepted mask shape {mask_shape} does not match image shape "
-                            f"{image_shape}. Re-accept the mask in Tab 2."
+                            f"{image_shape}. Re-accept the mask on Configure → Mask."
                         )
                 except Exception as e:
                     self.log(f"Could not read accepted mask {active}: {e!r}", "WARN")
@@ -2208,13 +2265,13 @@ class CalibrationApp:
 
         With force=False (the autocomplete hook) only fields that are blank or
         still holding a factory default are touched, so user-tuned values
-        survive. The Tab 3 button passes force=True to overwrite everything.
+        survive. The Generate QA page button passes force=True to overwrite everything.
         """
         image_file = str(self.vars["image_file"].get() if "image_file" in self.vars else self.config.get("image_file", "")).strip()
         poni_file  = str(self.vars["poni_file"].get()  if "poni_file"  in self.vars else self.config.get("poni_file",  "")).strip()
         if not (image_file and Path(image_file).is_file() and poni_file and Path(poni_file).is_file()):
             if force:
-                self.messagebox.showinfo("Auto-set bins", "Select a calibration image and PONI in Tab 1 first.")
+                self.messagebox.showinfo("Auto-set bins", "Select a calibration image and PONI on Configure → Inputs first.")
             return
         try:
             shape = tuple(read_detector_image(image_file).shape)
@@ -2397,7 +2454,7 @@ class CalibrationApp:
                 self.generation_label.configure(text=f"Generated {md.get('generation')} — {md.get('paths', {}).get('compilation_png', '')}")
             self.log(f"Generated {md.get('generation')}: {md.get('paths', {}).get('compilation_png', '')}")
             self.render_current_generation()
-            self.nb.select(self.tabs["4 Review"])
+            self.select_page("review")
             self._refresh_final_save_list()
         except Exception as e:
             self.log(f"Failed to load worker output JSON: {repr(e)}", "ERROR")

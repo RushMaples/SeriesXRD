@@ -1,17 +1,14 @@
-"""Tabbed Tkinter GUI for the batch reduction stage.
+"""Tkinter GUI for the batch reduction stage.
 
 This is stage 2 of the pipeline: calibrate (calib/gui.py) -> accept a PONI ->
 reduce (this stage) -> analysis (analysis/gui.py). Accepting a calibration
-fills in the Calibration tab below automatically; a finished reduction here
+fills in the Calibration page automatically; a finished reduction here
 hands its output HDF5 to the analysis stage the same way.
 
-Workflow left-to-right across tabs:
-    1 Calibration — the accepted calibration (auto-filled; import a prior run optionally)
-    2 Dataset     — pick the frame folder, preview the file list
-    3 Settings    — integration parameters
-    4 Run         — launch the crash-isolated worker, watch progress + log
-    5 Review      — inspect the reduced HDF5 before handing it to analysis
-    6 Gallery     — per-frame cake/1D thumbnails; click to exclude bad frames
+Workflow through the left navigation rail:
+    Configure — select the calibration, dataset, and integration settings
+    Run       — launch the crash-isolated worker and monitor progress
+    Review    — inspect the reduced HDF5 and per-frame gallery
 
 Same supervision model as calib/gui.py: pyFAI runs in reduce/worker.py as a
 subprocess; this process never imports pyFAI.
@@ -67,7 +64,7 @@ HELP = {
     "save_cakes":     "Also saves 2D cakes. Increases the output file size; needed for azimuthal analysis.",
     "cake_every":     "Save a cake for every Nth frame only, to bound file size.",
     "num_workers":    "Parallel worker processes. 0 = automatic (CPU count - 1).",
-    "make_thumbnails": "Renders a small cake+1D preview per frame during reduction, for the Gallery tab. Turn off for very large datasets to save time and disk space.",
+    "make_thumbnails": "Renders a small cake+1D preview per frame during reduction for the Gallery page. Turn off for very large datasets to save time and disk space.",
     "reduced_h5_file": "A reduced_*.h5 produced by a reduction run. Inspect it here before handing it to the Analysis stage.",
 }
 
@@ -137,24 +134,98 @@ class ReductionApp:
         self._status_bar_frame = ttk.Frame(outer, relief="sunken")
         self._status_bar_frame.pack(side="bottom", fill="x", pady=(2, 0))
 
-        self.nb = ttk.Notebook(outer)
-        self.nb.pack(fill="both", expand=True)
-        self.tabs: Dict[str, Any] = {}
-        for name, builder in [
-            ("1 Calibration", self._tab_calibration),
-            ("2 Dataset",  self._tab_dataset),
-            ("3 Settings", self._tab_settings),
-            ("4 Run",      self._tab_run),
-            ("5 Review",   self._tab_review),
-            ("6 Gallery",  self._tab_gallery),
-        ]:
-            frame = ttk.Frame(self.nb, padding=10)
-            builder(frame)
-            self.nb.add(frame, text=name)
-            self.tabs[name] = frame
+        self._build_navigation(outer)
 
         # Populate the status bar after all widgets exist
         self._build_status_bar()
+
+    def _build_navigation(self, outer):
+        """Build the shared left-rail workflow navigation."""
+        ttk = self.ttk
+
+        body = ttk.Frame(outer)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        rail = ttk.Treeview(body, show="tree", selectmode="browse")
+        rail.grid(row=0, column=0, sticky="nsw", padx=(0, 6))
+        rail.column("#0", width=170, stretch=False)
+        self._nav_rail = rail
+
+        content = ttk.Frame(body)
+        content.grid(row=0, column=1, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        sections = [
+            ("Configure", [
+                ("calibration", "Calibration", self._tab_calibration),
+                ("dataset", "Dataset", self._tab_dataset),
+                ("settings", "Settings", self._tab_settings),
+            ]),
+            ("Run", [
+                ("run", "Run reduction", self._tab_run),
+            ]),
+            ("Review", [
+                ("review", "Reduced data", self._tab_review),
+                ("gallery", "Gallery", self._tab_gallery),
+            ]),
+        ]
+
+        self.pages: Dict[str, Any] = {}
+        self._nav_items: Dict[str, str] = {}
+        self._nav_first_child: Dict[str, str] = {}
+        for section_label, pages in sections:
+            sec_id = rail.insert("", "end", text=section_label, open=True)
+            for key, label, builder in pages:
+                frame = ttk.Frame(content, padding=10)
+                builder(frame)
+                frame.grid(row=0, column=0, sticky="nsew")
+                self.pages[key] = frame
+                item = rail.insert(
+                    sec_id, "end", text=label, values=(key,), tags=(key,)
+                )
+                self._nav_items[key] = item
+                self._nav_first_child.setdefault(sec_id, key)
+
+        # Preserve the former numbered names for external callers.
+        self.tabs = {
+            "1 Calibration": self.pages["calibration"],
+            "2 Dataset": self.pages["dataset"],
+            "3 Settings": self.pages["settings"],
+            "4 Run": self.pages["run"],
+            "5 Review": self.pages["review"],
+            "6 Gallery": self.pages["gallery"],
+        }
+
+        def _on_select(_event=None):
+            selection = rail.selection()
+            if not selection:
+                return
+            item = selection[0]
+            values = rail.item(item, "values")
+            if values:
+                self.pages[values[0]].tkraise()
+                return
+            first = self._nav_first_child.get(item)
+            if first:
+                rail.selection_set(self._nav_items[first])
+
+        rail.bind("<<TreeviewSelect>>", _on_select)
+        self.select_page("calibration")
+
+    def select_page(self, key: str) -> None:
+        """Raise a navigation page by its stable key."""
+        item = self._nav_items.get(key)
+        if item is None:
+            return
+        try:
+            self._nav_rail.selection_set(item)
+            self._nav_rail.see(item)
+        except Exception:
+            pass
+        self.pages[key].tkraise()
 
     def _build_status_bar(self):
         """Populate the persistent structured status bar."""
@@ -273,7 +344,7 @@ class ReductionApp:
                 self.log_text.configure(state="disabled")
             except self.tk.TclError:
                 pass
-        # Keep existing in-tab run log widget updated too.
+        # Keep the run-page log widget updated too.
         if hasattr(self, "run_log_text"):
             try:
                 self.run_log_text.configure(state="normal")
@@ -370,7 +441,7 @@ class ReductionApp:
                 pass
 
     # ------------------------------------------------------------------
-    # Tab 1 — Handoff
+    # Configure — Calibration
     # ------------------------------------------------------------------
 
     def _tab_calibration(self, frame):
@@ -410,7 +481,7 @@ class ReductionApp:
     def set_handoff(self, handoff_path) -> None:
         """Populate the handoff from an external source (e.g. the calibration
         pane just exported one) and verify it. Quiet — no dialogs — since this
-        may fire while the user is on another tab."""
+        may fire while the user is on another page."""
         p = str(handoff_path or "")
         if not p:
             return
@@ -419,10 +490,7 @@ class ReductionApp:
             self.vars["handoff_file"].set(p)
         self.save_config(silent=True)
         self.log(f"Calibration handoff received: {p}")
-        try:
-            self.nb.select(self.tabs["1 Calibration"])
-        except Exception:
-            pass
+        self.select_page("calibration")
         self.verify_handoff()
 
     def _use_latest_calibration(self) -> None:
@@ -464,13 +532,13 @@ class ReductionApp:
             self.log(f"Handoff OK: {gen}")
             self._handoff_state = f"{gen} OK"
         else:
-            self.log("Handoff has problems — see Handoff tab", "ERROR")
+            self.log("Handoff has problems — see the Calibration page", "ERROR")
             self._handoff_state = "invalid"
         self._update_status_bar()
         return handoff
 
     # ------------------------------------------------------------------
-    # Tab 2 — Dataset
+    # Configure — Dataset
     # ------------------------------------------------------------------
 
     def _tab_dataset(self, frame):
@@ -520,7 +588,7 @@ class ReductionApp:
         self.save_config(silent=True)
 
     # ------------------------------------------------------------------
-    # Tab 3 — Settings
+    # Configure — Settings
     # ------------------------------------------------------------------
 
     def _tab_settings(self, frame):
@@ -555,7 +623,7 @@ class ReductionApp:
         _toggle_cake_fields()
 
     # ------------------------------------------------------------------
-    # Tab 4 — Run
+    # Run — Reduction
     # ------------------------------------------------------------------
 
     def _tab_run(self, frame):
@@ -606,7 +674,7 @@ class ReductionApp:
         self.progress.pack(fill="x", padx=4, pady=6)
         self.progress_label = ttk.Label(frame, text="Idle", foreground=MUTED)
         self.progress_label.pack(anchor="w", padx=6)
-        # In-tab run log (kept alongside the console-log window)
+        # Run-page log (kept alongside the console-log window)
         self.run_log_text = tk.Text(frame, bg=BG2, fg=FG, insertbackground=FG, relief="flat",
                                     state="disabled", font=("TkFixedFont", 9))
         self.run_log_text.pack(fill="both", expand=True, padx=4, pady=4)
@@ -693,7 +761,7 @@ class ReductionApp:
             self._worker_status = "failed"
             self._update_status_bar()
             self.progress_label.configure(text=f"Failed (return code {returncode})", foreground=WARN)
-            self.messagebox.showerror("Reduction failed", f"Worker return code {returncode}\nSee the Run tab log.")
+            self.messagebox.showerror("Reduction failed", f"Worker return code {returncode}\nSee the Run reduction page log.")
             return
         manifest = read_json(out_json)
         n = manifest.get("n_frames", "?")
@@ -708,7 +776,7 @@ class ReductionApp:
             self.config["reduced_h5_file"] = h5
             if "reduced_h5_file" in self.vars:
                 self.vars["reduced_h5_file"].set(h5)
-            self.log("Reduced HDF5 ready — see the Review tab to check it before analysis.")
+            self.log("Reduced HDF5 ready — see the Reduced data page before analysis.")
             try:
                 self.inspect_h5_clicked()
             except Exception as e:
@@ -852,7 +920,7 @@ class ReductionApp:
             proc.terminate()   # SIGTERM → the watcher flushes a final analysis
 
     # ------------------------------------------------------------------
-    # Tab 5 — Review (read-only HDF5 checkpoint before analysis)
+    # Review — Reduced data (read-only HDF5 checkpoint before analysis)
     # ------------------------------------------------------------------
 
     def _tab_review(self, frame):
@@ -1296,7 +1364,7 @@ class ReductionApp:
             return None
 
     # ------------------------------------------------------------------
-    # Tab 6 — Gallery (per-frame cake/1D matrix with click-to-exclude)
+    # Review — Gallery (per-frame cake/1D matrix with click-to-exclude)
     # ------------------------------------------------------------------
 
     _CELL_W = 150   # px per gallery cell (thumbnail is 240x200 scaled to fit)
@@ -1363,7 +1431,7 @@ class ReductionApp:
         self.pull_vars()
         path = str(self.config.get("reduced_h5_file", "") or "").strip()
         if not path or not Path(path).is_file():
-            self.messagebox.showerror("Gallery", "Select a reduced .h5 on the Review tab first.")
+            self.messagebox.showerror("Gallery", "Select a reduced .h5 on the Reduced data page first.")
             return
         from .review import gallery_frames
         g = gallery_frames(path)
