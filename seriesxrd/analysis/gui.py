@@ -464,6 +464,8 @@ class AnalysisApp:
             vals = rail.item(item, "values")
             if vals:
                 self.pages[vals[0]].tkraise()
+                if vals[0] == "run":
+                    self._update_preflight()
             else:
                 # A section header: forward to its first page.
                 first = self._nav_first_child.get(item)
@@ -483,6 +485,8 @@ class AnalysisApp:
         except Exception:
             pass
         self.pages[key].tkraise()
+        if key == "run":
+            self._update_preflight()
 
     def _tab_export(self, frame):
         """Whole-series export actions. Frame- and result-specific exports
@@ -1032,15 +1036,107 @@ class AnalysisApp:
         _w_entry.pack(side="left", padx=2)
         _ToolTip(_w_entry, "Parallel worker processes for all steps. "
                            "0 = auto (CPU count − 1), 1 = serial.")
+
+        # Preflight: what will run, on what input, into what output — visible
+        # before committing to a run instead of discovered from error dialogs.
+        pf = ttk.LabelFrame(frame, text="Preflight", padding=(8, 4))
+        pf.pack(fill="x", padx=4, pady=(6, 0))
+        self._preflight_label = ttk.Label(pf, text="", justify="left",
+                                          foreground=MUTED)
+        self._preflight_label.pack(anchor="w")
+        self._preflight_warn = ttk.Label(pf, text="", justify="left",
+                                         foreground=WARN)
+        self._preflight_warn.pack(anchor="w")
+
         self.progress = ttk.Progressbar(frame, mode="determinate", maximum=100)
         self.progress.pack(fill="x", padx=4, pady=6)
         self.progress_label = ttk.Label(frame, text="Idle", foreground=MUTED)
         self.progress_label.pack(anchor="w", padx=6)
+
+        # Completion summary: filled by _run_done on success, with direct
+        # follow-up actions instead of a modal popup.
+        done = ttk.Frame(frame)
+        done.pack(fill="x", padx=4)
+        self._completion_label = ttk.Label(done, text="", justify="left",
+                                           foreground=ACCENT2)
+        self._completion_label.pack(side="left", anchor="w")
+        self._completion_review_btn = ttk.Button(
+            done, text="Review results",
+            command=lambda: (self.select_page("pattern"), self.load_review()))
+        self._completion_open_btn = ttk.Button(
+            done, text="Open output folder", command=self._open_output_folder)
+        # (buttons pack on completion)
+
         self.run_log_text = tk.Text(
             frame, bg=BG2, fg=FG, insertbackground=FG, relief="flat",
             state="disabled", font=("TkFixedFont", 9),
         )
         self.run_log_text.pack(fill="both", expand=True, padx=4, pady=4)
+        self._update_preflight()
+
+    def _update_preflight(self):
+        """Refresh the Run page's preflight block from the current config."""
+        if not hasattr(self, "_preflight_label"):
+            return
+        try:
+            self.pull_vars()
+        except Exception:
+            pass
+        cfg = self.config
+        reduced = str(cfg.get("reduced_h5_file", "") or "").strip()
+        out_h5 = str(cfg.get("analysis_h5_file", "") or "").strip()
+        steps = []
+        if bool(cfg.get("run_step1", True)):
+            steps.append("1 background")
+        if bool(cfg.get("run_step2", True)):
+            steps.append("2 peaks")
+        if bool(cfg.get("run_ml_rank", False)):
+            steps.append("3b ML rank")
+        if bool(cfg.get("run_step3", False)):
+            steps.append("3a identify + residual + unknowns")
+        frames = getattr(self, "_frame_count", 0)
+        lines = [
+            f"Input:   {Path(reduced).name if reduced else '(none)'}"
+            + (f"    frames: {frames}" if frames else ""),
+            f"Steps:   {', '.join(steps) if steps else '(none enabled)'}",
+            f"Output:  {out_h5 or '(derived from input)'}",
+        ]
+        self._preflight_label.configure(text="\n".join(lines))
+
+        warns = []
+        if not reduced or not Path(reduced).is_file():
+            warns.append("No reduced input file — set it on Configure → Data.")
+        rev = getattr(self, "_last_review_reduced", None)
+        if rev is not None and not rev.get("robust_present", True):
+            warns.append("Robust pattern missing — re-run reduction with "
+                         "robust_1d=True before Step 1.")
+        if bool(cfg.get("run_step3", False)):
+            cands = cfg.get("candidate_phases") or []
+            if not cands and not bool(cfg.get("identify_all_phases", False)) \
+                    and not bool(cfg.get("run_ml_rank", False)):
+                warns.append("Step 3a is enabled with no candidate phases — "
+                             "pick phases (Configure → Phases), enable ML "
+                             "ranking, or set identify-all.")
+        if not steps:
+            warns.append("Nothing to run — enable at least one step.")
+        self._preflight_warn.configure(text="\n".join(warns))
+
+    def _open_output_folder(self):
+        out_h5 = str(self.config.get("analysis_h5_file", "") or "").strip()
+        folder = Path(out_h5).parent if out_h5 else None
+        if not folder or not folder.is_dir():
+            self.log("No output folder to open yet.", "WARN")
+            return
+        try:
+            if sys.platform.startswith("win"):
+                import os as _os
+                _os.startfile(str(folder))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(folder)])
+            else:
+                subprocess.Popen(["xdg-open", str(folder)])
+        except Exception as exc:
+            self.log(f"Could not open {folder}: {exc!r}", "WARN")
 
     def run_analysis(self):
         if self._run_proc is not None:
@@ -1092,6 +1188,8 @@ class AnalysisApp:
             "--output-json", out_json,
         ]
         self.log("Worker command: " + " ".join(cmd))
+        self._update_preflight()
+        self._clear_completion()
         self.run_btn.configure(state="disabled")
         self.cancel_btn.configure(state="normal")
         self.progress.configure(value=0)
@@ -1156,6 +1254,45 @@ class AnalysisApp:
         self.progress.configure(maximum=max(total, 1), value=done)
         self.progress_label.configure(text=f"{phase}: {done} / {total} frames")
 
+    def _clear_completion(self):
+        if not hasattr(self, "_completion_label"):
+            return
+        self._completion_label.configure(text="")
+        self._completion_review_btn.pack_forget()
+        self._completion_open_btn.pack_forget()
+
+    def _show_completion(self, manifest: dict):
+        """Completion summary with direct follow-up actions (non-modal)."""
+        if not hasattr(self, "_completion_label"):
+            return
+        lines = []
+        s1 = manifest.get("step1") or {}
+        if s1:
+            n_flag = s1.get("n_flagged")
+            extra = f", {n_flag} contamination-flagged" if n_flag else ""
+            lines.append(f"Step 1: {s1.get('n_frames', '?')} frames"
+                         f" ({s1.get('n_excluded', 0)} excluded{extra})")
+            if s1.get("spotty_sample"):
+                lines.append("  ⚠ spotty/coarse-grained sample diagnosed — "
+                             "peak fitting used the mean channel")
+        s2 = manifest.get("step2") or {}
+        if s2:
+            lines.append(f"Step 2: {s2.get('n_good', '?')} good / "
+                         f"{s2.get('n_peaks', '?')} fitted peaks")
+            if s2.get("npt_recommended"):
+                lines.append(f"  ⚠ peaks are under-sampled — re-reduce with "
+                             f"npt_1d ≈ {s2['npt_recommended']}")
+        s3 = manifest.get("step3") or {}
+        if s3:
+            seen = [n for n, d in (s3.get("summary") or {}).items()
+                    if d.get("n_frames_seen")]
+            lines.append("Step 3a: " + (", ".join(seen) if seen
+                                        else "no phase cleared the gate"))
+        self._completion_label.configure(
+            text="\n".join(lines) if lines else "Run finished.")
+        self._completion_review_btn.pack(side="right", padx=4)
+        self._completion_open_btn.pack(side="right", padx=4)
+
     def _run_done(self, returncode: int, out_json: str):
         self._run_proc = None
         self.run_btn.configure(state="normal")
@@ -1195,6 +1332,7 @@ class AnalysisApp:
         self.progress_label.configure(
             text=f"Done: {', '.join(steps)} -> {h5}", foreground=ACCENT2)
         self.log(f"Analysis complete: {h5}")
+        self._show_completion(manifest)
         if h5:
             self.config["analysis_h5_file"] = h5
             if "analysis_h5_file" in self.vars:
