@@ -74,7 +74,7 @@ def _tracking_values(h5, axis: str, n_frames: int) -> "Tuple[str, np.ndarray, st
         raise ValueError(f"Unknown unknown-tracking axis {axis!r} "
                          f"(choose from {', '.join(TRACKING_AXES)}).")
     if key == "frame":
-        return key, np.arange(int(n_frames), dtype=float), "frame index"
+        return key, np.arange(int(n_frames), dtype=float), "Frame index"
     fr = h5.get("frames")
     if fr is None:
         raise ValueError(f"No /frames group — cannot track unknowns by {key}.")
@@ -83,18 +83,18 @@ def _tracking_values(h5, axis: str, n_frames: int) -> "Tuple[str, np.ndarray, st
             raise ValueError("No /frames/pressure — import/extract pressures before "
                              "using pressure-aware unknown tracking.")
         vals = np.asarray(fr["pressure"][:], dtype=float)
-        label = "pressure (GPa)"
+        label = "Pressure (GPa)"
     elif key == "temperature":
         if "temperature" not in fr:
             raise ValueError("No /frames/temperature — import a temperature_K column "
                              "before using temperature-aware unknown tracking.")
         vals = np.asarray(fr["temperature"][:], dtype=float)
-        label = "temperature (K)"
+        label = "Temperature (K)"
     else:
         if "timestamp" not in fr:
             raise ValueError("No /frames/timestamp — cannot track unknowns by time.")
         vals = _elapsed_seconds(fr["timestamp"][:])
-        label = "elapsed time (s)"
+        label = "Elapsed time (s)"
     if vals.size != int(n_frames):
         raise ValueError(f"/frames/{key} length ({vals.size}) does not match the "
                          f"residual frame count ({n_frames}).")

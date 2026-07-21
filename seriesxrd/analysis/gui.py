@@ -21,6 +21,9 @@ from ..guikit.theme import (
 from ..guikit.tkstyle import apply_dark_theme
 from ..guikit.tooltip import ToolTip as _ToolTip
 from ..guikit.mpl_embed import embed_figure
+from ..guikit.labels import (unit_label, AZIMUTH_LABEL, INTENSITY_LABEL,
+                              INTENSITY_ARB_LABEL, D_SPACING_LABEL,
+                              PRESSURE_LABEL, FRAME_LABEL, CONTAMINATION_LABEL)
 
 
 def _tk_imports():
@@ -1449,8 +1452,8 @@ class AnalysisApp:
 
         fname = Path(fd.get("filename", "")).name or f"frame {frame_index}"
         ax1.set_title(f"{fname}  [frame {frame_index}]", color=FG)
-        ax1.set_xlabel(unit)
-        ax1.set_ylabel("intensity")
+        ax1.set_xlabel(unit_label(unit))
+        ax1.set_ylabel(INTENSITY_LABEL)
         if ax1.get_legend_handles_labels()[1]:
             ax1.legend(fontsize=7, framealpha=0.4)
         self._style_ax(ax1)
@@ -1474,8 +1477,8 @@ class AnalysisApp:
                 vmax = float(np.percentile(finite, 99)) if finite.size else None
                 ax_cake.imshow(cc, aspect="auto", origin="lower", cmap="magma",
                                extent=extent, vmin=vmin, vmax=vmax)
-                ax_cake.set_xlabel(ck.get("unit") or unit)
-                ax_cake.set_ylabel("azimuth (deg)")
+                ax_cake.set_xlabel(unit_label(ck.get("unit") or unit))
+                ax_cake.set_ylabel(AZIMUTH_LABEL)
                 ax_cake.set_title("Cake (2D)", color=FG)
             else:
                 ax_cake.set_title(f"Cake: {ck.get('error', 'unavailable')}", color=WARN)
@@ -1488,12 +1491,12 @@ class AnalysisApp:
             c_arr = np.asarray(contam, dtype=float)
             ax2.plot(c_arr, lw=0.8, color=CLR_DIFF, alpha=0.85)
             ax2.axvline(frame_index, color=ACCENT, lw=1.2, alpha=0.8)
-            ax2.set_xlabel("frame")
-            ax2.set_ylabel("contamination")
+            ax2.set_xlabel(FRAME_LABEL)
+            ax2.set_ylabel(CONTAMINATION_LABEL)
             ax2.set_title("Contamination vs frame", color=FG)
         else:
             ax2.set_title("Contamination (not available)", color=FG)
-            ax2.set_xlabel("frame")
+            ax2.set_xlabel(FRAME_LABEL)
         self._style_ax(ax2)
 
         self._review_canvas = self._embed_figure(self.review_plot_frame, fig)
@@ -1801,7 +1804,7 @@ class AnalysisApp:
 
         # Map the frame index onto the chosen independent variable.
         x_kind = getattr(self._heatmap_xaxis, "get", lambda: "frame")() or "frame"
-        x_arr, x_label = frame_arr, "frame index"
+        x_arr, x_label = frame_arr, "Frame index"
         if x_kind != "frame":
             from .heatmap import series_axis
             sx = series_axis(path, x_kind)
@@ -1861,7 +1864,7 @@ class AnalysisApp:
             except Exception:
                 pass
             ax.set_xlabel(x_label, color=FG)
-            ax.set_ylabel(f"peak center ({unit})", color=FG)
+            ax.set_ylabel(f"Peak center — {unit_label(unit)}", color=FG)
             ax.set_title(f"Peak map — {n_pts} peaks", color=FG)
 
         self._heatmap_canvas = self._embed_figure(self.heatmap_plot_frame, fig)
@@ -3031,8 +3034,8 @@ class AnalysisApp:
         ax = fig.add_subplot(1, 1, 1)
         x = np.arange(pressure.size, dtype=float)
         ax.plot(x, pressure, marker=".", markersize=3, linewidth=0.8, color=ACCENT2)
-        ax.set_xlabel("frame index")
-        ax.set_ylabel("pressure (GPa)")
+        ax.set_xlabel(FRAME_LABEL)
+        ax.set_ylabel(PRESSURE_LABEL)
         ax.set_title("Frame pressure", color=FG)
         self._style_ax(ax)
 
@@ -3468,7 +3471,7 @@ class AnalysisApp:
             # Always show confidence trace in the same color.
             ax_conf.plot(x, conf_arr, linewidth=0.7, color=color, label=label)
 
-        ax_pres.set_ylabel("pressure (GPa)")
+        ax_pres.set_ylabel(PRESSURE_LABEL)
         ax_pres.set_title(
             f"Phases seen (confidence ≥ {conf_min:.2f}) — {len(shown)} shown",
             color=FG)
@@ -3478,8 +3481,8 @@ class AnalysisApp:
         self._style_ax(ax_pres)
 
         ax_conf.axhline(conf_min, color=MUTED, linewidth=0.8, linestyle="--")
-        ax_conf.set_xlabel("frame index")
-        ax_conf.set_ylabel("confidence")
+        ax_conf.set_xlabel(FRAME_LABEL)
+        ax_conf.set_ylabel("Confidence")
         ax_conf.set_ylim(0, 1.02)
         self._style_ax(ax_conf)
 
@@ -3887,7 +3890,7 @@ class AnalysisApp:
         Z = img["Z"]                      # (n_bins, n_frames)
         radial = img["radial"]
         n = img["n_frames"]
-        x_label = img.get("x_label") or "frame index"
+        x_label = img.get("x_label") or "Frame index"
         xv = (np.asarray(img["x"], dtype=float) if img.get("x") is not None
               else np.arange(n, dtype=float))
 
@@ -3926,7 +3929,7 @@ class AnalysisApp:
             ax.pcolormesh(xs, radial, Zs, cmap="magma", shading="nearest",
                           vmin=vmin, vmax=vmax)
         ax.set_xlabel(x_label)
-        ax.set_ylabel(img["unit"] or "radial")
+        ax.set_ylabel(unit_label(img["unit"]))
         ax.set_title(f"Pattern waterfall — {img['source']}", color=FG)
         self._style_ax(ax)
 
@@ -3971,7 +3974,7 @@ class AnalysisApp:
                     ax2.plot(lx[m][o], y[m][o], lw=0.8, marker=".",
                              markersize=2, label=layer["name"])
                 ax2.set_xlabel(x_label)
-                ax2.set_ylabel("phase intensity (norm.)")
+                ax2.set_ylabel(INTENSITY_ARB_LABEL)
                 handles2, _ = ax2.get_legend_handles_labels()
                 if handles2:
                     ax2.legend(fontsize=7, framealpha=0.4)
@@ -4216,8 +4219,8 @@ class AnalysisApp:
 
         if not clusters or x_plot.size == 0:
             ax.set_title("No unknown clusters to display with current filter", color=FG)
-            ax.set_xlabel(data.get("x_label") or "frame index")
-            ax.set_ylabel("unknown cluster")
+            ax.set_xlabel(data.get("x_label") or FRAME_LABEL)
+            ax.set_ylabel("Unknown cluster")
         else:
             for c in clusters:
                 ci = int(c["cluster"])
@@ -4243,8 +4246,8 @@ class AnalysisApp:
                 self._style_colorbar(cb)
             except Exception:
                 pass
-            ax.set_xlabel(data.get("x_label") or "frame index")
-            ax.set_ylabel("unknown cluster")
+            ax.set_xlabel(data.get("x_label") or FRAME_LABEL)
+            ax.set_ylabel("Unknown cluster")
             ax.set_title(
                 f"Unknown clusters — {len(clusters)} cluster(s), "
                 f"{int(x_plot.size)} observation(s)",
@@ -4402,8 +4405,8 @@ class AnalysisApp:
                         label=f"untracked ({un['pressure'].size})")
                 ax.legend(loc="best", fontsize=8, framealpha=0.3,
                           labelcolor=FG, facecolor=BG)
-            ax.set_xlabel("pressure (GPa)")
-            ax.set_ylabel("d-spacing (Å)")
+            ax.set_xlabel(PRESSURE_LABEL)
+            ax.set_ylabel(D_SPACING_LABEL)
             ax.set_title(
                 f"Crystallite spot tracks — {len(tracks)}/{data['n_tracks_total']} "
                 f"track(s), {n_pts} points; ▲ rising = d grows with P "
@@ -4886,7 +4889,7 @@ class AnalysisApp:
             hx, hy = _half(xc), _half(yc)
             extent = [xc[0] - hx, xc[-1] + hx, yc[0] - hy, yc[-1] + hy]
             origin = "lower"
-            xlab, ylab = "stage x", "stage y"
+            xlab, ylab = "Stage x (mm)", "Stage y (mm)"
             title = f"{label} — from frame coordinates"
             base_txt = (f"{cg['n_placed']} frames on a "
                         f"{grid.shape[0]}×{grid.shape[1]} coordinate grid")
@@ -4911,7 +4914,7 @@ class AnalysisApp:
                 return
             extent = None
             origin = "upper"
-            xlab, ylab = "scan column", "scan row"
+            xlab, ylab = "Scan column", "Scan row"
             path_txt = "boustrophedon" if serp else "unidirectional"
             title = f"{label} — {order} lines, {path_txt}"
             n_pad = int(np.sum(gidx < 0))

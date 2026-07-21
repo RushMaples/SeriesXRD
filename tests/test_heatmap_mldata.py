@@ -111,7 +111,7 @@ def test_metadata_pressure_axis_and_anisotropic_tracks():
         img = hm.pattern_image(h5, source="clean", x_axis="pressure")
         assert img["ok"], img["error"]
         assert np.allclose(img["x"], [0, 5, 10, 15, 20])
-        assert "pressure" in img["x_label"]
+        assert "pressure" in img["x_label"].lower()
 
         tet = ph.Phase(name="tet",
                        lattice={"a": 4.0, "b": 4.0, "c": 6.0,

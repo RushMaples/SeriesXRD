@@ -33,6 +33,7 @@ from ..guikit.theme import BG, BG2, FG, ACCENT, ACCENT2, WARN, MUTED, ENTRY_BG
 from ..guikit.tkstyle import apply_dark_theme
 from ..guikit.tooltip import ToolTip as _ToolTip
 from ..guikit.mpl_embed import embed_figure, make_canvas_responsive
+from ..guikit.labels import unit_label, AZIMUTH_LABEL, INTENSITY_LABEL
 from .processing import scan_dataset, DEFAULT_PATTERNS
 
 
@@ -1106,8 +1107,8 @@ class ReductionApp:
                   extent=extent, vmin=vmin, vmax=vmax)
         fi = review.get("cake_frame_index")
         ax.set_title(f"Cake (frame {fi})" if fi is not None else "Cake")
-        ax.set_xlabel(review.get("unit") or "radial")
-        ax.set_ylabel("azimuth (deg)")
+        ax.set_xlabel(unit_label(review.get("unit")))
+        ax.set_ylabel(AZIMUTH_LABEL)
         self._style_review_ax(ax)
 
     def _render_review_plots(self, review: dict):
@@ -1158,8 +1159,8 @@ class ReductionApp:
                 else:
                     ax1.plot(y, lw=0.8, alpha=0.7)
             ax1.set_title(f"{len(patterns)} sample patterns (overlaid)")
-            ax1.set_xlabel(unit)
-            ax1.set_ylabel("intensity")
+            ax1.set_xlabel(unit_label(unit))
+            ax1.set_ylabel(INTENSITY_LABEL)
             self._style_review_ax(ax1)
             if cake_present:
                 self._draw_review_cake(fig.add_subplot(nrows, 1, 2), review)
@@ -1184,8 +1185,8 @@ class ReductionApp:
             else:
                 ax.plot(y, lw=0.9, color=ACCENT2)
             ax.set_title(pr.get("name") or f"frame {pr.get('index')}", fontsize=9)
-            ax.set_ylabel("intensity", fontsize=8)
-            ax.set_xlabel(unit, fontsize=8)
+            ax.set_ylabel(INTENSITY_LABEL, fontsize=8)
+            ax.set_xlabel(unit_label(unit), fontsize=8)
             self._style_review_ax(ax)
         if cake_present:
             self._draw_review_cake(axes[n], review)
