@@ -14,11 +14,8 @@ from ..core.config import (
 )
 from ..core.naming import next_available_path
 from ..core.processes import terminate_process_tree, worker_popen
-from ..guikit.theme import (
-    BG, BG2, FG, ACCENT, ACCENT2, WARN, MUTED, ENTRY_BG,
-    CLR_RAW, CLR_MSKD, CLR_SMTH, CLR_DIFF, CLR_REF,
-)
-from ..guikit.tkstyle import apply_dark_theme
+from ..guikit import theme
+from ..guikit.tkstyle import apply_theme
 from ..guikit.tooltip import ToolTip as _ToolTip
 from ..guikit.mpl_embed import embed_figure
 from ..guikit.labels import (unit_label, AZIMUTH_LABEL, INTENSITY_LABEL,
@@ -339,6 +336,8 @@ class AnalysisApp:
         self._review_after: "int | None" = None  # debounce scheduler id
 
         self._build_gui()
+        theme.register_widget_tree(self._embed_parent or self.root)
+        theme.register_restyle(self._restyle_theme)
         self._drain_log_queue()
         self.log("GUI initialized")
         self.save_config(silent=True)
@@ -353,10 +352,29 @@ class AnalysisApp:
     # Build
     # ------------------------------------------------------------------
 
+    def _restyle_theme(self):
+        """Repaint this live pane without touching worker or analysis state."""
+        apply_theme(self.root, self.ttk)
+        theme.register_widget_tree(self._embed_parent or self.root)
+        theme.restyle_widgets()
+        for attr, tags in (
+            ("phases_tree", {"user": theme.C.ACCENT}),
+            ("_fm_table", {"user": theme.C.ACCENT}),
+        ):
+            tree = getattr(self, attr, None)
+            if tree is not None:
+                for tag, color in tags.items():
+                    tree.tag_configure(tag, foreground=color)
+        table = getattr(self, "_identify_table", None)
+        if table is not None:
+            table.tag_configure("present", foreground=theme.C.ACCENT2)
+            table.tag_configure("absent", foreground=theme.C.MUTED)
+        theme.restyle_owner_figures(self)
+
     def _build_gui(self):
         tk, ttk = self.tk, self.ttk
         if self._owns_root:
-            apply_dark_theme(self.root, ttk)
+            apply_theme(self.root, ttk)
         _container = self._embed_parent if self._embed_parent is not None else self.root
         outer = ttk.Frame(_container, padding=6)
         outer.pack(fill="both", expand=True)
@@ -504,7 +522,7 @@ class AnalysisApp:
                       "a GSAS-II instrument file — see docs/validation.md for "
                       "what the export is (and is not).")
         note = ttk.Label(
-            frame, foreground=MUTED, justify="left", wraplength=680,
+            frame, style="Muted.TLabel", justify="left", wraplength=680,
             text=("Context-bound exports live with their results:\n"
                   "  • Pattern review — per-frame .xy patterns and stacked "
                   "figures\n"
@@ -515,17 +533,17 @@ class AnalysisApp:
     def _build_status_bar(self):
         ttk = self.ttk
         bar = self._status_bar_frame
-        self.status_session = ttk.Label(bar, text="", foreground=MUTED, anchor="w")
+        self.status_session = ttk.Label(bar, text="", style="Muted.TLabel", anchor="w")
         self.status_session.pack(side="left", padx=(6, 12))
-        self.status_input = ttk.Label(bar, text="input: none", foreground=MUTED, anchor="w")
+        self.status_input = ttk.Label(bar, text="input: none", style="Muted.TLabel", anchor="w")
         self.status_input.pack(side="left", padx=(0, 12))
-        self.status_frames = ttk.Label(bar, text="frames: —", foreground=MUTED, anchor="w")
+        self.status_frames = ttk.Label(bar, text="frames: —", style="Muted.TLabel", anchor="w")
         self.status_frames.pack(side="left", padx=(0, 12))
-        self.status_worker = ttk.Label(bar, text="idle", foreground=MUTED, anchor="e")
+        self.status_worker = ttk.Label(bar, text="idle", style="Muted.TLabel", anchor="e")
         self.status_worker.pack(side="right", padx=6)
         # Transient non-modal notifications (successful saves/exports) land
         # here instead of interrupting with a dialog.
-        self.status_notify = ttk.Label(bar, text="", foreground=ACCENT2, anchor="w")
+        self.status_notify = ttk.Label(bar, text="", style="Ok.TLabel", anchor="w")
         self.status_notify.pack(side="left", padx=(0, 12))
         self._notify_after_id = None
 
@@ -738,11 +756,11 @@ class AnalysisApp:
         self._log_window = tk.Toplevel(self.root)
         self._log_window.title("SeriesXRD — Analysis log")
         self._log_window.geometry("900x420")
-        self._log_window.configure(bg=BG)
+        self._log_window.configure(bg=theme.C.BG)
         self.log_text = tk.Text(
             self._log_window, wrap="word", state="disabled",
-            font=("TkFixedFont", 10), bg=BG2, fg=FG,
-            insertbackground=FG, selectbackground=ACCENT,
+            font=("TkFixedFont", 10), bg=theme.C.BG2, fg=theme.C.FG,
+            insertbackground=theme.C.FG, selectbackground=theme.C.ACCENT,
         )
         scroll = ttk.Scrollbar(
             self._log_window, orient="vertical", command=self.log_text.yview)
@@ -822,11 +840,11 @@ class AnalysisApp:
         ).pack(side="left", padx=8)
 
         # Warn if robust pattern is missing — analysis requires it.
-        self._robust_warn_label = ttk.Label(btns, text="", foreground=WARN)
+        self._robust_warn_label = ttk.Label(btns, text="", style="Warn.TLabel")
         self._robust_warn_label.pack(side="left", padx=12)
 
         self.input_text = tk.Text(
-            frame, height=20, bg=BG2, fg=FG, insertbackground=FG,
+            frame, height=20, bg=theme.C.BG2, fg=theme.C.FG, insertbackground=theme.C.FG,
             relief="flat", state="disabled", font=("TkFixedFont", 10),
         )
         self.input_text.grid(
@@ -957,7 +975,7 @@ class AnalysisApp:
                 "wide — reduce Max half-window. The stored channels let every later\n"
                 "step rebuild its own fit source, so nothing is lost."
             ),
-            foreground=MUTED, justify="left", wraplength=640,
+            style="Muted.TLabel", justify="left", wraplength=640,
         )
         _bg_help.grid(row=8, column=0, columnspan=3, sticky="w", padx=6, pady=(12, 4))
         self.autowrap(_bg_help)
@@ -977,7 +995,7 @@ class AnalysisApp:
                    ["conservative", "normal", "sensitive"], row=2, default="normal")
         self.checkbox(frame, "auto_range", "Auto valid q/2θ range (blank Fit min/max)", row=3)
         ttk.Label(frame, text="Advanced (blank = follow the Sensitivity preset):",
-                  foreground=MUTED).grid(row=4, column=0, columnspan=6, sticky="w",
+                  style="Muted.TLabel").grid(row=4, column=0, columnspan=6, sticky="w",
                                          padx=4, pady=(10, 0))
         # Two column-groups so the tab fits on ~700px-tall screens.
         self.field(frame, "min_snr", "Min SNR (height)", row=5, width=12)
@@ -994,7 +1012,7 @@ class AnalysisApp:
                       "Propagate peak seeds frame-to-frame", row=10)
         seedrow = ttk.Frame(frame)
         seedrow.grid(row=11, column=0, columnspan=6, sticky="w", padx=4, pady=3)
-        ttk.Label(seedrow, text="Seed order", foreground=MUTED).pack(side="left", padx=(0, 4))
+        ttk.Label(seedrow, text="Seed order", style="Muted.TLabel").pack(side="left", padx=(0, 4))
         self.vars["seed_tracking_axis"] = tk.StringVar(
             value=str(self.config.get("seed_tracking_axis", "frame") or "frame"))
         _seed_axis = ttk.Combobox(
@@ -1003,7 +1021,7 @@ class AnalysisApp:
             state="readonly", width=11)
         _seed_axis.pack(side="left")
         _ToolTip(_seed_axis, HELP["seed_tracking_axis"])
-        ttk.Label(seedrow, text="group by", foreground=MUTED).pack(side="left", padx=(10, 2))
+        ttk.Label(seedrow, text="group by", style="Muted.TLabel").pack(side="left", padx=(10, 2))
         self.vars["seed_group_by"] = tk.StringVar(
             value=str(self.config.get("seed_group_by", "none") or "none"))
         _seed_group = ttk.Combobox(
@@ -1017,7 +1035,7 @@ class AnalysisApp:
             seedrow, text="predict drift", variable=self.vars["seed_axis_predictor"])
         _seed_pred.pack(side="left", padx=(10, 2))
         _ToolTip(_seed_pred, HELP["seed_axis_predictor"])
-        ttk.Label(seedrow, text="axis gap", foreground=MUTED).pack(side="left", padx=(10, 2))
+        ttk.Label(seedrow, text="axis gap", style="Muted.TLabel").pack(side="left", padx=(10, 2))
         self.vars["seed_max_axis_gap"] = tk.StringVar(
             value=str(self.config.get("seed_max_axis_gap", "")))
         _seed_gap = ttk.Entry(seedrow, textvariable=self.vars["seed_max_axis_gap"], width=7)
@@ -1036,7 +1054,7 @@ class AnalysisApp:
                 "re-reduce (see run log). Rejection flags: LOW_AMP=1, BAD_CHI2=2, "
                 "CENTER_DRIFT=4, WIDTH_BOUND=8, NO_CONVERGE=16."
             ),
-            foreground=MUTED, justify="left", wraplength=640,
+            style="Muted.TLabel", justify="left", wraplength=640,
         )
         _pk_help.grid(row=12, column=0, columnspan=6, sticky="w", padx=6, pady=(12, 4))
         self.autowrap(_pk_help)
@@ -1054,7 +1072,7 @@ class AnalysisApp:
         self.cancel_btn = ttk.Button(
             top, text="Cancel", command=self.cancel_analysis, state="disabled")
         self.cancel_btn.pack(side="left", padx=4, pady=4)
-        ttk.Label(top, text="Workers:", foreground=MUTED).pack(side="left", padx=(16, 2))
+        ttk.Label(top, text="Workers:", style="Muted.TLabel").pack(side="left", padx=(16, 2))
         _w_var = tk.StringVar(value=str(self.config.get("num_workers", "0")))
         self.vars["num_workers"] = _w_var
         _w_entry = ttk.Entry(top, textvariable=_w_var, width=5)
@@ -1067,15 +1085,15 @@ class AnalysisApp:
         pf = ttk.LabelFrame(frame, text="Preflight", padding=(8, 4))
         pf.pack(fill="x", padx=4, pady=(6, 0))
         self._preflight_label = ttk.Label(pf, text="", justify="left",
-                                          foreground=MUTED)
+                                          style="Muted.TLabel")
         self._preflight_label.pack(anchor="w")
         self._preflight_warn = ttk.Label(pf, text="", justify="left",
-                                         foreground=WARN)
+                                         style="Warn.TLabel")
         self._preflight_warn.pack(anchor="w")
 
         self.progress = ttk.Progressbar(frame, mode="determinate", maximum=100)
         self.progress.pack(fill="x", padx=4, pady=6)
-        self.progress_label = ttk.Label(frame, text="Idle", foreground=MUTED)
+        self.progress_label = ttk.Label(frame, text="Idle", style="Muted.TLabel")
         self.progress_label.pack(anchor="w", padx=6)
 
         # Completion summary: filled by _run_done on success, with direct
@@ -1083,7 +1101,7 @@ class AnalysisApp:
         done = ttk.Frame(frame)
         done.pack(fill="x", padx=4)
         self._completion_label = ttk.Label(done, text="", justify="left",
-                                           foreground=ACCENT2)
+                                           style="Ok.TLabel")
         self._completion_label.pack(side="left", anchor="w")
         self._completion_review_btn = ttk.Button(
             done, text="Review results",
@@ -1093,7 +1111,7 @@ class AnalysisApp:
         # (buttons pack on completion)
 
         self.run_log_text = tk.Text(
-            frame, bg=BG2, fg=FG, insertbackground=FG, relief="flat",
+            frame, bg=theme.C.BG2, fg=theme.C.FG, insertbackground=theme.C.FG, relief="flat",
             state="disabled", font=("TkFixedFont", 9),
         )
         self.run_log_text.pack(fill="both", expand=True, padx=4, pady=4)
@@ -1220,7 +1238,7 @@ class AnalysisApp:
         self.progress.configure(value=0)
         # Fresh run: clear any leftover cancelled/failed/done styling and state.
         self._cancel_requested = False
-        self.progress_label.configure(text="Starting worker ...", foreground=MUTED)
+        self.progress_label.configure(text="Starting worker ...", style="Muted.TLabel")
         self._worker_status = "running"
         self._update_status_bar()
 
@@ -1334,13 +1352,13 @@ class AnalysisApp:
                     text="Cancelled — completed steps were saved to the analysis "
                          "file; interrupted steps left no partial output (atomic "
                          "writes). Run analysis re-runs every enabled step.",
-                    foreground=MUTED)
+                    style="Muted.TLabel")
                 self.log("Run cancelled by user.", "WARN")
                 return
             self._worker_status = "failed"
             self._update_status_bar()
             self.progress_label.configure(
-                text=f"Failed (return code {returncode})", foreground=WARN)
+                text=f"Failed (return code {returncode})", style="Warn.TLabel")
             self.messagebox.showerror(
                 "Analysis failed",
                 f"Worker return code {returncode}\nSee the Run tab log.")
@@ -1355,7 +1373,7 @@ class AnalysisApp:
         self._worker_status = "done"
         self._update_status_bar()
         self.progress_label.configure(
-            text=f"Done: {', '.join(steps)} -> {h5}", foreground=ACCENT2)
+            text=f"Done: {', '.join(steps)} -> {h5}", style="Ok.TLabel")
         self.log(f"Analysis complete: {h5}")
         self._show_completion(manifest)
         if h5:
@@ -1420,7 +1438,7 @@ class AnalysisApp:
         self.cancel_btn.configure(state="disabled")
         self._worker_status = "failed"
         self._update_status_bar()
-        self.progress_label.configure(text="Launch error", foreground=WARN)
+        self.progress_label.configure(text="Launch error", style="Warn.TLabel")
         self.messagebox.showerror("Worker launch error", err)
 
     def cancel_analysis(self):
@@ -1428,7 +1446,7 @@ class AnalysisApp:
         if proc is not None and proc.poll() is None:
             self._cancel_requested = True
             self.cancel_btn.configure(state="disabled")
-            self.progress_label.configure(text="Cancelling ...", foreground=MUTED)
+            self.progress_label.configure(text="Cancelling ...", style="Muted.TLabel")
             terminate_process_tree(proc)
             self.log("Cancel requested — stopped worker process tree", "WARN")
 
@@ -1472,7 +1490,7 @@ class AnalysisApp:
         togglerow = ttk.Frame(frame)
         togglerow.pack(fill="x", pady=(0, 4))
 
-        ttk.Label(ctrl, text="Frame:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        ttk.Label(ctrl, text="Frame:", style="Muted.TLabel").pack(side="left", padx=(12, 2))
         self._review_idx_var = tk.IntVar(value=0)
         # NOTE: the Scale is deliberately NOT linked to _review_idx_var. When the
         # Scale and the Spinbox shared the variable, the Scale's callback echoed a
@@ -1536,7 +1554,7 @@ class AnalysisApp:
         ttk.Label(
             self.review_plot_frame,
             text="Load the analysis HDF5 to plot per-frame traces.",
-            foreground=MUTED,
+            style="Muted.TLabel",
         ).pack(anchor="center", expand=True)
 
     def load_review(self):
@@ -1648,7 +1666,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.review_plot_frame,
                 text="No analysis HDF5 loaded — run analysis or set path on Input tab.",
-                foreground=MUTED,
+                style="Muted.TLabel",
             ).pack(anchor="center", expand=True)
             return
 
@@ -1661,7 +1679,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.review_plot_frame,
                 text=f"matplotlib unavailable: {e}",
-                foreground=WARN,
+                style="Warn.TLabel",
             ).pack(anchor="center", expand=True)
             return
 
@@ -1674,7 +1692,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.review_plot_frame,
                 text=f"frame_data error: {e}",
-                foreground=WARN,
+                style="Warn.TLabel",
             ).pack(anchor="center", expand=True)
             return
 
@@ -1682,7 +1700,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.review_plot_frame,
                 text=f"frame_data: {fd.get('error', 'unknown error')}",
-                foreground=WARN,
+                style="Warn.TLabel",
             ).pack(anchor="center", expand=True)
             return
 
@@ -1696,7 +1714,7 @@ class AnalysisApp:
         show_contamination = bool(self._show_contamination.get())
         fig = Figure(figsize=(7, 6), dpi=100, layout="constrained")
         self._review_fig = fig
-        fig.patch.set_facecolor(BG)
+        fig.patch.set_facecolor(theme.C.BG)
         panels, ratios = self._review_panel_layout(show_cake, show_contamination)
         gs = fig.add_gridspec(len(panels), 1, height_ratios=ratios)
         axes = {name: fig.add_subplot(gs[index]) for index, name in enumerate(panels)}
@@ -1714,17 +1732,17 @@ class AnalysisApp:
                 ax.plot(y, lw=lw, alpha=alpha, label=label, color=color)
 
         if self._show_mean.get():
-            _plot(ax1, fd.get("mean"), "mean", CLR_RAW)
+            _plot(ax1, fd.get("mean"), "mean", theme.C.CLR_RAW)
         if self._show_robust.get():
-            _plot(ax1, fd.get("robust"), "robust", CLR_MSKD)
+            _plot(ax1, fd.get("robust"), "robust", theme.C.CLR_MSKD)
         if self._show_baseline.get():
-            _plot(ax1, fd.get("baseline"), "baseline", CLR_SMTH)
+            _plot(ax1, fd.get("baseline"), "baseline", theme.C.CLR_SMTH)
         if self._show_clean.get():
-            _plot(ax1, fd.get("clean"), "clean", ACCENT2)
+            _plot(ax1, fd.get("clean"), "clean", theme.C.ACCENT2)
         if self._show_spot.get():
-            _plot(ax1, fd.get("spot_residual"), "spot_residual", CLR_DIFF)
+            _plot(ax1, fd.get("spot_residual"), "spot_residual", theme.C.CLR_DIFF)
         if self._show_residual.get():
-            _plot(ax1, fd.get("residual"), "residual", CLR_REF, lw=1.0, alpha=0.9)
+            _plot(ax1, fd.get("residual"), "residual", theme.C.CLR_REF, lw=1.0, alpha=0.9)
 
         # Overlay fitted peaks if requested.
         peaks = fd.get("peaks", [])
@@ -1739,15 +1757,15 @@ class AnalysisApp:
             clean_arr = fd.get("clean")
             y_ref = np.asarray(clean_arr, dtype=float) if clean_arr is not None else None
             for c in good_centers:
-                ax1.axvline(c, color=ACCENT2, lw=0.7, alpha=0.6)
+                ax1.axvline(c, color=theme.C.ACCENT2, lw=0.7, alpha=0.6)
             for c in bad_centers:
-                ax1.axvline(c, color=WARN, lw=0.7, alpha=0.5)
+                ax1.axvline(c, color=theme.C.WARN, lw=0.7, alpha=0.5)
 
         residual_peaks = fd.get("residual_peaks", [])
         if self._show_residual_peaks.get() and residual_peaks:
             for k, p in enumerate(residual_peaks):
                 ax1.axvline(
-                    p["center"], color=CLR_REF, lw=0.9, alpha=0.75,
+                    p["center"], color=theme.C.CLR_REF, lw=0.9, alpha=0.75,
                     linestyle="--",
                     label="residual peaks" if k == 0 else None,
                 )
@@ -1756,13 +1774,13 @@ class AnalysisApp:
         if self._show_unknowns.get() and unknown_obs:
             for k, p in enumerate(unknown_obs):
                 ax1.axvline(
-                    p["center"], color=WARN, lw=1.0, alpha=0.85,
+                    p["center"], color=theme.C.WARN, lw=1.0, alpha=0.85,
                     linestyle=":",
                     label="unknown peaks" if k == 0 else None,
                 )
 
         fname = Path(fd.get("filename", "")).name or f"frame {frame_index}"
-        ax1.set_title(f"{fname}  [frame {frame_index}]", color=FG)
+        ax1.set_title(f"{fname}  [frame {frame_index}]", color=theme.C.FG)
         ax1.set_xlabel(unit_label(unit))
         ax1.set_ylabel(INTENSITY_LABEL)
         if ax1.get_legend_handles_labels()[1]:
@@ -1790,9 +1808,9 @@ class AnalysisApp:
                                extent=extent, vmin=vmin, vmax=vmax)
                 ax_cake.set_xlabel(unit_label(ck.get("unit") or unit))
                 ax_cake.set_ylabel(AZIMUTH_LABEL)
-                ax_cake.set_title("Cake (2D)", color=FG)
+                ax_cake.set_title("Cake (2D)", color=theme.C.FG)
             else:
-                ax_cake.set_title(f"Cake: {ck.get('error', 'unavailable')}", color=WARN)
+                ax_cake.set_title(f"Cake: {ck.get('error', 'unavailable')}", color=theme.C.WARN)
                 ax_cake.set_xticks([]); ax_cake.set_yticks([])
             self._style_ax(ax_cake)
 
@@ -1801,26 +1819,26 @@ class AnalysisApp:
             contam = self._review_contamination
             if contam is not None and len(contam):
                 c_arr = np.asarray(contam, dtype=float)
-                ax2.plot(c_arr, lw=0.8, color=CLR_DIFF, alpha=0.85)
-                ax2.axvline(frame_index, color=ACCENT, lw=1.2, alpha=0.8)
+                ax2.plot(c_arr, lw=0.8, color=theme.C.CLR_DIFF, alpha=0.85)
+                ax2.axvline(frame_index, color=theme.C.ACCENT, lw=1.2, alpha=0.8)
                 ax2.set_xlabel(FRAME_LABEL)
                 ax2.set_ylabel(CONTAMINATION_LABEL)
-                ax2.set_title("Contamination vs frame", color=FG)
+                ax2.set_title("Contamination vs frame", color=theme.C.FG)
             else:
-                ax2.set_title("Contamination (not available)", color=FG)
+                ax2.set_title("Contamination (not available)", color=theme.C.FG)
                 ax2.set_xlabel(FRAME_LABEL)
             self._style_ax(ax2)
 
         self._review_canvas = self._embed_figure(self.review_plot_frame, fig)
 
     def _style_ax(self, ax):
-        ax.set_facecolor(BG2)
-        ax.tick_params(colors=FG, which="both")
-        ax.xaxis.label.set_color(FG)
-        ax.yaxis.label.set_color(FG)
-        ax.title.set_color(FG)
+        ax.set_facecolor(theme.C.BG2)
+        ax.tick_params(colors=theme.C.FG, which="both")
+        ax.xaxis.label.set_color(theme.C.FG)
+        ax.yaxis.label.set_color(theme.C.FG)
+        ax.title.set_color(theme.C.FG)
         for s in ax.spines.values():
-            s.set_edgecolor(FG)
+            s.set_edgecolor(theme.C.FG)
 
     def _toggle_identify_help(self):
         """Show/hide the Identify instructions so the plot can use the space."""
@@ -1841,7 +1859,7 @@ class AnalysisApp:
             win = self.tk.Toplevel(self.root)
             win.title(f"SeriesXRD — {title}")
             try:
-                win.configure(bg=BG)
+                win.configure(bg=theme.C.BG)
                 win.geometry("1100x800")
             except Exception:
                 pass
@@ -1880,11 +1898,11 @@ class AnalysisApp:
         """Recolour a colorbar to the dark palette — its label, ticks, and
         outline default to black and vanish against the figure background."""
         try:
-            cb.ax.tick_params(colors=FG, which="both")
-            cb.ax.yaxis.label.set_color(FG)
-            cb.ax.xaxis.label.set_color(FG)
+            cb.ax.tick_params(colors=theme.C.FG, which="both")
+            cb.ax.yaxis.label.set_color(theme.C.FG)
+            cb.ax.xaxis.label.set_color(theme.C.FG)
             if cb.outline is not None:
-                cb.outline.set_edgecolor(FG)
+                cb.outline.set_edgecolor(theme.C.FG)
         except Exception:
             pass
 
@@ -1924,17 +1942,17 @@ class AnalysisApp:
             # fill so the icons read clearly; keep the frame + coordinate label
             # on the dark palette.
             try:
-                tb.configure(background=BG)
+                tb.configure(background=theme.C.BG)
                 for child in tb.winfo_children():
                     cls = child.winfo_class()
                     try:
                         if cls in ("Button", "Checkbutton", "Radiobutton"):
-                            child.configure(background=FG, activebackground=ACCENT,
-                                            highlightbackground=BG, relief="flat")
+                            child.configure(background=theme.C.FG, activebackground=theme.C.ACCENT,
+                                            highlightbackground=theme.C.BG, relief="flat")
                         elif cls == "Label":
-                            child.configure(background=BG, foreground=FG)
+                            child.configure(background=theme.C.BG, foreground=theme.C.FG)
                         else:
-                            child.configure(background=BG)
+                            child.configure(background=theme.C.BG)
                     except Exception:
                         pass
             except Exception:
@@ -1959,14 +1977,14 @@ class AnalysisApp:
             top, text="Good peaks only", variable=self._heatmap_good_only,
             command=self.load_heatmap,
         ).pack(side="left", padx=8)
-        ttk.Label(top, text="Color by:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        ttk.Label(top, text="Color by:", style="Muted.TLabel").pack(side="left", padx=(12, 2))
         self._heatmap_color_by = tk.StringVar(value="area")
         ttk.Combobox(
             top, textvariable=self._heatmap_color_by,
             values=["area", "amplitude", "fwhm"],
             width=10, state="readonly",
         ).pack(side="left", padx=2)
-        ttk.Label(top, text="X axis:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        ttk.Label(top, text="X axis:", style="Muted.TLabel").pack(side="left", padx=(12, 2))
         self._heatmap_xaxis = ttk.Combobox(
             top, values=["frame", "pressure", "temperature", "time"],
             state="readonly", width=11)
@@ -1981,7 +1999,7 @@ class AnalysisApp:
                        getattr(self, "_heatmap_fig", None), "Peak map")
                    ).pack(side="left", padx=4)
 
-        self.heatmap_status = ttk.Label(top, text="", foreground=MUTED)
+        self.heatmap_status = ttk.Label(top, text="", style="Muted.TLabel")
         self.heatmap_status.pack(side="left", padx=12)
 
         tools = ttk.Frame(frame)
@@ -1993,7 +2011,7 @@ class AnalysisApp:
         ttk.Label(
             tools,
             text="Williamson–Hall analysis of accepted peak widths",
-            foreground=MUTED,
+            style="Muted.TLabel",
         ).pack(side="left", padx=6)
 
         self.heatmap_plot_frame = ttk.Frame(frame)
@@ -2001,7 +2019,7 @@ class AnalysisApp:
         ttk.Label(
             self.heatmap_plot_frame,
             text="Load the analysis HDF5 to display the peak map.",
-            foreground=MUTED,
+            style="Muted.TLabel",
         ).pack(anchor="center", expand=True)
 
     def run_microstructure_clicked(self):
@@ -2077,7 +2095,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.heatmap_plot_frame,
                 text=f"matplotlib unavailable: {e}",
-                foreground=WARN,
+                style="Warn.TLabel",
             ).pack(anchor="center", expand=True)
             return
 
@@ -2091,7 +2109,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.heatmap_plot_frame,
                 text=f"peak_map error: {e}",
-                foreground=WARN,
+                style="Warn.TLabel",
             ).pack(anchor="center", expand=True)
             return
 
@@ -2100,7 +2118,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.heatmap_plot_frame,
                 text=f"Peak map: {err}",
-                foreground=WARN,
+                style="Warn.TLabel",
             ).pack(anchor="center", expand=True)
             if hasattr(self, "heatmap_status"):
                 self.heatmap_status.configure(text=err)
@@ -2119,7 +2137,7 @@ class AnalysisApp:
             sx = series_axis(path, x_kind)
             if not sx["ok"]:
                 self.ttk.Label(self.heatmap_plot_frame, text=sx["error"],
-                               foreground=WARN).pack(anchor="center", expand=True)
+                               style="Warn.TLabel").pack(anchor="center", expand=True)
                 if hasattr(self, "heatmap_status"):
                     self.heatmap_status.configure(text=sx["error"])
                 return
@@ -2141,12 +2159,12 @@ class AnalysisApp:
 
         fig = Figure(figsize=(7, 5), dpi=100, layout="constrained")
         self._heatmap_fig = fig
-        fig.patch.set_facecolor(BG)
+        fig.patch.set_facecolor(theme.C.BG)
         ax = fig.add_subplot(1, 1, 1)
         self._style_ax(ax)
 
         if n_pts == 0:
-            ax.set_title("No peaks to display", color=FG)
+            ax.set_title("No peaks to display", color=theme.C.FG)
         else:
             # Log-safe normalisation for area / amplitude; linear for fwhm.
             if color_by in ("area", "amplitude"):
@@ -2165,16 +2183,16 @@ class AnalysisApp:
             sc = ax.scatter(
                 x_arr, center_arr, c=c_arr,
                 cmap="viridis", s=28, alpha=0.9, norm=norm,
-                edgecolors=FG, linewidths=0.4,
+                edgecolors=theme.C.FG, linewidths=0.4,
             )
             try:
                 cb = fig.colorbar(sc, ax=ax, label=color_by)
                 self._style_colorbar(cb)
             except Exception:
                 pass
-            ax.set_xlabel(x_label, color=FG)
-            ax.set_ylabel(f"Peak center — {unit_label(unit)}", color=FG)
-            ax.set_title(f"Peak map — {n_pts} peaks", color=FG)
+            ax.set_xlabel(x_label, color=theme.C.FG)
+            ax.set_ylabel(f"Peak center — {unit_label(unit)}", color=theme.C.FG)
+            ax.set_title(f"Peak map — {n_pts} peaks", color=theme.C.FG)
 
         self._heatmap_canvas = self._embed_figure(self.heatmap_plot_frame, fig)
         self._attach_hover(self._heatmap_canvas, self.heatmap_status)
@@ -2207,11 +2225,11 @@ class AnalysisApp:
             side="left", padx=4)
         ttk.Button(ctrl, text="Refresh", command=self.load_phases_table).pack(
             side="left", padx=4)
-        self._phases_status = ttk.Label(ctrl, text="", foreground=MUTED)
+        self._phases_status = ttk.Label(ctrl, text="", style="Muted.TLabel")
         self._phases_status.pack(side="right", padx=8)
 
         # pymatgen availability hint
-        self._phases_pymatgen_label = ttk.Label(frame, text="", foreground=MUTED,
+        self._phases_pymatgen_label = ttk.Label(frame, text="", style="Muted.TLabel",
                                                 wraplength=800, justify="left")
         self._phases_pymatgen_label.pack(fill="x", padx=4, pady=(0, 2))
 
@@ -2244,7 +2262,7 @@ class AnalysisApp:
         self.phases_tree.column("K0p",        width=60,  minwidth=40,  anchor="center")
         self.phases_tree.column("source",     width=260, minwidth=100)
 
-        self.phases_tree.tag_configure("user", foreground=ACCENT)
+        self.phases_tree.tag_configure("user", foreground=theme.C.ACCENT)
 
         self.phases_tree.bind("<Button-1>", self._phases_tree_click)
         self.phases_tree.bind("<Double-1>", self.edit_phase_clicked)
@@ -2295,12 +2313,12 @@ class AnalysisApp:
             if pymatgen_available():
                 self._phases_pymatgen_label.configure(
                     text="pymatgen available — CIF auto-parsing and pattern simulation enabled.",
-                    foreground=MUTED)
+                    style="Muted.TLabel")
             else:
                 self._phases_pymatgen_label.configure(
                     text=("pymatgen not installed — CIF auto-parsing & pattern simulation "
                           "disabled (pip install pymatgen). You can still add phases manually."),
-                    foreground=WARN)
+                    style="Warn.TLabel")
         self._refresh_gridmap_values()
 
     def _phases_tree_click(self, event):
@@ -2347,7 +2365,7 @@ class AnalysisApp:
         title = "Edit phase" if existing else "Add phase"
         dlg = tk.Toplevel(self.root)
         dlg.title(title)
-        dlg.configure(bg=BG)
+        dlg.configure(bg=theme.C.BG)
         dlg.transient(self.root)
         dlg.grab_set()
         dlg.resizable(True, True)
@@ -2445,7 +2463,7 @@ class AnalysisApp:
         ttk.Label(eos_frame,
                   text="V0 optional (cancels in scaling); only K0 is required. "
                        "Forms: BM2/BM3/BM4, Vinet, Murnaghan.",
-                  foreground=MUTED).grid(row=2, column=0, columnspan=8, sticky="w", pady=(2, 0))
+                  style="Muted.TLabel").grid(row=2, column=0, columnspan=8, sticky="w", pady=(2, 0))
         row += 1
 
         # Axial (anisotropic) EOS — optional, per-axis K0/K0' for non-cubic phases.
@@ -2470,7 +2488,7 @@ class AnalysisApp:
                   text="Optional. Fill per-axis K0 (on the cubed axis length, "
                        "PASCal/EosFit convention) for anisotropic compression; "
                        "blank axes fall back to the volume EOS. b inherits a if equal.",
-                  foreground=MUTED, wraplength=420, justify="left").grid(
+                  style="Muted.TLabel", wraplength=420, justify="left").grid(
             row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
         row += 1
 
@@ -2483,8 +2501,8 @@ class AnalysisApp:
 
         # Notes
         ttk.Label(content, text="Notes").grid(row=row, column=0, sticky="nw", **pad)
-        notes_text = tk.Text(content, width=50, height=3, bg=BG2, fg=FG,
-                             insertbackground=FG, relief="flat", wrap="word")
+        notes_text = tk.Text(content, width=50, height=3, bg=theme.C.BG2, fg=theme.C.FG,
+                             insertbackground=theme.C.FG, relief="flat", wrap="word")
         notes_text.grid(row=row, column=1, columnspan=3, sticky="we", **pad)
         if existing and existing.notes:
             notes_text.insert("1.0", existing.notes)
@@ -2638,7 +2656,7 @@ class AnalysisApp:
                 "Per-frame pressure and temperature feed the Step-3 prior and "
                 "the series plots. Populate them here (filenames, CSV, or by hand)."
             ),
-            foreground=MUTED, justify="left", wraplength=760,
+            style="Muted.TLabel", justify="left", wraplength=760,
         )
         _fm_sub.pack(anchor="w", padx=6, pady=(0, 6))
         self.autowrap(_fm_sub)
@@ -2661,7 +2679,7 @@ class AnalysisApp:
         ttk.Button(ctrl, text="Preview pressure vs frame",
                    command=self.preview_pressure_clicked).pack(side="left", padx=4)
 
-        self._fm_status = ttk.Label(frame, text="", foreground=MUTED)
+        self._fm_status = ttk.Label(frame, text="", style="Muted.TLabel")
         self._fm_status.pack(anchor="w", padx=6, pady=(0, 4))
 
         # Editable per-frame metadata table
@@ -2687,18 +2705,18 @@ class AnalysisApp:
         ):
             self._fm_table.heading(c, text=txt)
             self._fm_table.column(c, width=w, minwidth=40, anchor=anc, stretch=stretch)
-        self._fm_table.tag_configure("user", foreground=ACCENT)
+        self._fm_table.tag_configure("user", foreground=theme.C.ACCENT)
 
         # Editor row
         editor = ttk.Frame(frame)
         editor.pack(fill="x", padx=6, pady=(0, 2))
-        ttk.Label(editor, text="P (GPa):", foreground=MUTED).pack(side="left", padx=(0, 2))
+        ttk.Label(editor, text="P (GPa):", style="Muted.TLabel").pack(side="left", padx=(0, 2))
         self._fm_edit_p = self.tk.StringVar(value="")
         ttk.Entry(editor, textvariable=self._fm_edit_p, width=10).pack(side="left", padx=(0, 8))
-        ttk.Label(editor, text="σ:", foreground=MUTED).pack(side="left", padx=(0, 2))
+        ttk.Label(editor, text="σ:", style="Muted.TLabel").pack(side="left", padx=(0, 2))
         self._fm_edit_sig = self.tk.StringVar(value="")
         ttk.Entry(editor, textvariable=self._fm_edit_sig, width=10).pack(side="left", padx=(0, 8))
-        ttk.Label(editor, text="T (K):", foreground=MUTED).pack(side="left", padx=(0, 2))
+        ttk.Label(editor, text="T (K):", style="Muted.TLabel").pack(side="left", padx=(0, 2))
         self._fm_edit_t = self.tk.StringVar(value="")
         ttk.Entry(editor, textvariable=self._fm_edit_t, width=10).pack(side="left", padx=(0, 8))
         ttk.Button(editor, text="Apply to selected",
@@ -2721,7 +2739,7 @@ class AnalysisApp:
             text=("Select frame(s), enter values (blank = leave unchanged), Apply. "
                   "Applied values are marked 'user' — filename re-parsing and "
                   "Step-1 re-runs will not overwrite them."),
-            foreground=MUTED, wraplength=760, justify="left",
+            style="Muted.TLabel", wraplength=760, justify="left",
         )
         _fm_hint.pack(anchor="w", padx=6, pady=(0, 4))
         self.autowrap(_fm_hint)
@@ -2731,7 +2749,7 @@ class AnalysisApp:
         ttk.Label(
             self.fm_plot_frame,
             text="Extract from filenames or Import CSV to populate frame pressures.",
-            foreground=MUTED,
+            style="Muted.TLabel",
         ).pack(anchor="center", expand=True)
 
         _fm_csv = ttk.Label(
@@ -2743,7 +2761,7 @@ class AnalysisApp:
                 "filenames (e.g. sample-1p5GPa → 1.5). Use this tab to override "
                 "those or to enter gauge readings (ruby, membrane, thermocouple)."
             ),
-            foreground=MUTED, justify="left", wraplength=700,
+            style="Muted.TLabel", justify="left", wraplength=700,
         )
         _fm_csv.pack(anchor="w", padx=6, pady=(4, 4))
         self.autowrap(_fm_csv)
@@ -2876,7 +2894,9 @@ class AnalysisApp:
                 sman = stack_figure(path, Path(out_dir) / out_name,
                                     source=source, frames=indices,
                                     style=stack_style, exclude_d=exclude_d,
-                                    dpi=int(preset["dpi"]))
+                                    dpi=int(preset["dpi"]),
+                                    palette=preset.get("palette"),
+                                    background=preset.get("background"))
                 extra_msg = (f" + {out_name} ({sman['n_panels']} "
                              f"{sman['style']} panels, {fig_preset} preset)")
             except Exception as e:
@@ -2910,7 +2930,7 @@ class AnalysisApp:
             return
         dlg = tk.Toplevel(self.root)
         dlg.title(f"Export {len(indices)} frame(s)")
-        dlg.configure(bg=BG)
+        dlg.configure(bg=theme.C.BG)
         dlg.transient(self.root)
         dlg.grab_set()
         content = ttk.Frame(dlg, padding=10)
@@ -2919,7 +2939,7 @@ class AnalysisApp:
             "Writes each frame as a two-column .xy pattern (native axis "
             "always; 2θ too when the wavelength is known) and optional CSVs "
             "for fitted, residual, and unknown peaks."),
-            foreground=MUTED, wraplength=430, justify="left").grid(
+            style="Muted.TLabel", wraplength=430, justify="left").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
         ttk.Label(content, text="Pattern channel").grid(row=1, column=0,
                                                         sticky="w", pady=2)
@@ -3115,7 +3135,7 @@ class AnalysisApp:
         tk, ttk = self.tk, self.ttk
         dlg = tk.Toplevel(self.root)
         dlg.title("Read X/Y from frame headers")
-        dlg.configure(bg=BG)
+        dlg.configure(bg=theme.C.BG)
         dlg.transient(self.root)
         dlg.grab_set()
         content = ttk.Frame(dlg, padding=10)
@@ -3125,7 +3145,7 @@ class AnalysisApp:
             "two motor values as /frames/pos_x and pos_y. Key names are "
             "case-insensitive; the motor_mne/motor_pos pair convention is "
             "understood. 'List keys' shows what the first frame's header "
-            "offers."), foreground=MUTED, wraplength=460, justify="left").grid(
+            "offers."), style="Muted.TLabel", wraplength=460, justify="left").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
         v_kx = tk.StringVar(value=str(self.config.get("pos_header_x", "")))
         v_ky = tk.StringVar(value=str(self.config.get("pos_header_y", "")))
@@ -3144,7 +3164,7 @@ class AnalysisApp:
         ttk.Button(content, text="Browse", command=_browse).grid(row=3, column=2, padx=4)
         ttk.Label(content, text=(
             "Folder is only needed when /frames/filename holds bare names "
-            "instead of full paths."), foreground=MUTED, wraplength=460,
+            "instead of full paths."), style="Muted.TLabel", wraplength=460,
             justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 8))
 
         def _list_keys():
@@ -3345,7 +3365,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.fm_plot_frame,
                 text="No pressures yet — Extract from filenames or Import CSV.",
-                foreground=MUTED,
+                style="Muted.TLabel",
             ).pack(anchor="center", expand=True)
             return
 
@@ -3375,19 +3395,19 @@ class AnalysisApp:
                     f"matplotlib unavailable: {e}\n\n"
                     f"{n_parsed}/{n_frames} frames have pressure ({p_txt})."
                 ),
-                foreground=MUTED, justify="left",
+                style="Muted.TLabel", justify="left",
             ).pack(anchor="center", expand=True)
             return
 
         fig = Figure(figsize=(7, 4), dpi=100, layout="constrained")
         self._fm_fig = fig
-        fig.patch.set_facecolor(BG)
+        fig.patch.set_facecolor(theme.C.BG)
         ax = fig.add_subplot(1, 1, 1)
         x = np.arange(pressure.size, dtype=float)
-        ax.plot(x, pressure, marker=".", markersize=3, linewidth=0.8, color=ACCENT2)
+        ax.plot(x, pressure, marker=".", markersize=3, linewidth=0.8, color=theme.C.ACCENT2)
         ax.set_xlabel(FRAME_LABEL)
         ax.set_ylabel(PRESSURE_LABEL)
-        ax.set_title("Frame pressure", color=FG)
+        ax.set_title("Frame pressure", color=theme.C.FG)
         self._style_ax(ax)
 
         self._fm_canvas = self._embed_figure(self.fm_plot_frame, fig)
@@ -3454,14 +3474,14 @@ class AnalysisApp:
             "(cosine of the measured residual/fit pattern vs each phase simulated at the "
             "frame's pressure) and verify only the top-K with Step 3a. 'ML proposes, "
             "physics verifies.' Deterministic (no torch); needs pymatgen to simulate."))
-        ttk.Label(mlrow, text="top-K:", foreground=MUTED).pack(side="left", padx=(10, 2))
+        ttk.Label(mlrow, text="top-K:", style="Muted.TLabel").pack(side="left", padx=(10, 2))
         self.vars["ml_rank_top_k"] = tk.StringVar(value=str(self.config.get("ml_rank_top_k", "5")))
         ttk.Entry(mlrow, textvariable=self.vars["ml_rank_top_k"], width=5).pack(side="left")
-        ttk.Label(mlrow, text="rank vs:", foreground=MUTED).pack(side="left", padx=(10, 2))
+        ttk.Label(mlrow, text="rank vs:", style="Muted.TLabel").pack(side="left", padx=(10, 2))
         self.vars["ml_rank_source"] = tk.StringVar(value=str(self.config.get("ml_rank_source", "auto")))
         ttk.Combobox(mlrow, textvariable=self.vars["ml_rank_source"],
                      values=["auto", "residual", "fit"], state="readonly", width=8).pack(side="left")
-        ttk.Label(mlrow, text="scorer:", foreground=MUTED).pack(side="left", padx=(10, 2))
+        ttk.Label(mlrow, text="scorer:", style="Muted.TLabel").pack(side="left", padx=(10, 2))
         self.vars["ml_scorer"] = tk.StringVar(value=str(self.config.get("ml_scorer", "")))
         _mlsc = ttk.Entry(mlrow, textvariable=self.vars["ml_scorer"], width=22)
         _mlsc.pack(side="left")
@@ -3474,9 +3494,9 @@ class AnalysisApp:
         # -- Step 3c unknown tracking ------------------------------------
         unkrow = ttk.Frame(frame)
         unkrow.grid(row=11, column=0, columnspan=6, sticky="w", pady=(4, 2))
-        ttk.Label(unkrow, text="Unknown tracking:", foreground=MUTED).pack(
+        ttk.Label(unkrow, text="Unknown tracking:", style="Muted.TLabel").pack(
             side="left", padx=(0, 6))
-        ttk.Label(unkrow, text="track by", foreground=MUTED).pack(side="left", padx=(4, 2))
+        ttk.Label(unkrow, text="track by", style="Muted.TLabel").pack(side="left", padx=(4, 2))
         self.vars["unknown_tracking_axis"] = tk.StringVar(
             value=str(self.config.get("unknown_tracking_axis", "same") or "same"))
         _ut_axis = ttk.Combobox(
@@ -3485,7 +3505,7 @@ class AnalysisApp:
             state="readonly", width=11)
         _ut_axis.pack(side="left")
         _ToolTip(_ut_axis, HELP["unknown_tracking_axis"])
-        ttk.Label(unkrow, text="group by", foreground=MUTED).pack(side="left", padx=(10, 2))
+        ttk.Label(unkrow, text="group by", style="Muted.TLabel").pack(side="left", padx=(10, 2))
         self.vars["unknown_group_by"] = tk.StringVar(
             value=str(self.config.get("unknown_group_by", "same") or "same"))
         _ut_group = ttk.Combobox(
@@ -3493,31 +3513,31 @@ class AnalysisApp:
             values=["same", "none", "scan", "folder"], state="readonly", width=8)
         _ut_group.pack(side="left")
         _ToolTip(_ut_group, HELP["unknown_group_by"])
-        ttk.Label(unkrow, text="tol×FWHM", foreground=MUTED).pack(side="left", padx=(10, 2))
+        ttk.Label(unkrow, text="tol×FWHM", style="Muted.TLabel").pack(side="left", padx=(10, 2))
         self.vars["unknown_link_tol_fwhm"] = tk.StringVar(
             value=str(self.config.get("unknown_link_tol_fwhm", "1.5")))
         _ut_tol = ttk.Entry(unkrow, textvariable=self.vars["unknown_link_tol_fwhm"], width=5)
         _ut_tol.pack(side="left")
         _ToolTip(_ut_tol, HELP["unknown_link_tol_fwhm"])
-        ttk.Label(unkrow, text="missing", foreground=MUTED).pack(side="left", padx=(10, 2))
+        ttk.Label(unkrow, text="missing", style="Muted.TLabel").pack(side="left", padx=(10, 2))
         self.vars["unknown_max_gap"] = tk.StringVar(
             value=str(self.config.get("unknown_max_gap", "2")))
         _ut_gap = ttk.Entry(unkrow, textvariable=self.vars["unknown_max_gap"], width=5)
         _ut_gap.pack(side="left")
         _ToolTip(_ut_gap, HELP["unknown_max_gap"])
-        ttk.Label(unkrow, text="axis gap", foreground=MUTED).pack(side="left", padx=(10, 2))
+        ttk.Label(unkrow, text="axis gap", style="Muted.TLabel").pack(side="left", padx=(10, 2))
         self.vars["unknown_max_axis_gap"] = tk.StringVar(
             value=str(self.config.get("unknown_max_axis_gap", "")))
         _ut_agap = ttk.Entry(unkrow, textvariable=self.vars["unknown_max_axis_gap"], width=7)
         _ut_agap.pack(side="left")
         _ToolTip(_ut_agap, HELP["unknown_max_axis_gap"])
-        ttk.Label(unkrow, text="min frames", foreground=MUTED).pack(side="left", padx=(10, 2))
+        ttk.Label(unkrow, text="min frames", style="Muted.TLabel").pack(side="left", padx=(10, 2))
         self.vars["unknown_min_frames"] = tk.StringVar(
             value=str(self.config.get("unknown_min_frames", "3")))
         _ut_min = ttk.Entry(unkrow, textvariable=self.vars["unknown_min_frames"], width=5)
         _ut_min.pack(side="left")
         _ToolTip(_ut_min, HELP["unknown_min_frames"])
-        ttk.Label(unkrow, text="Jaccard", foreground=MUTED).pack(side="left", padx=(10, 2))
+        ttk.Label(unkrow, text="Jaccard", style="Muted.TLabel").pack(side="left", padx=(10, 2))
         self.vars["unknown_jaccard"] = tk.StringVar(
             value=str(self.config.get("unknown_jaccard", "0.6")))
         _ut_j = ttk.Entry(unkrow, textvariable=self.vars["unknown_jaccard"], width=5)
@@ -3545,7 +3565,7 @@ class AnalysisApp:
                 "The residual step then subtracts confirmed phases and re-fits, "
                 "and the unknowns step clusters whatever is left."
             ),
-            foreground=MUTED, justify="left", wraplength=640,
+            style="Muted.TLabel", justify="left", wraplength=640,
         )
         self._identify_help.grid(row=13, column=0, columnspan=6, sticky="w",
                                  padx=6, pady=(8, 4))
@@ -3563,7 +3583,7 @@ class AnalysisApp:
                        getattr(self, "_identify_fig", None), "Phase identification")
                    ).pack(side="left", padx=4)
 
-        ttk.Label(ctrl, text="Min confidence:", foreground=MUTED).pack(
+        ttk.Label(ctrl, text="Min confidence:", style="Muted.TLabel").pack(
             side="left", padx=(12, 2))
         self._identify_conf_var = tk.StringVar(value="0.5")
         _conf_entry = ttk.Entry(ctrl, textvariable=self._identify_conf_var, width=6)
@@ -3577,7 +3597,7 @@ class AnalysisApp:
             command=self.run_phase_fractions_clicked,
         ).pack(side="left", padx=(10, 4))
 
-        self._identify_status = ttk.Label(ctrl, text="", foreground=MUTED)
+        self._identify_status = ttk.Label(ctrl, text="", style="Muted.TLabel")
         self._identify_status.pack(side="left", padx=12)
 
         # -- body: per-frame phase table (left) + plot (right) ------------
@@ -3603,7 +3623,7 @@ class AnalysisApp:
         # Page 1 — a frame selector and the ranked phase table for that frame.
         sel = ttk.Frame(page_frame)
         sel.pack(fill="x", pady=(0, 4))
-        ttk.Label(sel, text="Frame", foreground=MUTED).pack(side="left", padx=(0, 4))
+        ttk.Label(sel, text="Frame", style="Muted.TLabel").pack(side="left", padx=(0, 4))
         ttk.Button(sel, text="◀", width=2,
                    command=lambda: self._step_identify_frame(-1)).pack(side="left")
         self._identify_frame_var = tk.StringVar(value="0")
@@ -3628,15 +3648,15 @@ class AnalysisApp:
                                ("pressure", "P (GPa)", 60, "center"), ("lines", "#", 36, "center")):
             tbl.heading(c, text=txt)
             tbl.column(c, width=w, minwidth=34, anchor=anc, stretch=(c == "phase"))
-        tbl.tag_configure("present", foreground=ACCENT2)
-        tbl.tag_configure("absent", foreground=MUTED)
+        tbl.tag_configure("present", foreground=theme.C.ACCENT2)
+        tbl.tag_configure("absent", foreground=theme.C.MUTED)
         tbl_vsb.pack(side="right", fill="y")
         tbl.pack(side="left", fill="both", expand=True)
         self._identify_table = tbl
 
         # Page 2 — materials-found summary + frames-by-material browser.
         ttk.Label(page_mat, text="Materials found (click → frames containing it):",
-                 foreground=MUTED).pack(anchor="w", pady=(0, 2))
+                 style="Muted.TLabel").pack(anchor="w", pady=(0, 2))
 
         summary_cols = ("phase", "frames", "medP")
         summary = ttk.Treeview(page_mat, columns=summary_cols, show="headings", height=5,
@@ -3651,14 +3671,14 @@ class AnalysisApp:
         self._identify_phase_summary = summary
 
         ttk.Label(page_mat, text="Frames with selected material (double-click to view):",
-                 foreground=MUTED).pack(anchor="w", pady=(6, 2))
+                 style="Muted.TLabel").pack(anchor="w", pady=(6, 2))
 
         frames_list_frame = ttk.Frame(page_mat)
         frames_list_frame.pack(fill="both", expand=True)
         frames_vsb = ttk.Scrollbar(frames_list_frame, orient="vertical")
         listbox = tk.Listbox(
-            frames_list_frame, height=5, bg=BG2, fg=FG,
-            selectbackground=ACCENT2, yscrollcommand=frames_vsb.set,
+            frames_list_frame, height=5, bg=theme.C.BG2, fg=theme.C.FG,
+            selectbackground=theme.C.ACCENT2, yscrollcommand=frames_vsb.set,
             exportselection=False,
         )
         frames_vsb.configure(command=listbox.yview)
@@ -3678,7 +3698,7 @@ class AnalysisApp:
             text="Enable phase identification and Run, or click \"Load "
                  "identification\" to view per-frame phases + confidence. "
                  "Tick \"Show instructions\" (top) for the step-by-step workflow.",
-            foreground=MUTED, wraplength=380, justify="left",
+            style="Muted.TLabel", wraplength=380, justify="left",
         ).pack(anchor="center", expand=True)
 
     def run_phase_fractions_clicked(self):
@@ -3742,7 +3762,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.identify_plot_frame,
                 text=f"matplotlib unavailable: {e}",
-                foreground=WARN,
+                style="Warn.TLabel",
             ).pack(anchor="center", expand=True)
             return
 
@@ -3755,7 +3775,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.identify_plot_frame,
                 text=tr["error"],
-                foreground=WARN,
+                style="Warn.TLabel",
             ).pack(anchor="center", expand=True)
             if hasattr(self, "_identify_status"):
                 self._identify_status.configure(text=tr["error"])
@@ -3776,7 +3796,7 @@ class AnalysisApp:
 
         fig = Figure(figsize=(7, 6), dpi=100, layout="constrained")
         self._identify_fig = fig
-        fig.patch.set_facecolor(BG)
+        fig.patch.set_facecolor(theme.C.BG)
         ax_pres = fig.add_subplot(2, 1, 1)
         ax_conf = fig.add_subplot(2, 1, 2)
 
@@ -3823,13 +3843,13 @@ class AnalysisApp:
         ax_pres.set_ylabel(PRESSURE_LABEL)
         ax_pres.set_title(
             f"Phases seen (confidence ≥ {conf_min:.2f}) — {len(shown)} shown",
-            color=FG)
+            color=theme.C.FG)
         handles, labels = ax_pres.get_legend_handles_labels()
         if handles:
             ax_pres.legend(fontsize=7, framealpha=0.4, ncol=2, loc="upper right")
         self._style_ax(ax_pres)
 
-        ax_conf.axhline(conf_min, color=MUTED, linewidth=0.8, linestyle="--")
+        ax_conf.axhline(conf_min, color=theme.C.MUTED, linewidth=0.8, linestyle="--")
         ax_conf.set_xlabel(FRAME_LABEL)
         ax_conf.set_ylabel("Confidence")
         ax_conf.set_ylim(0, 1.02)
@@ -4084,7 +4104,7 @@ class AnalysisApp:
                        getattr(self, "_patternmap_fig", None), "Pattern map")
                    ).pack(side="left", padx=4)
 
-        ttk.Label(row1, text="Source:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        ttk.Label(row1, text="Source:", style="Muted.TLabel").pack(side="left", padx=(12, 2))
         from .heatmap import SOURCES as _PM_SOURCES
         self._pm_source = ttk.Combobox(
             row1,
@@ -4096,7 +4116,7 @@ class AnalysisApp:
         self._pm_source.bind("<<ComboboxSelected>>",
                              lambda e: self.load_pattern_map())
 
-        ttk.Label(row1, text="X axis:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        ttk.Label(row1, text="X axis:", style="Muted.TLabel").pack(side="left", padx=(12, 2))
         self._pm_xaxis = ttk.Combobox(
             row1,
             values=["frame", "pressure", "temperature", "time"],
@@ -4125,14 +4145,14 @@ class AnalysisApp:
         _ToolTip(_lay_cb, "Second panel: per-phase matched-reflection intensity "
                           "vs the chosen x variable.")
 
-        self._pm_status = ttk.Label(row1, text="", foreground=MUTED)
+        self._pm_status = ttk.Label(row1, text="", style="Muted.TLabel")
         self._pm_status.pack(side="right", padx=8)
 
         # Controls row 2
         row2 = ttk.Frame(frame)
         row2.pack(fill="x", pady=(0, 4))
 
-        ttk.Label(row2, text="Export →", foreground=MUTED).pack(side="left", padx=(4, 6))
+        ttk.Label(row2, text="Export →", style="Muted.TLabel").pack(side="left", padx=(4, 6))
         ttk.Button(row2, text="Refinement bundle…",
                    command=self.export_refinement_clicked).pack(side="left", padx=2)
         ttk.Button(row2, text="GSAS raw patterns…",
@@ -4142,7 +4162,7 @@ class AnalysisApp:
         ttk.Button(row2, text="Export simulated set…",
                    command=self.export_sim_clicked).pack(side="left", padx=2)
 
-        self._pm_pymatgen = ttk.Label(row2, text="", foreground=MUTED, wraplength=600,
+        self._pm_pymatgen = ttk.Label(row2, text="", style="Muted.TLabel", wraplength=600,
                                       justify="left")
         self._pm_pymatgen.pack(side="left", padx=12)
 
@@ -4152,7 +4172,7 @@ class AnalysisApp:
         ttk.Label(
             self.patternmap_plot_frame,
             text="Run the pipeline or Load pattern map to view the pattern waterfall.",
-            foreground=MUTED,
+            style="Muted.TLabel",
         ).pack(anchor="center", expand=True)
 
     def load_pattern_map(self):
@@ -4184,7 +4204,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.patternmap_plot_frame,
                 text=f"matplotlib unavailable: {e}",
-                foreground=WARN,
+                style="Warn.TLabel",
             ).pack(anchor="center", expand=True)
             return
 
@@ -4196,7 +4216,7 @@ class AnalysisApp:
         # Update pymatgen hint label
         if hasattr(self, "_pm_pymatgen"):
             if pymatgen_available():
-                self._pm_pymatgen.configure(text="", foreground=MUTED)
+                self._pm_pymatgen.configure(text="", style="Muted.TLabel")
             else:
                 self._pm_pymatgen.configure(
                     text=(
@@ -4204,7 +4224,7 @@ class AnalysisApp:
                         "simulated set are disabled (waterfall + ML export of measured data "
                         "still work)"
                     ),
-                    foreground=WARN,
+                    style="Warn.TLabel",
                 )
 
         x_axis = getattr(self._pm_xaxis, "get", lambda: "frame")()
@@ -4215,7 +4235,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.patternmap_plot_frame,
                 text=img["error"],
-                foreground=WARN,
+                style="Warn.TLabel",
             ).pack(anchor="center", expand=True)
             if hasattr(self, "_pm_status"):
                 self._pm_status.configure(text=img["error"])
@@ -4232,7 +4252,7 @@ class AnalysisApp:
             ax = fig.add_subplot(1, 1, 1)
             ax2 = None
 
-        fig.patch.set_facecolor(BG)
+        fig.patch.set_facecolor(theme.C.BG)
         self._patternmap_fig = fig
 
         # Waterfall
@@ -4268,7 +4288,7 @@ class AnalysisApp:
             if fin.sum() < 2:
                 msg = f"Fewer than two frames have a finite {x_axis} value."
                 self.ttk.Label(self.patternmap_plot_frame, text=msg,
-                               foreground=WARN).pack(anchor="center", expand=True)
+                               style="Warn.TLabel").pack(anchor="center", expand=True)
                 if hasattr(self, "_pm_status"):
                     self._pm_status.configure(text=msg)
                 return
@@ -4279,7 +4299,7 @@ class AnalysisApp:
                           vmin=vmin, vmax=vmax)
         ax.set_xlabel(x_label)
         ax.set_ylabel(unit_label(img["unit"]))
-        ax.set_title(f"Pattern waterfall — {img['source']}", color=FG)
+        ax.set_title(f"Pattern waterfall — {img['source']}", color=theme.C.FG)
         self._style_ax(ax)
 
         # Reflection-track overlays (frame x-axis only — on a sorted physical
@@ -4328,7 +4348,7 @@ class AnalysisApp:
                 if handles2:
                     ax2.legend(fontsize=7, framealpha=0.4)
             else:
-                ax2.set_title(pl["error"], color=WARN)
+                ax2.set_title(pl["error"], color=theme.C.WARN)
             self._style_ax(ax2)
 
         self._patternmap_canvas = self._embed_figure(self.patternmap_plot_frame, fig)
@@ -4353,7 +4373,7 @@ class AnalysisApp:
                    command=lambda: self._open_plot_window(
                        getattr(self, "_unknowns_fig", None), "Unknowns")
                    ).pack(side="left", padx=4)
-        ttk.Label(row1, text="Show:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        ttk.Label(row1, text="Show:", style="Muted.TLabel").pack(side="left", padx=(12, 2))
         self._unk_show = ttk.Combobox(
             row1, values=["unknown clusters", "spot tracks d(P)"],
             state="readonly", width=16)
@@ -4373,7 +4393,7 @@ class AnalysisApp:
             "Calculated reflection list (d/I pairs or an 'h k l d … I' table) "
             "used to label the spot-track d(P) curves with hkl assignments. "
             "Remembered in the session config."))
-        ttk.Label(row1, text="X axis:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        ttk.Label(row1, text="X axis:", style="Muted.TLabel").pack(side="left", padx=(12, 2))
         self._unk_xaxis = ttk.Combobox(
             row1,
             values=["frame", "pressure", "temperature", "time"],
@@ -4383,7 +4403,7 @@ class AnalysisApp:
         self._unk_xaxis.pack(side="left", padx=2)
         self._unk_xaxis.bind("<<ComboboxSelected>>", lambda e: self.load_unknowns())
 
-        ttk.Label(row1, text="Color by:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        ttk.Label(row1, text="Color by:", style="Muted.TLabel").pack(side="left", padx=(12, 2))
         self._unk_color = ttk.Combobox(
             row1,
             values=["center", "amplitude", "track", "group"],
@@ -4393,14 +4413,14 @@ class AnalysisApp:
         self._unk_color.pack(side="left", padx=2)
         self._unk_color.bind("<<ComboboxSelected>>", lambda e: self.load_unknowns())
 
-        ttk.Label(row1, text="Min obs/cluster:", foreground=MUTED).pack(
+        ttk.Label(row1, text="Min obs/cluster:", style="Muted.TLabel").pack(
             side="left", padx=(12, 2))
         self._unk_min_obs = tk.StringVar(value="1")
         _min_entry = ttk.Entry(row1, textvariable=self._unk_min_obs, width=5)
         _min_entry.pack(side="left", padx=2)
         _min_entry.bind("<Return>", lambda e: self.load_unknowns())
         _ToolTip(_min_entry, "Minimum residual-peak observations per unknown cluster.")
-        ttk.Label(row1, text="Min frames/cluster:", foreground=MUTED).pack(
+        ttk.Label(row1, text="Min frames/cluster:", style="Muted.TLabel").pack(
             side="left", padx=(12, 2))
         self._unk_min_frames = tk.StringVar(value="1")
         _min_frames_entry = ttk.Entry(row1, textvariable=self._unk_min_frames, width=5)
@@ -4417,7 +4437,7 @@ class AnalysisApp:
         row2.pack(fill="x", pady=(0, 4))
         ttk.Button(row2, text="Run spot tracking…",
                    command=self.run_spot_tracking_clicked).pack(side="left", padx=2)
-        ttk.Label(row2, text="Export →", foreground=MUTED).pack(side="left", padx=(4, 6))
+        ttk.Label(row2, text="Export →", style="Muted.TLabel").pack(side="left", padx=(4, 6))
         ttk.Button(row2, text="Diagram CSV…",
                    command=self.export_unknown_diagram_clicked).pack(side="left", padx=2)
         ttk.Button(row2, text="Frames with unknowns…",
@@ -4439,7 +4459,7 @@ class AnalysisApp:
             "else masked, pyFAI convention) + GSAS-ready .xy patterns "
             "re-integrated from the masked raw images. Filters: tracked-only "
             "and/or the hkl match table."))
-        self._unknowns_status = ttk.Label(row2, text="", foreground=MUTED)
+        self._unknowns_status = ttk.Label(row2, text="", style="Muted.TLabel")
         self._unknowns_status.pack(side="left", padx=12)
 
         self.unknowns_plot_frame = ttk.Frame(frame)
@@ -4447,7 +4467,7 @@ class AnalysisApp:
         ttk.Label(
             self.unknowns_plot_frame,
             text="Load unknowns after Step 3a residual + Step 3c has run.",
-            foreground=MUTED,
+            style="Muted.TLabel",
         ).pack(anchor="center", expand=True)
 
     def _unknown_min_obs_value(self) -> int:
@@ -4517,7 +4537,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.unknowns_plot_frame,
                 text=f"matplotlib unavailable: {e}",
-                foreground=WARN,
+                style="Warn.TLabel",
             ).pack(anchor="center", expand=True)
             return
 
@@ -4537,7 +4557,7 @@ class AnalysisApp:
             self.ttk.Label(
                 self.unknowns_plot_frame,
                 text=f"Unknowns: {err}",
-                foreground=WARN,
+                style="Warn.TLabel",
             ).pack(anchor="center", expand=True)
             self._unknowns_status.configure(text=err)
             return
@@ -4562,12 +4582,12 @@ class AnalysisApp:
         fig_h = 5.0 if len(clusters) <= 80 else 6.5
         fig = Figure(figsize=(8, fig_h), dpi=100, layout="constrained")
         self._unknowns_fig = fig
-        fig.patch.set_facecolor(BG)
+        fig.patch.set_facecolor(theme.C.BG)
         ax = fig.add_subplot(1, 1, 1)
         self._style_ax(ax)
 
         if not clusters or x_plot.size == 0:
-            ax.set_title("No unknown clusters to display with current filter", color=FG)
+            ax.set_title("No unknown clusters to display with current filter", color=theme.C.FG)
             ax.set_xlabel(data.get("x_label") or FRAME_LABEL)
             ax.set_ylabel("Unknown cluster")
         else:
@@ -4576,7 +4596,7 @@ class AnalysisApp:
                 row = row_of[ci]
                 x0, x1 = c.get("x_min"), c.get("x_max")
                 if x0 == x0 and x1 == x1:
-                    ax.hlines(row, float(x0), float(x1), color=MUTED,
+                    ax.hlines(row, float(x0), float(x1), color=theme.C.MUTED,
                               lw=0.8, alpha=0.35)
 
             sizes = np.full(x_plot.size, 26.0)
@@ -4588,7 +4608,7 @@ class AnalysisApp:
                     sizes = 18.0 + 34.0 * np.clip((amp_plot - lo) / (hi - lo), 0, 1)
             sc = ax.scatter(
                 x_plot, y_plot, c=c_plot, s=sizes,
-                cmap="viridis", alpha=0.9, edgecolors=FG, linewidths=0.25,
+                cmap="viridis", alpha=0.9, edgecolors=theme.C.FG, linewidths=0.25,
             )
             try:
                 cb = fig.colorbar(sc, ax=ax, label=color_by)
@@ -4600,7 +4620,7 @@ class AnalysisApp:
             ax.set_title(
                 f"Unknown clusters — {len(clusters)} cluster(s), "
                 f"{int(x_plot.size)} observation(s)",
-                color=FG,
+                color=theme.C.FG,
             )
             if len(clusters) <= 35:
                 ax.set_yticks(np.arange(len(clusters)))
@@ -4655,7 +4675,7 @@ class AnalysisApp:
         self.config["spot_group_by"] = group_by
         self.save_config(silent=True)
         self._analysis_tool_busy = True
-        self._unknowns_status.configure(text="Tracking spots …", foreground=MUTED)
+        self._unknowns_status.configure(text="Tracking spots …", style="Muted.TLabel")
         box: "Dict[str, Any]" = {}
 
         def _work():
@@ -4674,7 +4694,7 @@ class AnalysisApp:
                 return
             self._analysis_tool_busy = False
             if box.get("error"):
-                self._unknowns_status.configure(text=box["error"], foreground=WARN)
+                self._unknowns_status.configure(text=box["error"], style="Warn.TLabel")
                 self.log(f"Spot tracking failed: {box['error']}", "ERROR")
                 return
             result = box.get("result") or {}
@@ -4682,7 +4702,7 @@ class AnalysisApp:
                 f"{result.get('n_tracks', 0)} tracks from "
                 f"{result.get('n_obs', 0)} observations"
             )
-            self._unknowns_status.configure(text=status, foreground=MUTED)
+            self._unknowns_status.configure(text=status, style="Muted.TLabel")
             self.log(f"Spot tracking complete: {status}")
             self.load_unknowns()
 
@@ -4709,7 +4729,7 @@ class AnalysisApp:
         if not data.get("ok"):
             err = data.get("error", "unknown error")
             self.ttk.Label(self.unknowns_plot_frame,
-                           text=f"Spot tracks: {err}", foreground=WARN
+                           text=f"Spot tracks: {err}", style="Warn.TLabel"
                            ).pack(anchor="center", expand=True)
             self._unknowns_status.configure(text=err)
             return
@@ -4717,13 +4737,13 @@ class AnalysisApp:
 
         fig = Figure(figsize=(8, 5.5), dpi=100, layout="constrained")
         self._unknowns_fig = fig
-        fig.patch.set_facecolor(BG)
+        fig.patch.set_facecolor(theme.C.BG)
         ax = fig.add_subplot(1, 1, 1)
         self._style_ax(ax)
 
         if not tracks:
             ax.set_title("No spot tracks pass the filter — lower 'Min "
-                         "frames/cluster' or run spot tracking", color=FG)
+                         "frames/cluster' or run spot tracking", color=theme.C.FG)
         else:
             try:
                 from matplotlib import colormaps
@@ -4742,24 +4762,24 @@ class AnalysisApp:
                         alpha=0.95 if rising else 0.75, zorder=3 if rising else 2)
                 ax.plot(t["pressure"], t["d"], "^" if rising else "o",
                         color=color, ms=5.5 if rising else 3.5,
-                        mec=FG, mew=0.3, ls="none", zorder=4)
+                        mec=theme.C.FG, mew=0.3, ls="none", zorder=4)
                 label = t["hkl"] or (f"az{t['azim']:+.0f}°" if len(tracks) <= 25 else "")
                 if label:
                     ax.annotate(f" {label}", (t["pressure"][-1], t["d"][-1]),
                                 color=color, fontsize=7.5, va="center")
             un = data["untracked"]
             if un["pressure"].size:
-                ax.plot(un["pressure"], un["d"], "x", color=MUTED, ms=4,
+                ax.plot(un["pressure"], un["d"], "x", color=theme.C.MUTED, ms=4,
                         alpha=0.5, ls="none", zorder=1,
                         label=f"untracked ({un['pressure'].size})")
                 ax.legend(loc="best", fontsize=8, framealpha=0.3,
-                          labelcolor=FG, facecolor=BG)
+                          labelcolor=theme.C.FG, facecolor=theme.C.BG)
             ax.set_xlabel(PRESSURE_LABEL)
             ax.set_ylabel(D_SPACING_LABEL)
             ax.set_title(
                 f"Crystallite spot tracks — {len(tracks)}/{data['n_tracks_total']} "
                 f"track(s), {n_pts} points; ▲ rising = d grows with P "
-                f"({n_nlc} NLC candidate(s))", color=FG)
+                f"({n_nlc} NLC candidate(s))", color=theme.C.FG)
 
         canvas = self._embed_figure(self.unknowns_plot_frame, fig)
         self._unknowns_status.configure(
@@ -4893,7 +4913,7 @@ class AnalysisApp:
 
         dlg = tk.Toplevel(self.root)
         dlg.title("Spot masks")
-        dlg.configure(bg=BG)
+        dlg.configure(bg=theme.C.BG)
         dlg.transient(self.root)
         dlg.grab_set()
         content = ttk.Frame(dlg, padding=10)
@@ -4902,7 +4922,7 @@ class AnalysisApp:
             "Per-frame keep-only detector masks from the kept /spots blobs "
             "(.npy + .tif + preview PNG), plus GSAS-ready .xy patterns "
             "re-integrated from the masked raw images."),
-            foreground=MUTED, wraplength=430, justify="left").grid(
+            style="Muted.TLabel", wraplength=430, justify="left").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
         ttk.Label(content, text="Frames").grid(row=1, column=0, sticky="w",
                                                pady=2)
@@ -5049,7 +5069,7 @@ class AnalysisApp:
                   "are refolded onto their 2D scan grid and coloured by a "
                   "per-frame value (total/ROI intensity, contamination, peak "
                   "count, P, T, or one phase's matched intensity)."),
-            foreground=MUTED, justify="left", wraplength=760,
+            style="Muted.TLabel", justify="left", wraplength=760,
         )
         _gm_intro.pack(anchor="w", padx=4, pady=(0, 6))
         self.autowrap(_gm_intro)
@@ -5063,7 +5083,7 @@ class AnalysisApp:
                        getattr(self, "_gridmap_fig", None), "Grid map")
                    ).pack(side="left", padx=4)
 
-        ttk.Label(row1, text="Value:", foreground=MUTED).pack(side="left", padx=(12, 2))
+        ttk.Label(row1, text="Value:", style="Muted.TLabel").pack(side="left", padx=(12, 2))
         self.vars["map_value"] = tk.StringVar(
             value=str(self.config.get("map_value", "total")))
         self._gm_value = ttk.Combobox(
@@ -5074,7 +5094,7 @@ class AnalysisApp:
         self._gm_value.pack(side="left", padx=2)
         _ToolTip(self._gm_value, HELP["map_value"])
 
-        ttk.Label(row1, text="ROI min/max:", foreground=MUTED).pack(
+        ttk.Label(row1, text="ROI min/max:", style="Muted.TLabel").pack(
             side="left", padx=(12, 2))
         self.vars["map_roi_min"] = tk.StringVar(
             value=str(self.config.get("map_roi_min", "")))
@@ -5087,12 +5107,12 @@ class AnalysisApp:
         _roi_hi.pack(side="left", padx=1)
         _ToolTip(_roi_hi, HELP["map_roi_max"])
 
-        self._gm_status = ttk.Label(row1, text="", foreground=MUTED)
+        self._gm_status = ttk.Label(row1, text="", style="Muted.TLabel")
         self._gm_status.pack(side="right", padx=8)
 
         row2 = ttk.Frame(frame)
         row2.pack(fill="x", pady=(0, 4))
-        ttk.Label(row2, text="Layout:", foreground=MUTED).pack(side="left", padx=(4, 2))
+        ttk.Label(row2, text="Layout:", style="Muted.TLabel").pack(side="left", padx=(4, 2))
         self.vars["map_layout"] = tk.StringVar(
             value=str(self.config.get("map_layout", "scan lines")))
         _lay_c = ttk.Combobox(row2, textvariable=self.vars["map_layout"],
@@ -5101,7 +5121,7 @@ class AnalysisApp:
         _lay_c.pack(side="left", padx=2)
         _ToolTip(_lay_c, HELP["map_layout"])
 
-        ttk.Label(row2, text="Frames per line:", foreground=MUTED).pack(
+        ttk.Label(row2, text="Frames per line:", style="Muted.TLabel").pack(
             side="left", padx=(12, 2))
         self.vars["map_line_len"] = tk.StringVar(
             value=str(self.config.get("map_line_len", "")))
@@ -5109,7 +5129,7 @@ class AnalysisApp:
         _len_e.pack(side="left", padx=2)
         _ToolTip(_len_e, HELP["map_line_len"])
 
-        ttk.Label(row2, text="Scan lines:", foreground=MUTED).pack(
+        ttk.Label(row2, text="Scan lines:", style="Muted.TLabel").pack(
             side="left", padx=(12, 2))
         self.vars["map_order"] = tk.StringVar(
             value=str(self.config.get("map_order", "horizontal")))
@@ -5131,7 +5151,7 @@ class AnalysisApp:
         ttk.Label(
             self.gridmap_plot_frame,
             text="Set the frames-per-line to your scan width and Load grid map.",
-            foreground=MUTED,
+            style="Muted.TLabel",
         ).pack(anchor="center", expand=True)
 
     def load_grid_map(self):
@@ -5156,7 +5176,7 @@ class AnalysisApp:
 
         def _fail(msg):
             self.ttk.Label(self.gridmap_plot_frame, text=msg, wraplength=520,
-                           justify="left", foreground=WARN).pack(
+                           justify="left", style="Warn.TLabel").pack(
                 anchor="center", expand=True)
             self._gm_status.configure(text=msg)
 
@@ -5276,7 +5296,7 @@ class AnalysisApp:
 
         fig = Figure(figsize=(7, 6), dpi=100, layout="constrained")
         self._gridmap_fig = fig
-        fig.patch.set_facecolor(BG)
+        fig.patch.set_facecolor(theme.C.BG)
         ax = fig.add_subplot(1, 1, 1)
         im = ax.imshow(grid, origin=origin, cmap="viridis",
                        interpolation="nearest", aspect="equal", extent=extent)
@@ -5287,7 +5307,7 @@ class AnalysisApp:
             pass
         ax.set_xlabel(xlab)
         ax.set_ylabel(ylab)
-        ax.set_title(title, color=FG)
+        ax.set_title(title, color=theme.C.FG)
         self._style_ax(ax)
 
         canvas = self._embed_figure(self.gridmap_plot_frame, fig)
@@ -5398,7 +5418,7 @@ class AnalysisApp:
 
         out_dir = Path(destination) / f"{Path(reduced).stem}_gsas"
         self._analysis_tool_busy = True
-        self._pm_status.configure(text="Exporting GSAS patterns …", foreground=MUTED)
+        self._pm_status.configure(text="Exporting GSAS patterns …", style="Muted.TLabel")
         box: "Dict[str, Any]" = {}
 
         def _work():
@@ -5422,13 +5442,13 @@ class AnalysisApp:
                 return
             self._analysis_tool_busy = False
             if box.get("error"):
-                self._pm_status.configure(text="GSAS export failed", foreground=WARN)
+                self._pm_status.configure(text="GSAS export failed", style="Warn.TLabel")
                 self.log(f"GSAS export failed: {box['error']}", "ERROR")
                 self.messagebox.showerror("GSAS export", box["error"])
                 return
             result = box.get("result") or {}
             count = int(result.get("n_groups", 0))
-            self._pm_status.configure(text=f"Exported {count} GSAS pattern(s)", foreground=MUTED)
+            self._pm_status.configure(text=f"Exported {count} GSAS pattern(s)", style="Muted.TLabel")
             self.log(f"GSAS raw patterns exported: {out_dir}")
             self.notify(f"GSAS export: {count} pattern(s) → {out_dir}")
 

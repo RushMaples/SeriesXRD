@@ -17,6 +17,7 @@ from ..core.config import VERSION, ensure_dir, write_json, sha256_file, now_iso,
 from ..core.io import read_detector_image, write_xy_csv, write_table_csv
 from ..core.masks import automatic_mask, save_mask_npz, save_mask_preview_png, load_mask_npz
 from ..core.naming import generation_paths, gen_label, next_available_path
+from ..guikit import theme
 
 
 def _ensure_conda_dlls() -> None:
@@ -51,29 +52,19 @@ def _configure_mpl() -> None:
         "ytick.labelsize": 11,
         "legend.fontsize": 11,
         "figure.titlesize": 16,
+        "figure.facecolor": theme.C.BG,
+        "axes.facecolor": theme.C.BG2,
+        "axes.edgecolor": theme.C.BORDER,
+        "axes.labelcolor": theme.C.FG,
+        "text.color": theme.C.FG,
+        "xtick.color": theme.C.FG,
+        "ytick.color": theme.C.FG,
     })
     _mpl_configured[0] = True
 
-# Dark palette for line plots — shared with the GUIs (guikit.theme)
-from ..guikit.theme import (
-    BG as _DARK_BG, BG2 as _DARK_AX, FG as _DARK_FG,
-    CLR_RAW as _CLR_RAW, CLR_MSKD as _CLR_MSKD,
-    CLR_DIFF as _CLR_DIFF, CLR_SMTH as _CLR_SMTH,
-)
-
-
-def _apply_dark_axes(fig, *axes) -> None:
-    fig.patch.set_facecolor(_DARK_BG)
-    for ax in axes:
-        ax.set_facecolor(_DARK_AX)
-        ax.tick_params(colors=_DARK_FG, which="both")
-        ax.xaxis.label.set_color(_DARK_FG)
-        ax.yaxis.label.set_color(_DARK_FG)
-        ax.title.set_color(_DARK_FG)
-        for spine in ax.spines.values():
-            spine.set_edgecolor(_DARK_FG)
-        ax.xaxis.set_tick_params(labelcolor=_DARK_FG)
-        ax.yaxis.set_tick_params(labelcolor=_DARK_FG)
+def _apply_theme_axes(fig, *axes) -> None:
+    """Style a QA figure from the currently active UI palette."""
+    theme.style_figure(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -370,10 +361,10 @@ def _make_intensity_difference_plot(
         2, 1, figsize=(7.8, 5.6), dpi=_FIG_DPI[0], sharex=True,
         gridspec_kw={"height_ratios": [2.2, 1]},
     )
-    _apply_dark_axes(fig, ax1, ax2)
-    ax1.plot(tth, intensity, lw=1.2, color=_CLR_MSKD, label="masked integration")
+    _apply_theme_axes(fig, ax1, ax2)
+    ax1.plot(tth, intensity, lw=1.2, color=theme.C.CLR_MSKD, label="masked integration")
     if raw_like is not None:
-        ax1.plot(tth, np.asarray(raw_like, dtype=float), lw=0.9, alpha=0.75, color=_CLR_RAW, label="raw/no-mask")
+        ax1.plot(tth, np.asarray(raw_like, dtype=float), lw=0.9, alpha=0.75, color=theme.C.CLR_RAW, label="raw/no-mask")
     if calibrant_tth:
         for ct, _lbl in calibrant_tth:
             ax1.axvline(ct, lw=0.7, alpha=0.55, color="#f5c2e7", linestyle="--")
@@ -381,8 +372,8 @@ def _make_intensity_difference_plot(
     ax1.set_title(title)
     ax1.legend(loc="best")
     ax1.tick_params(labelbottom=False)
-    ax2.plot(tth, diff, lw=1.0, color=_CLR_DIFF, label="masked - raw/smoothed")
-    ax2.axhline(0, lw=0.8, alpha=0.5, color=_DARK_FG)
+    ax2.plot(tth, diff, lw=1.0, color=theme.C.CLR_DIFF, label="masked - raw/smoothed")
+    ax2.axhline(0, lw=0.8, alpha=0.5, color=theme.C.FG)
     ax2.set_xlabel(x_label)
     ax2.set_ylabel("Difference")
     ax2.legend(loc="best")
@@ -422,9 +413,9 @@ def _make_normalized_intensity_plot(
         2, 1, figsize=(7.8, 5.6), dpi=_FIG_DPI[0], sharex=True,
         gridspec_kw={"height_ratios": [2.2, 1]},
     )
-    _apply_dark_axes(fig, ax1, ax2)
-    ax1.plot(tth, raw_norm,    lw=0.9, alpha=0.75, color=_CLR_RAW,  label="raw (normalized)")
-    ax1.plot(tth, masked_norm, lw=1.2,             color=_CLR_MSKD, label="masked (normalized)")
+    _apply_theme_axes(fig, ax1, ax2)
+    ax1.plot(tth, raw_norm,    lw=0.9, alpha=0.75, color=theme.C.CLR_RAW,  label="raw (normalized)")
+    ax1.plot(tth, masked_norm, lw=1.2,             color=theme.C.CLR_MSKD, label="masked (normalized)")
     if calibrant_tth:
         for ct, _lbl in calibrant_tth:
             ax1.axvline(ct, lw=0.7, alpha=0.55, color="#f5c2e7", linestyle="--")
@@ -432,8 +423,8 @@ def _make_normalized_intensity_plot(
     ax1.set_title(title)
     ax1.legend(loc="best")
     ax1.tick_params(labelbottom=False)
-    ax2.plot(tth, norm_diff, lw=1.0, color=_CLR_DIFF, label="(raw - masked) / raw")
-    ax2.axhline(0, lw=0.8, alpha=0.5, color=_DARK_FG)
+    ax2.plot(tth, norm_diff, lw=1.0, color=theme.C.CLR_DIFF, label="(raw - masked) / raw")
+    ax2.axhline(0, lw=0.8, alpha=0.5, color=theme.C.FG)
     ax2.set_xlabel(x_label)
     ax2.set_ylabel("Norm. difference")
     ax2.legend(loc="best")
@@ -458,7 +449,7 @@ def _make_cake_png(
     cake[cake <= 0] = np.nan           # zero/dummy bins -> NaN -> dark background
     fig, ax = plt.subplots(figsize=(7.8, 5.0), dpi=_FIG_DPI[0])
     cmap = plt.get_cmap("magma").copy()
-    cmap.set_bad(color=_DARK_BG)
+    cmap.set_bad(color=theme.C.BG)
     finite_pos = cake[np.isfinite(cake)]
     if finite_pos.size > 0:
         vmin = float(np.percentile(finite_pos, 1))
@@ -527,14 +518,14 @@ def _make_coverage_plot(
     cov_end   = float(radial[last_valid])
     auto_title = f"Detector coverage range: {cov_start:.3f}–{cov_end:.3f}°"
     fig, ax = plt.subplots(figsize=(7.8, 3.4), dpi=_FIG_DPI[0])
-    _apply_dark_axes(fig, ax)
-    ax.fill_between(radial, 0, np.where(valid, cov, 0), alpha=0.12, color=_CLR_RAW)
-    ax.plot(radial, cov,    lw=1.0, alpha=0.45, color=_CLR_RAW,  label="raw coverage")
-    ax.plot(radial, smooth, lw=1.8,             color=_CLR_SMTH, label="smoothed")
+    _apply_theme_axes(fig, ax)
+    ax.fill_between(radial, 0, np.where(valid, cov, 0), alpha=0.12, color=theme.C.CLR_RAW)
+    ax.plot(radial, cov,    lw=1.0, alpha=0.45, color=theme.C.CLR_RAW,  label="raw coverage")
+    ax.plot(radial, smooth, lw=1.8,             color=theme.C.CLR_SMTH, label="smoothed")
     if threshold_degrees is not None:
-        ax.axhline(threshold_degrees, lw=1.0, linestyle="--", color=_CLR_DIFF, alpha=0.85,
+        ax.axhline(threshold_degrees, lw=1.0, linestyle="--", color=theme.C.CLR_DIFF, alpha=0.85,
                    label=f"threshold {threshold_degrees:.1f}°")
-        ax.axvline(cov_end, lw=0.8, linestyle=":", color=_CLR_DIFF, alpha=0.7)
+        ax.axvline(cov_end, lw=0.8, linestyle=":", color=theme.C.CLR_DIFF, alpha=0.7)
     ax.set_xlim(left=0, right=min(cov_end + 5.0, float(radial[-1])))
     ax.set_ylim(0, 370)
     ax.set_xlabel(x_label)

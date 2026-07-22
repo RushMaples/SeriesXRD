@@ -18,6 +18,7 @@ from .core.config import (
 )
 from .reduce.session import seed_reduction_config
 from .analysis.session import seed_analysis_config
+from .guikit import theme
 
 DEFAULT_WORKSPACE = Path.home() / "seriesxrd_workspace"
 STAGE_TABS = ("1 Calibration", "2 Reduction", "3 Analysis")
@@ -53,8 +54,7 @@ class SeriesXRDApp:
     def __init__(self, workspace: "str | Path"):
         import tkinter as tk
         from tkinter import ttk
-        from .guikit.tkstyle import apply_dark_theme
-        from .guikit.theme import BG, MUTED
+        from .guikit.tkstyle import apply_theme
         from .calib.gui import make_calib_pane
         from .reduce.gui import make_reduce_pane
         from .analysis.gui import make_analysis_pane
@@ -71,8 +71,8 @@ class SeriesXRDApp:
         self.root.geometry(f"{min(1280, sw - 80)}x{min(900, sh - 120)}")
         self.root.minsize(min(1000, sw - 80), min(700, sh - 120))
         self.root.protocol("WM_DELETE_WINDOW", self._on_quit)
-        apply_dark_theme(self.root, ttk)
-        self.root.configure(bg=BG)
+        apply_theme(self.root, ttk)
+        self.root.configure(bg=theme.C.BG)
 
         header = ttk.Frame(self.root, padding=(10, 8))
         header.pack(fill="x")
@@ -84,7 +84,7 @@ class SeriesXRDApp:
         from .guikit.tooltip import ToolTip
         self._ws_label = ttk.Label(
             header, text=f"  {_workspace_display_name(self.workspace)}",
-            foreground=MUTED, cursor="hand2",
+            style="Muted.TLabel", cursor="hand2",
         )
         self._ws_label.pack(side="left")
         ToolTip(self._ws_label,
@@ -92,7 +92,7 @@ class SeriesXRDApp:
         self._ws_label.bind("<Button-1>", lambda _e: self._copy_workspace_path())
         ttk.Label(
             header, text="1  Calibrate   →   2  Reduce   →   3  Analyze",
-            foreground=MUTED,
+            style="Muted.TLabel",
         ).pack(side="right")
 
         self.nb = ttk.Notebook(self.root)
@@ -113,6 +113,8 @@ class SeriesXRDApp:
         self.reduce_pane.add_reduced_listener(self._on_reduction_ready)
 
         self._build_menubar()
+        theme.register_widget_tree(self.root)
+        theme.register_restyle(self._restyle_theme)
 
     # ------------------------------------------------------------------
 
@@ -177,6 +179,20 @@ class SeriesXRDApp:
         tools_menu.add_command(label="Model development…",
                                command=self._model_development)
 
+        view_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="View", menu=view_menu)
+        self._theme_var = tk.StringVar(value=theme.active_theme())
+        view_menu.add_radiobutton(
+            label="Mocha (dark)", value="mocha", variable=self._theme_var,
+            command=self._change_theme,
+        )
+        view_menu.add_radiobutton(
+            label="Latte (light)", value="latte", variable=self._theme_var,
+            command=self._change_theme,
+        )
+        # System theme is intentionally deferred until cross-platform detection
+        # can be reliable without adding a GUI dependency.
+
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
         help_menu.add_command(
@@ -196,6 +212,28 @@ class SeriesXRDApp:
         help_menu.add_separator()
         help_menu.add_command(label="Copy diagnostics", command=self._copy_diagnostics)
         help_menu.add_command(label="About", command=self._about)
+
+    def _change_theme(self):
+        """Apply and persist a UI-only theme without disturbing workers."""
+        name = self._theme_var.get()
+        theme.set_theme(name)
+        try:
+            from .core.uiprefs import save_prefs
+            save_prefs({"theme": name})
+        except OSError as exc:
+            self.calib_pane.log(f"Could not save UI theme preference: {exc}",
+                                "WARN")
+
+    def _restyle_theme(self):
+        """Repaint host-owned widgets; stage panes repaint via callbacks."""
+        from tkinter import ttk
+        from .guikit.tkstyle import apply_theme
+        apply_theme(self.root, ttk)
+        theme.register_widget_tree(self.root)
+        theme.restyle_widgets()
+        var = getattr(self, "_theme_var", None)
+        if var is not None and var.get() != theme.active_theme():
+            var.set(theme.active_theme())
 
     # ------------------------------------------------------------------
 
@@ -271,7 +309,6 @@ class SeriesXRDApp:
     def _inspect_image(self):
         import tkinter as tk
         from tkinter import filedialog
-        from .guikit.theme import BG2, FG
         path = filedialog.askopenfilename(title="Inspect detector image")
         if not path:
             return
@@ -285,11 +322,13 @@ class SeriesXRDApp:
         win = tk.Toplevel(self.root)
         win.title(f"Inspect: {Path(path).name}")
         win.geometry("760x520")
-        txt = tk.Text(win, bg=BG2, fg=FG, insertbackground=FG, relief="flat",
+        txt = tk.Text(win, bg=theme.C.BG2, fg=theme.C.FG,
+                      insertbackground=theme.C.FG, relief="flat",
                       font=("TkFixedFont", 9), wrap="none")
         txt.insert("end", out)
         txt.configure(state="disabled")
         txt.pack(fill="both", expand=True)
+        theme.register_widget_tree(win)
 
     def _open_url(self, url: str):
         try:
@@ -364,20 +403,20 @@ class SeriesXRDApp:
         measurement analysis."""
         import tkinter as tk
         from tkinter import ttk, filedialog
-        from .guikit.theme import BG, BG2, FG, MUTED
-
         win = tk.Toplevel(self.root)
         win.title("Model development")
         win.geometry("860x640")
-        win.configure(bg=BG)
+        win.configure(bg=theme.C.BG)
 
         nb = ttk.Notebook(win)
         nb.pack(fill="both", expand=True, padx=8, pady=8)
 
-        out_text = tk.Text(win, height=14, bg=BG2, fg=FG, insertbackground=FG,
+        out_text = tk.Text(win, height=14, bg=theme.C.BG2, fg=theme.C.FG,
+                           insertbackground=theme.C.FG,
                            relief="flat", state="disabled",
                            font=("TkFixedFont", 9))
         out_text.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        theme.register_widget_tree(win)
         state = {"proc": None}
 
         def _append(line: str):
@@ -438,13 +477,13 @@ class SeriesXRDApp:
         # --- Corpus tab -------------------------------------------------
         pg = ttk.Frame(nb, padding=10)
         nb.add(pg, text="CIF corpus")
-        ttk.Label(pg, foreground=MUTED, wraplength=760, justify="left", text=(
+        ttk.Label(pg, style="Muted.TLabel", wraplength=760, justify="left", text=(
             "Screen a directory of CIFs (parse/dedupe/size-screen) into a "
             "training-only corpus manifest for seriesxrd-ml-train --cif-dir. "
             "Fetching from COD needs network access.")).pack(anchor="w")
         c_dir = tk.StringVar()
         _row(pg, "CIF directory", c_dir, browse="dir")
-        ttk.Label(pg, foreground=MUTED, text=(
+        ttk.Label(pg, style="Muted.TLabel", text=(
             "Writes corpus_manifest.json into the CIF directory.")).pack(
             anchor="w")
         ttk.Button(pg, text="Screen corpus", command=lambda: _run(
@@ -455,7 +494,7 @@ class SeriesXRDApp:
         # --- Benchmark tab ----------------------------------------------
         pg = ttk.Frame(nb, padding=10)
         nb.add(pg, text="Benchmark")
-        ttk.Label(pg, foreground=MUTED, wraplength=760, justify="left", text=(
+        ttk.Label(pg, style="Muted.TLabel", wraplength=760, justify="left", text=(
             "Score a scorer against labelled XY patterns (RRUFF/opXRD-style) "
             "through the real Step-1/2 preprocessing — the gate a trained "
             "scorer must pass against the cosine baseline. See "
@@ -473,7 +512,7 @@ class SeriesXRDApp:
         # --- Training tab -----------------------------------------------
         pg = ttk.Frame(nb, padding=10)
         nb.add(pg, text="Train scorer")
-        ttk.Label(pg, foreground=MUTED, wraplength=760, justify="left", text=(
+        ttk.Label(pg, style="Muted.TLabel", wraplength=760, justify="left", text=(
             "Train the Step-3b learned pair scorer (requires the [ml] extra / "
             "PyTorch; heavy — a cluster or GPU workstation is the usual "
             "venue). The deterministic cosine ranker remains the default "
@@ -552,9 +591,13 @@ def main(argv: "list[str] | None" = None) -> int:
     parser = argparse.ArgumentParser(prog="seriesxrd", description="SeriesXRD desktop application")
     parser.add_argument("--workspace", default=str(DEFAULT_WORKSPACE),
                         help=f"Workspace folder for configs and outputs (default: {DEFAULT_WORKSPACE})")
+    parser.add_argument("--theme", choices=("mocha", "latte"), default=None,
+                        help="UI theme override (default: saved preference).")
     args = parser.parse_args(argv)
 
     from .guikit.dpi import enable_hi_dpi
+    from .core.uiprefs import load_prefs
+    theme.set_theme(args.theme or load_prefs().get("theme", "mocha"))
     enable_hi_dpi()
     app = SeriesXRDApp(workspace=args.workspace)
     return app.run()

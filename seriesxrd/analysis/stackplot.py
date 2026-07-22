@@ -57,9 +57,12 @@ def _mad_noise(y: np.ndarray) -> float:
 # decides its resolution and format. "publication" prefers a vector format so
 # journals can rescale without rasterization artifacts.
 FIGURE_PRESETS = {
-    "screen":       {"dpi": 110, "format": "png"},
-    "presentation": {"dpi": 200, "format": "png"},
-    "publication":  {"dpi": 600, "format": "pdf"},
+    "screen":       {"dpi": 110, "format": "png",
+                     "palette": None, "background": None},
+    "presentation": {"dpi": 200, "format": "png",
+                     "palette": None, "background": None},
+    "publication":  {"dpi": 600, "format": "pdf",
+                     "palette": "latte", "background": "#ffffff"},
 }
 
 FIGURE_FORMATS = ("png", "svg", "pdf")
@@ -79,6 +82,8 @@ def stack_figure(
     title: "Optional[str]" = None,
     style: str = "panels",
     dpi: int = 300,
+    palette: "str | None" = None,
+    background: "str | None" = None,
 ) -> Dict[str, Any]:
     """Write a stacked PNG of ``source`` patterns vs pressure.
 
@@ -176,6 +181,9 @@ def stack_figure(
             labels.append(Path(names[i]).stem or f"frame {i}")
 
     # ---- render ----
+    from ..guikit.theme import matplotlib_palette, style_figure
+
+    colors = matplotlib_palette(palette)
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -208,14 +216,14 @@ def stack_figure(
         for i, lbl in zip(order, labels):
             ax.plot(x, _norm(i) + off, lw=0.8, color=_color(i))
             ax.annotate(lbl, (hi_x, off + 0.08), fontsize=8.5,
-                        color="#333333", ha="right", fontweight="bold")
+                        color=colors["FG"], ha="right", fontweight="bold")
             off += 1.1
         ax.set_xlim(lo_x, hi_x)
         ax.set_yticks([])
         ax.set_ylabel("normalized intensity (offset per frame)")
         ax.set_xlabel(x_label)
         ax.set_title(fig_title, fontsize=11, pad=8)
-        ax.grid(axis="x", color="#e6e6e6", lw=0.6)
+        ax.grid(axis="x", color=colors["BORDER"], lw=0.6)
         ax.set_axisbelow(True)
         fig.tight_layout()
     elif style == "panels":
@@ -229,13 +237,13 @@ def stack_figure(
             ax.set_yticks([])
             ax.annotate(lbl, (0.985, 0.72), xycoords="axes fraction",
                         ha="right", fontsize=9.5, fontweight="bold",
-                        color="#333333")
+                        color=colors["FG"])
             for s in ("top", "bottom"):
                 ax.spines[s].set_linewidth(0.6)
-                ax.spines[s].set_color("#999999")
+                ax.spines[s].set_color(colors["BORDER"])
         for ax, s in ((axes[0], "top"), (axes[-1], "bottom")):
             ax.spines[s].set_linewidth(0.8)
-            ax.spines[s].set_color("#666666")
+            ax.spines[s].set_color(colors["FG"])
         axes[-1].set_xlim(lo_x, hi_x)
         axes[-1].set_xlabel(x_label)
         fig.text(0.045, 0.5, "Intensity (a.u.)", va="center",
@@ -244,12 +252,14 @@ def stack_figure(
         fig.tight_layout(rect=(0.05, 0, 1, 1))
     else:
         raise ValueError(f"Unknown style {style!r} (panels|waterfall).")
+    style_figure(fig, palette=palette, background=background)
     fig.savefig(str(out), dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
     man = {"out_png": str(out), "n_panels": n, "frames": [int(i) for i in order],
            "labels": labels, "source": resolved, "axis": axis, "style": style,
-           "excluded_windows": excluded_windows}
+           "excluded_windows": excluded_windows,
+           "palette": palette or "active", "background": background}
     print(f"[STACK] {n} panel(s) ({resolved}, {axis}, {style}) -> {out}",
           flush=True)
     return man
@@ -288,6 +298,10 @@ def main(argv: "list[str] | None" = None) -> int:
                    choices=["panels", "waterfall"],
                    help="panels = touching subplots (journal layout); "
                         "waterfall = offset traces on one axes.")
+    p.add_argument("--palette", choices=["mocha", "latte"], default=None,
+                   help="Figure palette (default: active UI theme / mocha in CLI).")
+    p.add_argument("--background", default=None,
+                   help="Optional Matplotlib background color override.")
     args = p.parse_args(argv)
     frames = ([int(s) for s in args.frames.split(",") if s.strip()]
               if args.frames.strip() else None)
@@ -299,7 +313,8 @@ def main(argv: "list[str] | None" = None) -> int:
                      frames=frames, exclude_d=exd,
                      exclude_width=args.exclude_width,
                      saturation_cutoff=cutoff, x_min=args.x_min,
-                     x_max=args.x_max, title=args.title, style=args.style)
+                     x_max=args.x_max, title=args.title, style=args.style,
+                     palette=args.palette, background=args.background)
     except (OSError, ValueError, KeyError) as e:
         print(f"[ERROR] {e}", flush=True)
         return 1

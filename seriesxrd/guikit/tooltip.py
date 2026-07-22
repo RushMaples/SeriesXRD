@@ -53,13 +53,14 @@ class ToolTip:
             return
         try:
             import tkinter as _tk
+            from . import theme
             x = self._widget.winfo_rootx() + 24
             y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
             tw = _tk.Toplevel(self._widget)
             tw.wm_overrideredirect(True)
             tw.wm_geometry(f"+{x}+{y}")
             lbl = _tk.Label(tw, text=self._text, justify="left",
-                            background="#ffffe0", foreground="#1a1a1a",
+                            background=theme.C.BG2, foreground=theme.C.FG,
                             relief="solid", borderwidth=1,
                             wraplength=340, padx=4, pady=2)
             lbl.pack()

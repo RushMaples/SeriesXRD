@@ -5,6 +5,19 @@ semantic versioning once a stable public API is declared.
 
 ## [Unreleased]
 
+### Added
+
+- Live Mocha/Latte theme switching from the unified application's View menu,
+  with a per-user preference and `--theme` overrides for standalone stage
+  launchers.
+
+### Changed
+
+- Shared ttk, raw-Tk, and embedded-Matplotlib styling now follows one mutable
+  semantic palette without restarting GUI panes or their worker processes.
+- Publication figure exports use a predictable light palette on a white
+  background independently of the active UI theme.
+
 ## [0.2.0] - 2026-07-21
 
 ### Changed
