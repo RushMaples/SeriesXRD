@@ -73,6 +73,7 @@ seriesxrd-spots = "seriesxrd.analysis.spots:main"
 seriesxrd-watch = "seriesxrd.reduce.watch:main"
 seriesxrd-export-refinement = "seriesxrd.analysis.refine_export:main"
 seriesxrd-export-gsas = "seriesxrd.analysis.refine_export:main_gsas_raw"
+seriesxrd-import-gsas = "seriesxrd.analysis.refine_import:main"
 seriesxrd-stack = "seriesxrd.analysis.stackplot:main"
 seriesxrd-inspect = "seriesxrd.core.inspect:main"
 

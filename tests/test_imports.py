@@ -29,6 +29,7 @@ mods = [
     'seriesxrd.analysis.benchmark', 'seriesxrd.analysis.corpus',
     'seriesxrd.analysis.unknowns', 'seriesxrd.analysis.microstructure',
     'seriesxrd.analysis.fractions', 'seriesxrd.analysis.refine_export',
+    'seriesxrd.analysis.refine_import',
     'seriesxrd.analysis.spots',
     'seriesxrd.reduce.straighten', 'seriesxrd.reduce.texture',
     'seriesxrd.reduce.watch',

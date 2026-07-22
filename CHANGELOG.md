@@ -7,6 +7,17 @@ semantic versioning once a stable public API is declared.
 
 ### Added
 
+- A GSAS-II sequential-refinement round trip: exports now include explicit
+  frame/group manifests and a standalone GPX-to-JSON helper, while
+  `seriesxrd-import-gsas` (also available in the Analysis GUI) atomically
+  imports refined weight fractions with uncertainties, unit cells, and fit
+  quality under `/refinement` without replacing the earlier `/fractions`
+  screening estimates.
+
+### Changed
+
+- The Analysis GUI now presents export, external refinement, and result import
+  together on a dedicated **Refinement → GSAS-II round trip** page.
 - Live Mocha/Latte theme switching from the unified application's View menu,
   with a per-user preference and `--theme` overrides for standalone stage
   launchers.

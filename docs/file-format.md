@@ -131,9 +131,16 @@ and no cakes or thumbnails.
 /unknowns        Step 3c (unknowns.py): obs/, tracks/, clusters/,
                  fingerprint/ — residual peaks linked into gap-tolerant
                  tracks, co-occurrence clusters, per-cluster d-fingerprints
-/fractions       fractions.py: names (P,), fractions (N, P) intensity
-                 shares; attrs method (intensity_share | rir).
-                 Semi-quantitative by design.
+/fractions       names (P,), fractions (N, P). fractions.py writes
+                 semi-quantitative intensity shares (method =
+                 intensity_share | rir).
+/refinement      refine_import.py: GSAS-II names (P,), refined fractions and
+                 fraction_esd (N, P); per-frame source_histogram, group_size,
+                 rwp, gof, converged; cell and cell_esd (N, P, 7), with columns
+                 a,b,c,alpha,beta,gamma,volume. A grouped histogram is
+                 replicated to its member frames and group_size records that
+                 those rows share one refinement result. Importing this group
+                 does not replace the screening estimates in /fractions.
 /microstructure  microstructure.py: Williamson–Hall size_A, strain, r2 per
                  frame (flagged uncorrected without an instrument profile)
 /spots           spots.py: single-crystal reflections tracked in cake space

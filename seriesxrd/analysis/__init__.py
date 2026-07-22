@@ -95,6 +95,7 @@ from .spots import (
     load_reflection_table,
     match_tracks,
 )
+from .refine_import import import_gsasii_results
 from .session import seed_analysis_config, analysis_config_path
 from .phases import (
     Phase,
@@ -143,6 +144,7 @@ __all__ = [
     "detect_spots", "link_spot_tracks",
     "run_spot_tracking", "diamond_q_lines", "diamond_q_windows",
     "load_reflection_table", "match_tracks",
+    "import_gsasii_results",
     "seed_analysis_config", "analysis_config_path",
     "Phase", "load_bundled", "load_library", "list_phases",
     "upsert_user_phase", "remove_user_phase", "import_cif", "parse_cif",

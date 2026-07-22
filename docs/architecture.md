@@ -55,7 +55,7 @@ Step 3a identify.py     pressure-aware EOS phase matching
 Step 3b ml_rank.py      ML proposes, physics verifies (candidate ranking)
 Step 3c unknowns.py     residual peaks → coherent tracks → unknown clusters
         + heatmap.py maps, fractions.py, microstructure.py, spots.py,
-          refine_export.py exports
+          refine_export.py exports, refine_import.py refinement round trip
 ```
 
 **Step 1 — background separation.** The reduce stage writes both an azimuthal
