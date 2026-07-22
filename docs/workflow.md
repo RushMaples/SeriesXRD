@@ -333,7 +333,10 @@ azimuthal texture metrics (`/texture`: texture index, spot fraction,
 preferred-orientation harmonic) from a cakes-enabled reduction.
 `seriesxrd-export-refinement analysis.h5 out_dir` writes a Rietveld hand-off
 bundle (patterns as `.xy`, phase CIFs, GSAS-II `instrument.instprm`, README
-with a GSASIIscriptable snippet). Narrow it to specific frames with
+with a GSASIIscriptable snippet). The bundle also contains
+`refinement_manifest.json` (the non-guessing histogram→frame map) and
+`export_seriesxrd_results.py`, a standalone helper that runs in GSAS-II's
+Python environment. Narrow the export to specific frames with
 `--frames 0,5,10` (default: all non-excluded frames), pick which pattern
 channel to export with `--source` (default `fit` — the channel Step 2
 actually fitted; `clean`/`mean`/`hybrid`/`sigmaclip`/`robust` also available;
@@ -349,6 +352,38 @@ known) and optional CSVs: `peaks.csv`, `residual_peaks.csv`, and
 semi-quantitative intensity-share phase fractions (`/fractions`) after the
 residual step — see `analysis/fractions.py`'s docstring for what those
 fractions do and do not correct.
+
+After a GSAS-II sequential refinement, return the results with:
+
+```text
+# Run this with GSAS-II's Python, from the refinement bundle:
+python export_seriesxrd_results.py refinement.gpx
+
+# Run this with SeriesXRD's Python:
+seriesxrd-import-gsas analysis.h5 seriesxrd_refinement.json \
+  --manifest refinement_manifest.json
+```
+
+If GSASIIscriptable is installed in the SeriesXRD environment, the importer
+also accepts `refinement.gpx` directly. The Analysis **Refinement → GSAS-II
+round trip** page presents the export and import actions together. It writes
+GSAS-II weight fractions, esds, cells, Rwp/GOF, and convergence under
+`/refinement`; the earlier `/fractions` screening estimate remains intact.
+This bridge does not require pressure or a DAC collection protocol: ordinary
+`frame_####` histograms map directly, and the export manifest handles summed
+or otherwise grouped frames. Pressure, temperature, time, and position remain
+untouched frame metadata.
+
+**Why this comes after SeriesXRD analysis.** SeriesXRD reduces the detector
+data, separates background, fits peaks, and proposes which phases explain the
+series. Those proposed phases and their CIFs give GSAS-II a starting model.
+GSAS-II then performs the separate whole-pattern Rietveld refinement: it fits
+all proposed phases together against every measured pattern and reports
+quantitative weight fractions, refined unit cells, uncertainties, and fit
+quality. The import does not run GSAS-II or identify new phases; it reconnects
+the externally refined numbers to the original SeriesXRD frames so they can be
+compared with pressure, temperature, time, position, and the earlier automated
+screening results.
 
 ## 4. Parameter tuning
 

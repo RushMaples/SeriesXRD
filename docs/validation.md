@@ -68,10 +68,12 @@ These outputs are for guidance and screening, not for quantitative claims:
 - **Contamination score** (`/frames/contamination`): the integrated
   positive spot residual per frame. Unitless, detector- and
   exposure-dependent; compare within a series, not across experiments.
-- **Phase fractions** (`/fractions`): intensity shares of attributed peak
-  areas, optionally RIR-weighted. Texture, absorption, and
-  structure-factor differences are **not** corrected. For real weight
-  fractions, refine the exported bundle (below).
+- **Screening phase fractions** (`/fractions`, method `intensity_share` or
+  `rir`): intensity shares of attributed peak areas. Texture, absorption,
+  and structure-factor differences are **not** corrected. For refined
+  weight fractions, complete the GSAS-II round trip below. Those are stored
+  separately as `/refinement/fractions` with propagated esds, leaving this
+  screening result available for comparison.
 - **Texture metrics** (`/texture`): a texture index, spot fraction, and
   preferred-orientation second harmonic per ring. Interpreting the 2-fold
   modulation as texture vs differential stress requires the experiment
@@ -95,6 +97,13 @@ thermal factors, profile convolutions, or weighted whole-pattern
 residuals. Quantitative phase fractions, refined lattice parameters with
 realistic uncertainties, and structure validation belong to the Rietveld
 package you refine the bundle in.
+
+`seriesxrd-import-gsas` closes that hand-off loop without reimplementing the
+refinement. It imports GSAS-II's calculated `WgtFrac` values—not raw scale
+factors—along with their reported uncertainties, unit cells, Rwp/GOF, and
+convergence state. These are Rietveld results, but their validity still
+depends on the user's structural model, absorption correction, preferred
+orientation treatment, background/profile choices, and refinement stability.
 
 ## Known assumptions
 

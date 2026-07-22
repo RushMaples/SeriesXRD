@@ -97,6 +97,7 @@ def test_scientific_tools_are_exposed_by_gui_controllers():
     for name in (
         "export_refinement_clicked",
         "export_gsas_raw_clicked",
+        "import_gsas_results_clicked",
         "run_microstructure_clicked",
         "run_phase_fractions_clicked",
         "run_spot_tracking_clicked",

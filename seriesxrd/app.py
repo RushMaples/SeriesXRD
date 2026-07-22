@@ -162,11 +162,17 @@ class SeriesXRDApp:
                                   command=self._handoff_reduced_to_analysis)
         analysis_menu.add_command(label="Inspect input", command=self.analysis_pane.inspect_input_clicked)
         analysis_menu.add_command(
+            label="GSAS-II refinement round trip…",
+            command=lambda: self.analysis_pane.select_page("refinement"))
+        analysis_menu.add_command(
             label="Export refinement bundle…",
             command=self.analysis_pane.export_refinement_clicked)
         analysis_menu.add_command(
             label="Export GSAS-ready raw patterns…",
             command=self.analysis_pane.export_gsas_raw_clicked)
+        analysis_menu.add_command(
+            label="Import GSAS-II sequential results…",
+            command=self.analysis_pane.import_gsas_results_clicked)
         analysis_menu.add_command(label="View log", command=self.analysis_pane.open_console_logs)
 
         tools_menu = tk.Menu(menubar, tearoff=0)

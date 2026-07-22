@@ -51,6 +51,8 @@ import numpy as np
 from .heatmap import _peaks_fit_source
 from .peaks import build_fit_source
 from .phases import Phase, load_library, pymatgen_available, structure_from_phase
+from .refine_import import write_gsasii_export_helper
+from ..core.config import write_json
 from ..core.provenance import manifest_provenance
 
 # q-axis unit spellings understood by identify.radial_to_d / heatmap — kept in
@@ -287,6 +289,23 @@ gpx.save()
 Start with background + cell, then bring in peak shape (`U`/`V`/`W`) and
 atomic parameters once the pattern lines up -- the usual GSAS-II refinement
 order.
+
+## Return the sequential results to SeriesXRD
+
+After the sequential refinement is complete, run the included helper with
+the Python environment used by GSAS-II (the helper itself does not import
+SeriesXRD):
+
+```text
+python export_seriesxrd_results.py refinement.gpx
+seriesxrd-import-gsas path/to/analysis.h5 seriesxrd_refinement.json \
+  --manifest refinement_manifest.json
+```
+
+The helper exports GSAS-II's calculated weight fractions (`WgtFrac`), their
+standard uncertainties, per-phase unit cells, and refinement quality. The
+manifest maps each GSAS histogram back to the original SeriesXRD frame(s), so
+this works for pressure, temperature, time, spatial, or unlabelled series.
 """
     path.write_text(text, encoding="utf-8")
 
@@ -624,9 +643,10 @@ def export_refinement_bundle(
     phases_dir.mkdir(parents=True, exist_ok=True)
 
     manifest: Dict[str, Any] = {
+        **manifest_provenance("seriesxrd.analysis.refine_export", "2"),
         "n_frames": 0, "files_written": [], "phases_written": [],
         "phases_skipped": [], "wavelength": None, "unit": "",
-        "excluded_windows": [],
+        "excluded_windows": [], "groups": [],
     }
 
     with h5py.File(str(src), "r") as h5:
@@ -687,6 +707,7 @@ def export_refinement_bundle(
             manifest["files_written"].append(str(native_path))
 
             tth = _to_two_theta_deg(radial, unit, wavelength)
+            tth_rel = ""
             if tth is not None:
                 tth_path = patterns_dir / f"frame_{i:04d}.xy"
                 _write_xy(tth_path, tth, y, keep=keep_bins,
@@ -694,6 +715,14 @@ def export_refinement_bundle(
                     axis="2th_deg", native_unit=unit, wavelength=wavelength,
                     source_label=source_label, filename=fname))
                 manifest["files_written"].append(str(tth_path))
+                tth_rel = str(tth_path.relative_to(out))
+            manifest["groups"].append({
+                "label": f"frame_{i:04d}",
+                "frames": [int(i)],
+                "pattern": tth_rel,
+                "pattern_native": str(native_path.relative_to(out)),
+                "source_filenames": [fname] if fname else [],
+            })
 
         manifest["n_frames"] = len(frame_idx)
 
@@ -761,6 +790,18 @@ def export_refinement_bundle(
                  n_phases_written=len(manifest["phases_written"]),
                  n_phases_skipped=len(manifest["phases_skipped"]))
     manifest["files_written"].append(str(readme_path))
+
+    helper_path = write_gsasii_export_helper(out / "export_seriesxrd_results.py")
+    manifest["files_written"].append(str(helper_path))
+    manifest["gsas_phase_order"] = [
+        rec["name"] for rec in sorted(
+            manifest["phases_written"],
+            key=lambda rec: Path(rec["path"]).name.casefold(),
+        )
+    ]
+    manifest_path = out / "refinement_manifest.json"
+    manifest["files_written"].append(str(manifest_path))
+    write_json(manifest_path, manifest)
 
     return manifest
 
@@ -872,7 +913,10 @@ def export_gsas_raw(reduced_h5: "str | Path", out_dir: "str | Path", *,
                  if mask_file and Path(mask_file).is_file() else None)
     n_bins = int(npt or npt_file or 1500)
 
-    manifest: Dict[str, Any] = {"n_groups": 0, "files_written": [],
+    manifest: Dict[str, Any] = {
+                                **manifest_provenance(
+                                    "seriesxrd.analysis.refine_export", "2"),
+                                "n_groups": 0, "files_written": [],
                                 "groups": [], "unit": unit,
                                 "wavelength": wl_A,
                                 "skipped_no_pressure": skipped_nan,
@@ -882,6 +926,7 @@ def export_gsas_raw(reduced_h5: "str | Path", out_dir: "str | Path", *,
         acc: "Optional[np.ndarray]" = None
         dyn_mask: "Optional[np.ndarray]" = None
         used: "List[str]" = []
+        used_frames: "List[int]" = []
         for i in members:
             p_raw = droot / filenames[i]
             if not p_raw.is_file():
@@ -894,10 +939,12 @@ def export_gsas_raw(reduced_h5: "str | Path", out_dir: "str | Path", *,
             acc += img
             dyn_mask |= img < 0        # Pilatus gap/defect markers
             used.append(filenames[i])
+            used_frames.append(int(i))
         if acc is None:
             continue
         mask = dyn_mask if base_mask is None else (base_mask | dyn_mask)
 
+        group_patterns: List[str] = []
         for ax_unit, suffix in ((unit, "_q"), ("2th_deg", "")):
             if ax_unit == "2th_deg":
                 if not wl_A:
@@ -933,14 +980,23 @@ def export_gsas_raw(reduced_h5: "str | Path", out_dir: "str | Path", *,
                                         filename="; ".join(used[:4])
                                         + ("..." if len(used) > 4 else "")))
             manifest["files_written"].append(str(p_out))
+            group_patterns.append(str(p_out.relative_to(out)))
         manifest["groups"].append({"label": label, "n_frames": len(used),
-                                   "files": used})
+                                   "frames": used_frames,
+                                   "files": used,
+                                   "patterns": group_patterns})
         manifest["n_groups"] += 1
 
     if wl_A:
         instprm_path = out / "instrument.instprm"
         _write_instprm(instprm_path, wl_A)
         manifest["files_written"].append(str(instprm_path))
+
+    helper_path = write_gsasii_export_helper(out / "export_seriesxrd_results.py")
+    manifest["files_written"].append(str(helper_path))
+    manifest_path = out / "gsas_export_manifest.json"
+    manifest["files_written"].append(str(manifest_path))
+    write_json(manifest_path, manifest)
 
     print(f"[EXPORT] gsas-raw: {manifest['n_groups']} pattern group(s), "
           f"{len(manifest['missing_raw'])} missing raw file(s) -> {out}",

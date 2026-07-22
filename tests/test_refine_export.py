@@ -1,4 +1,5 @@
 """Step 3 refinement hand-off bundle export tests (analysis/refine_export.py)."""
+import json
 import math
 import sys
 import tempfile
@@ -126,6 +127,12 @@ def test_export_patterns_and_instprm():
         readme_text = readme_path.read_text()
         assert "GSASIIscriptable" in readme_text
         assert "U/V/W" in readme_text or "placeholder Caglioti" in readme_text
+        assert "seriesxrd-import-gsas" in readme_text
+        assert (out_dir / "export_seriesxrd_results.py").is_file()
+        export_manifest = json.loads(
+            (out_dir / "refinement_manifest.json").read_text())
+        assert export_manifest["groups"][0]["frames"] == [0]
+        assert export_manifest["groups"][0]["pattern"].endswith("frame_0000.xy")
 
 
 def test_export_explicit_frames_bypass_excluded():

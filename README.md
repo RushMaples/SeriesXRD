@@ -204,6 +204,7 @@ corpus building, validation gates, deployment) is documented in
 | `seriesxrd-texture` | Azimuthal texture metrics (`/texture`) from a cakes-enabled reduction. |
 | `seriesxrd-export-refinement` | Rietveld hand-off bundle (`.xy` patterns + phase CIFs + GSAS-II instprm) from an analysis HDF5. |
 | `seriesxrd-export-gsas` | GSAS-ready raw patterns grouped by pressure. |
+| `seriesxrd-import-gsas` | Map GSAS-II sequential weight fractions, uncertainties, cells, and fit quality back to SeriesXRD frames under `/refinement`. |
 | `seriesxrd-stack` | Publication-style stacked or waterfall pattern plots. |
 | `seriesxrd-inspect` | Detector-image diagnostic: true format from magic bytes, per-reader interpretation, intensity statistics, and a verdict. |
 

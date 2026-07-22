@@ -23,6 +23,7 @@ def test_unified_app_constructs_and_closes():
         "import sys\n"
         "from seriesxrd.app import SeriesXRDApp\n"
         "app = SeriesXRDApp(sys.argv[1])\n"
+        "assert 'refinement' in app.analysis_pane.pages\n"
         "app.root.update_idletasks()\n"
         "app.root.update()\n"
         "app.root.destroy()\n"

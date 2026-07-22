@@ -423,6 +423,9 @@ class AnalysisApp:
                 ("unknowns",   "Unknowns",       self._tab_unknowns),
                 ("spatial",    "Spatial map",    self._tab_gridmap),
             ]),
+            ("Refinement", [
+                ("refinement", "GSAS-II round trip", self._tab_refinement),
+            ]),
             ("Export", [
                 ("export",     "Export",         self._tab_export),
             ]),
@@ -454,6 +457,7 @@ class AnalysisApp:
             "10 Phase map": self.pages["phasemap"],
             "11 Unknowns": self.pages["unknowns"],
             "12 Spatial map": self.pages["spatial"],
+            "13 Refinement": self.pages["refinement"],
         }
 
         def _on_select(_event=None):
@@ -488,21 +492,69 @@ class AnalysisApp:
         if key == "run":
             self._update_preflight()
 
-    def _tab_export(self, frame):
-        """Whole-series export actions. Frame- and result-specific exports
-        stay on their own pages (Pattern review, Unknowns, Phase map)."""
+    def _tab_refinement(self, frame):
+        """Explain and expose the external GSAS-II refinement round trip."""
         ttk = self.ttk
-        box = ttk.LabelFrame(frame, text="Whole-series exports", padding=10)
-        box.pack(fill="x", anchor="n")
-        ttk.Button(box, text="Refinement bundle (GSAS-II)…",
-                   command=self.export_refinement_clicked).pack(
-            side="left", padx=4)
-        ttk.Button(box, text="GSAS-ready raw patterns…",
+        intro = ttk.Label(
+            frame, foreground=MUTED, justify="left", wraplength=760,
+            text=(
+                "SeriesXRD first finds peaks and proposes which phases are present. "
+                "It then exports those phase models and the measured patterns to "
+                "GSAS-II. GSAS-II is a separate program that fits every phase "
+                "against each complete diffraction pattern and calculates refined "
+                "weight fractions, unit cells, uncertainties, and fit quality. "
+                "Importing the sequential results brings those final numbers back "
+                "onto the original frame series; it does not run GSAS-II inside "
+                "SeriesXRD."
+            ),
+        )
+        intro.pack(anchor="w", fill="x", pady=(0, 10))
+        self.autowrap(intro)
+
+        flow = ttk.LabelFrame(frame, text="Refinement round trip", padding=10)
+        flow.pack(fill="x", anchor="n")
+        ttk.Label(flow, text="1  Prepare patterns, phase CIFs, instrument file, and frame map").grid(
+            row=0, column=0, sticky="w", padx=4, pady=5)
+        ttk.Button(flow, text="Export refinement bundle…",
+                   command=self.export_refinement_clicked).grid(
+            row=0, column=1, sticky="w", padx=8, pady=5)
+        ttk.Label(
+            flow,
+            text=("2  Open the bundle in GSAS-II and perform a sequential "
+                  "Rietveld refinement using the included README."),
+            foreground=MUTED, justify="left", wraplength=500,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=5)
+        ttk.Label(flow, text="3  Return WgtFrac, uncertainties, cells, Rwp/GOF, and convergence").grid(
+            row=2, column=0, sticky="w", padx=4, pady=5)
+        ttk.Button(flow, text="Import sequential results…",
+                   command=self.import_gsas_results_clicked).grid(
+            row=2, column=1, sticky="w", padx=8, pady=5)
+
+        raw = ttk.LabelFrame(frame, text="Alternative pattern preparation", padding=10)
+        raw.pack(fill="x", anchor="n", pady=(12, 0))
+        ttk.Button(raw, text="Export GSAS-ready raw patterns…",
                    command=self.export_gsas_raw_clicked).pack(
             side="left", padx=4)
-        _ToolTip(box, "Rietveld hand-off: per-frame patterns, phase CIFs, and "
-                      "a GSAS-II instrument file — see docs/validation.md for "
-                      "what the export is (and is not).")
+        ttk.Label(
+            raw, foreground=MUTED, justify="left", wraplength=560,
+            text=("Re-integrates original detector frames with counting "
+                  "uncertainties, optionally summing frames by pressure. Use this "
+                  "when the normal analysis-pattern export is not suitable for "
+                  "your refinement."),
+        ).pack(side="left", padx=10)
+
+        result = ttk.Label(
+            frame, foreground=MUTED, justify="left", wraplength=760,
+            text=("Imported results are stored under /refinement in the analysis "
+                  "HDF5. Existing /fractions screening estimates are preserved so "
+                  "you can compare the automated estimate with the Rietveld result."),
+        )
+        result.pack(anchor="w", fill="x", pady=(12, 0))
+        self.autowrap(result)
+
+    def _tab_export(self, frame):
+        """Point to context-specific exports; refinement has its own page."""
+        ttk = self.ttk
         note = ttk.Label(
             frame, foreground=MUTED, justify="left", wraplength=680,
             text=("Context-bound exports live with their results:\n"
@@ -4133,10 +4185,6 @@ class AnalysisApp:
         row2.pack(fill="x", pady=(0, 4))
 
         ttk.Label(row2, text="Export →", foreground=MUTED).pack(side="left", padx=(4, 6))
-        ttk.Button(row2, text="Refinement bundle…",
-                   command=self.export_refinement_clicked).pack(side="left", padx=2)
-        ttk.Button(row2, text="GSAS raw patterns…",
-                   command=self.export_gsas_raw_clicked).pack(side="left", padx=2)
         ttk.Button(row2, text="Export ML dataset…",
                    command=self.export_ml_clicked).pack(side="left", padx=2)
         ttk.Button(row2, text="Export simulated set…",
@@ -5433,6 +5481,56 @@ class AnalysisApp:
             self.notify(f"GSAS export: {count} pattern(s) → {out_dir}")
 
         self.root.after(250, _poll)
+
+    def import_gsas_results_clicked(self):
+        """Import sequential GSAS-II results without assuming a DAC protocol."""
+        self.pull_vars()
+        analysis = str(self.config.get("analysis_h5_file", "") or "").strip()
+        if not analysis or not Path(analysis).is_file():
+            self.messagebox.showerror(
+                "Import GSAS-II results",
+                "Run Step 1 or select an existing analysis HDF5 first.",
+            )
+            return
+        results = self.filedialog.askopenfilename(
+            title="Choose GSAS-II sequential results",
+            initialdir=str(Path(analysis).parent),
+            filetypes=[
+                ("GSAS-II / SeriesXRD results", "*.gpx *.json"),
+                ("GSAS-II project", "*.gpx"),
+                ("SeriesXRD refinement JSON", "*.json"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not results:
+            return
+        try:
+            from .refine_import import import_gsasii_results
+            result = import_gsasii_results(analysis, results)
+        except Exception as exc:
+            self.log(f"GSAS-II result import failed: {exc!r}", "ERROR")
+            self.messagebox.showerror("Import GSAS-II results", str(exc))
+            return
+
+        message = (
+            f"Imported {result['mapped_histograms']} sequential histogram(s) "
+            f"into {result['n_frames_mapped']} frame(s) for "
+            f"{len(result['phases'])} phase(s).\n\n"
+            "Refined weight fractions, uncertainties, cells, and fit quality "
+            "are now under /refinement. Existing /fractions screening "
+            "estimates were preserved."
+        )
+        if result["unmapped_histograms"]:
+            message += (f"\n\nUnmapped histograms: "
+                        f"{len(result['unmapped_histograms'])}")
+        if result["warnings"]:
+            message += "\n\nWarnings:\n" + "\n".join(result["warnings"][:8])
+        self.log(message.replace("\n", " "))
+        self.notify(
+            f"GSAS-II results: {result['n_frames_mapped']} frame(s), "
+            f"{len(result['phases'])} phase(s) → /refinement",
+        )
+        self.messagebox.showinfo("Import GSAS-II results", message)
 
     def export_ml_clicked(self):
         """Export the analysis frames as an ML-ready .npz dataset."""

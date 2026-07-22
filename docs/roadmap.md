@@ -159,6 +159,16 @@ minimal GSAS-II `instrument.instprm`, and a README with a runnable
 GSASIIscriptable snippet. An export/bridge, deliberately not a Rietveld
 reimplementation.
 
+**GSAS-II sequential-refinement import (new in this release).** Every
+refinement export now carries an explicit histogram-to-frame/group manifest
+and a standalone helper that converts a completed GPX sequential refinement
+into a small SeriesXRD-owned JSON interchange file. `analysis/refine_import.py`
+(`seriesxrd-import-gsas`, also in the Analysis GUI) imports GSAS-II's
+calculated weight fractions (`WgtFrac`), esds, per-frame cells, Rwp/GOF,
+convergence, and grouping provenance under `/refinement`. Existing
+semi-quantitative `/fractions` estimates are preserved. The bridge is
+series-generic: pressure is optional metadata, not a DAC-protocol dependency.
+
 **Azimuthal texture analysis (new in this release).**
 `reduce/texture.py` (`seriesxrd-texture`) measures each saved cake's strongest
 rings: intensity vs azimuth per ring, with a texture index (std/mean), a
@@ -185,13 +195,7 @@ collects.
 
 ## Planned
 
-**1. Rietveld-quality phase fractions.** The intensity-share/RIR fractions
-above are implemented; publication-grade weight fractions come from refining
-the exported bundle in GSAS-II (or similar) and, if wanted later, importing
-the refined scale factors back into `/fractions` — an import bridge, not an
-in-house Rietveld engine.
-
-**2. Open-set structure search for unknowns.** Take a Step 3c cluster's
+**1. Open-set structure search for unknowns.** Take a Step 3c cluster's
 d-fingerprint and search it against a COD-derived candidate set using the
 same `ml_scorer` seam Step 3b already defines, instead of stopping at "here
 is an unidentified cluster of coherent peaks." The design need is a
@@ -200,7 +204,7 @@ subset per query is too slow to be interactive, so this needs the corpus
 tooling (`analysis/corpus.py`) plus a precomputed/cached simulation layer
 searched by approximate d-fingerprint match before any scorer runs.
 
-**3. Multi-detector / multi-geometry sessions.** Support one series measured
+**2. Multi-detector / multi-geometry sessions.** Support one series measured
 across two (or more) detector positions or geometries within a single
 analysis — e.g. a wide-angle and a high-angle detector, or a mid-run
 detector-distance change. Design: needs a per-frame PONI association (today
@@ -209,7 +213,7 @@ reduce and into the analysis HDF5's frame metadata, so azimuthal integration
 and downstream d-spacing conversion pick the right geometry per frame rather
 than assuming one geometry for the whole series.
 
-**4. Automatic calibrant detection.** The geometry health check on
+**3. Automatic calibrant detection.** The geometry health check on
 reduction completion is implemented (see above); the remaining half is
 detecting the calibrant from the accepted calibration's fit residuals or the
 image itself, and flagging a stale calibration reused from a different
