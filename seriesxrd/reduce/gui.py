@@ -26,8 +26,8 @@ from ..core.config import TOOL_NAME, read_json, write_json, ensure_dir, now_iso,
 from ..core.handoff import load_handoff
 from ..core.naming import next_available_path
 from ..core.processes import terminate_process_tree, worker_popen
-from ..guikit.theme import BG, BG2, FG, ACCENT, ACCENT2, WARN, MUTED, ENTRY_BG
-from ..guikit.tkstyle import apply_dark_theme
+from ..guikit import theme
+from ..guikit.tkstyle import apply_theme
 from ..guikit.tooltip import ToolTip as _ToolTip
 from ..guikit.mpl_embed import embed_figure, make_canvas_responsive
 from ..guikit.labels import unit_label, AZIMUTH_LABEL, INTENSITY_LABEL
@@ -106,6 +106,8 @@ class ReductionApp:
         # "Use latest reduced output" click.
         self._reduced_listeners: "list" = []
         self._build_gui()
+        theme.register_widget_tree(self._embed_parent or self.root)
+        theme.register_restyle(self._restyle_theme)
         self._drain_log_queue()
         self.log("GUI initialized")
         self.save_config(silent=True)
@@ -115,11 +117,18 @@ class ReductionApp:
     # Build
     # ------------------------------------------------------------------
 
+    def _restyle_theme(self):
+        """Repaint this live pane without touching reduction/watch workers."""
+        apply_theme(self.root, self.ttk)
+        theme.register_widget_tree(self._embed_parent or self.root)
+        theme.restyle_widgets()
+        theme.restyle_owner_figures(self)
+
     def _build_gui(self):
         tk, ttk = self.tk, self.ttk
         # Only theme globally when standalone; embedded, the host already did.
         if self._owns_root:
-            apply_dark_theme(self.root, ttk)
+            apply_theme(self.root, ttk)
         _container = self._embed_parent if self._embed_parent is not None else self.root
         outer = ttk.Frame(_container, padding=6)
         outer.pack(fill="both", expand=True)
@@ -232,16 +241,16 @@ class ReductionApp:
         ttk = self.ttk
         bar = self._status_bar_frame
         # Session name (left)
-        self.status_session = ttk.Label(bar, text="", foreground=MUTED, anchor="w")
+        self.status_session = ttk.Label(bar, text="", style="Muted.TLabel", anchor="w")
         self.status_session.pack(side="left", padx=(6, 12))
         # Handoff state
-        self.status_handoff = ttk.Label(bar, text="calibration: none", foreground=MUTED, anchor="w")
+        self.status_handoff = ttk.Label(bar, text="calibration: none", style="Muted.TLabel", anchor="w")
         self.status_handoff.pack(side="left", padx=(0, 12))
         # Dataset frame count
-        self.status_frames = ttk.Label(bar, text="frames: —", foreground=MUTED, anchor="w")
+        self.status_frames = ttk.Label(bar, text="frames: —", style="Muted.TLabel", anchor="w")
         self.status_frames.pack(side="left", padx=(0, 12))
         # Worker status (right-aligned)
-        self.status_worker = ttk.Label(bar, text="idle", foreground=MUTED, anchor="e")
+        self.status_worker = ttk.Label(bar, text="idle", style="Muted.TLabel", anchor="e")
         self.status_worker.pack(side="right", padx=6)
 
     def _update_status_bar(self):
@@ -382,7 +391,7 @@ class ReductionApp:
                     elif kind == "total":
                         self._watch_status.configure(
                             text=f"watching — {payload} frame(s) so far",
-                            foreground=MUTED)
+                            style="Muted.TLabel")
                     elif kind == "done":
                         self._watch_done(*payload)
                 except Exception as e:
@@ -411,12 +420,12 @@ class ReductionApp:
         self._log_window = tk.Toplevel(self.root)
         self._log_window.title("SeriesXRD — Reduction log")
         self._log_window.geometry("900x420")
-        self._log_window.configure(bg=BG)
+        self._log_window.configure(bg=theme.C.BG)
         # Build the Text + scrollbar.
         self.log_text = tk.Text(
             self._log_window, wrap="word", state="disabled",
-            font=("TkFixedFont", 10), bg=BG2, fg=FG,
-            insertbackground=FG, selectbackground=ACCENT,
+            font=("TkFixedFont", 10), bg=theme.C.BG2, fg=theme.C.FG,
+            insertbackground=theme.C.FG, selectbackground=theme.C.ACCENT,
         )
         scroll = ttk.Scrollbar(self._log_window, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scroll.set)
@@ -449,7 +458,7 @@ class ReductionApp:
         self.field(frame, "handoff_file", "Active calibration", browse=None, row=0)
         ttk.Label(frame, text="The accepted geometry and mask appear here automatically. "
                   "Use a previous calibration only when processing data collected with the same setup.",
-                  foreground=MUTED, wraplength=640, justify="left").grid(
+                  style="Muted.TLabel", wraplength=640, justify="left").grid(
                   row=1, column=0, columnspan=3, sticky="w", padx=4)
         btns = ttk.Frame(frame)
         btns.grid(row=2, column=0, columnspan=3, sticky="w", padx=2, pady=8)
@@ -457,7 +466,7 @@ class ReductionApp:
                    command=self._use_latest_calibration).pack(side="left", padx=2)
         ttk.Button(btns, text="Import a previous run…",
                    command=self._import_calibration_file).pack(side="left", padx=2)
-        self.handoff_text = self.tk.Text(frame, height=14, bg=BG2, fg=FG, insertbackground=FG,
+        self.handoff_text = self.tk.Text(frame, height=14, bg=theme.C.BG2, fg=theme.C.FG, insertbackground=theme.C.FG,
                                          relief="flat", state="disabled", font=("TkFixedFont", 10))
         self.handoff_text.grid(row=3, column=0, columnspan=3, sticky="nsew", padx=4, pady=4)
         frame.rowconfigure(3, weight=1)
@@ -548,7 +557,7 @@ class ReductionApp:
         self.field(frame, "h5_data_path", "HDF5 data path (blank=auto)", row=3, width=40)
         self.checkbox(frame, "recursive", "Search subfolders recursively", row=4)
         ttk.Button(frame, text="Scan dataset", command=self.scan_dataset_clicked).grid(row=6, column=0, sticky="w", padx=4, pady=8)
-        self.dataset_text = self.tk.Text(frame, height=14, bg=BG2, fg=FG, insertbackground=FG,
+        self.dataset_text = self.tk.Text(frame, height=14, bg=theme.C.BG2, fg=theme.C.FG, insertbackground=theme.C.FG,
                                          relief="flat", state="disabled", font=("TkFixedFont", 10))
         self.dataset_text.grid(row=7, column=0, columnspan=3, sticky="nsew", padx=4, pady=4)
         frame.rowconfigure(7, weight=1)
@@ -648,7 +657,7 @@ class ReductionApp:
         self.watch_stop_btn = ttk.Button(watch_row, text="Stop live processing",
                                          command=self.stop_watch, state="disabled")
         self.watch_stop_btn.pack(side="left", padx=4, pady=4)
-        ttk.Label(watch_row, text="Analysis:", foreground=MUTED).pack(
+        ttk.Label(watch_row, text="Analysis:", style="Muted.TLabel").pack(
             side="left", padx=(12, 2))
         self.vars["watch_steps"] = tk.StringVar(
             value=str(self.config.get("watch_steps", "12")))
@@ -660,22 +669,22 @@ class ReductionApp:
                           "background + peaks (default), 123 adds phase ID "
                           "(uses the workspace's configured candidates), "
                           "off = only reduce.")
-        ttk.Label(watch_row, text="Poll (s):", foreground=MUTED).pack(
+        ttk.Label(watch_row, text="Poll (s):", style="Muted.TLabel").pack(
             side="left", padx=(10, 2))
         self.vars["watch_poll"] = tk.StringVar(
             value=str(self.config.get("watch_poll", "5")))
         ttk.Entry(watch_row, textvariable=self.vars["watch_poll"],
                   width=5).pack(side="left", padx=2)
-        self._watch_status = ttk.Label(watch_row, text="", foreground=MUTED)
+        self._watch_status = ttk.Label(watch_row, text="", style="Muted.TLabel")
         self._watch_status.pack(side="left", padx=12)
         self._watch_proc = None
 
         self.progress = ttk.Progressbar(frame, mode="determinate", maximum=100)
         self.progress.pack(fill="x", padx=4, pady=6)
-        self.progress_label = ttk.Label(frame, text="Idle", foreground=MUTED)
+        self.progress_label = ttk.Label(frame, text="Idle", style="Muted.TLabel")
         self.progress_label.pack(anchor="w", padx=6)
         # Run-page log (kept alongside the console-log window)
-        self.run_log_text = tk.Text(frame, bg=BG2, fg=FG, insertbackground=FG, relief="flat",
+        self.run_log_text = tk.Text(frame, bg=theme.C.BG2, fg=theme.C.FG, insertbackground=theme.C.FG, relief="flat",
                                     state="disabled", font=("TkFixedFont", 9))
         self.run_log_text.pack(fill="both", expand=True, padx=4, pady=4)
 
@@ -755,12 +764,12 @@ class ReductionApp:
                 self._update_status_bar()
                 self.progress_label.configure(
                     text="Cancelled — partial output was discarded; run reduction again to write a fresh HDF5.",
-                    foreground=MUTED)
+                    style="Muted.TLabel")
                 self.log("Reduction cancelled by user.", "WARN")
                 return
             self._worker_status = "failed"
             self._update_status_bar()
-            self.progress_label.configure(text=f"Failed (return code {returncode})", foreground=WARN)
+            self.progress_label.configure(text=f"Failed (return code {returncode})", style="Warn.TLabel")
             self.messagebox.showerror("Reduction failed", f"Worker return code {returncode}\nSee the Run reduction page log.")
             return
         manifest = read_json(out_json)
@@ -770,7 +779,7 @@ class ReductionApp:
         self._worker_status = "done"
         self._frame_count = int(n) if isinstance(n, int) else self._frame_count
         self._update_status_bar()
-        self.progress_label.configure(text=f"Done: {n} frames ({nf} failed) -> {h5}", foreground=ACCENT2)
+        self.progress_label.configure(text=f"Done: {n} frames ({nf} failed) -> {h5}", style="Ok.TLabel")
         self.log(f"Reduction complete: {h5}")
         if h5:
             self.config["reduced_h5_file"] = h5
@@ -800,7 +809,7 @@ class ReductionApp:
         self.cancel_btn.configure(state="disabled")
         self._worker_status = "failed"
         self._update_status_bar()
-        self.progress_label.configure(text="Launch error", foreground=WARN)
+        self.progress_label.configure(text="Launch error", style="Warn.TLabel")
         self.messagebox.showerror("Worker launch error", err)
 
     def cancel_reduction(self):
@@ -808,7 +817,7 @@ class ReductionApp:
         if proc is not None and proc.poll() is None:
             self._cancel_requested = True
             self.cancel_btn.configure(state="disabled")
-            self.progress_label.configure(text="Cancelling ...", foreground=MUTED)
+            self.progress_label.configure(text="Cancelling ...", style="Muted.TLabel")
             terminate_process_tree(proc)
             self.log("Cancel requested — stopped worker process tree", "WARN")
 
@@ -823,13 +832,13 @@ class ReductionApp:
         if self._run_proc is not None:
             self._watch_status.configure(
                 text="A batch reduction is running — wait or cancel it first.",
-                foreground=WARN)
+                style="Warn.TLabel")
             return
         self.save_config(silent=True)
         handoff = load_handoff(self.config.get("handoff_file", ""))
         if not handoff.ok:
             msg = "No valid calibration handoff: " + "; ".join(handoff.problems)
-            self._watch_status.configure(text=msg, foreground=WARN)
+            self._watch_status.configure(text=msg, style="Warn.TLabel")
             self.log(msg, "WARN")
             return
         backend_dir = self.config.get(
@@ -838,7 +847,7 @@ class ReductionApp:
         watch_script = Path(backend_dir) / "reduce" / "watch.py"
         if not watch_script.is_file():
             self._watch_status.configure(
-                text=f"watch.py not found under {backend_dir}", foreground=WARN)
+                text=f"watch.py not found under {backend_dir}", style="Warn.TLabel")
             return
         steps = str(self.vars["watch_steps"].get() or "12")
         steps = "" if steps == "off" else steps
@@ -851,7 +860,7 @@ class ReductionApp:
         self.watch_stop_btn.configure(state="normal")
         self.run_btn.configure(state="disabled")
         self._watch_status.configure(text="watching — waiting for frames …",
-                                     foreground=MUTED)
+                                     style="Muted.TLabel")
         self._worker_status = "watching"
         self._update_status_bar()
 
@@ -905,9 +914,9 @@ class ReductionApp:
         if returncode not in (0, None):
             self._watch_status.configure(
                 text=f"watch ended (rc={returncode})" + (f": {err}" if err else "")
-                     + " — see the log", foreground=WARN)
+                     + " — see the log", style="Warn.TLabel")
         else:
-            self._watch_status.configure(text="watch stopped", foreground=MUTED)
+            self._watch_status.configure(text="watch stopped", style="Muted.TLabel")
             self.log("Watch stopped. The live file is a working view — run a "
                      "full reduction for the archival file.")
 
@@ -916,7 +925,7 @@ class ReductionApp:
         if proc is not None and proc.poll() is None:
             self._watch_status.configure(text="stopping — finishing the "
                                                "current batch …",
-                                          foreground=MUTED)
+                                          style="Muted.TLabel")
             proc.terminate()   # SIGTERM → the watcher flushes a final analysis
 
     # ------------------------------------------------------------------
@@ -969,7 +978,7 @@ class ReductionApp:
             "Measure azimuthal intensity variation on the strongest saved rings. "
             "Requires 2D cakes and stores the results with the reduced data.",
         )
-        self._straighten_status = ttk.Label(ctrl, text="", foreground=MUTED)
+        self._straighten_status = ttk.Label(ctrl, text="", style="Muted.TLabel")
         self._straighten_status.pack(side="left", padx=12)
         paned = ttk.PanedWindow(frame, orient="horizontal")
         paned.grid(row=3, column=0, columnspan=3, sticky="nsew", padx=4, pady=4)
@@ -979,12 +988,12 @@ class ReductionApp:
         right = ttk.Frame(paned)
         paned.add(left, weight=1)
         paned.add(right, weight=1)
-        self.review_text = tk.Text(left, bg=BG2, fg=FG, insertbackground=FG, relief="flat",
+        self.review_text = tk.Text(left, bg=theme.C.BG2, fg=theme.C.FG, insertbackground=theme.C.FG, relief="flat",
                                    state="disabled", font=("TkFixedFont", 9), width=58)
         self.review_text.pack(fill="both", expand=True)
         self.review_plot_frame = right
         ttk.Label(right, text="Inspect a reduced .h5 to plot sample patterns.",
-                  foreground=MUTED).pack(anchor="center", expand=True)
+                  style="Muted.TLabel").pack(anchor="center", expand=True)
         # Only auto-inspect at startup if the file still exists (it may have
         # been deleted since last session — don't pop an error dialog on launch).
         _h5 = self.config.get("reduced_h5_file", "")
@@ -1048,7 +1057,7 @@ class ReductionApp:
         if n_rings is None:
             return
         self._straighten_busy = True
-        self._straighten_status.configure(text="Analyzing texture …", foreground=MUTED)
+        self._straighten_status.configure(text="Analyzing texture …", style="Muted.TLabel")
         box: "Dict[str, Any]" = {}
 
         def _work():
@@ -1067,12 +1076,12 @@ class ReductionApp:
                 return
             self._straighten_busy = False
             if box.get("error"):
-                self._straighten_status.configure(text=box["error"], foreground=WARN)
+                self._straighten_status.configure(text=box["error"], style="Warn.TLabel")
                 self.log(f"Texture analysis failed: {box['error']}", "ERROR")
                 return
             result = box.get("result") or {}
             status = f"texture: {result.get('n_cakes', 0)} cakes, {n_rings} rings each"
-            self._straighten_status.configure(text=status, foreground=MUTED)
+            self._straighten_status.configure(text=status, style="Muted.TLabel")
             self.log(f"Texture analysis complete: {status}")
             self.inspect_h5_clicked()
 
@@ -1118,7 +1127,7 @@ class ReductionApp:
             if err is None and kind == "diagnose" and not res.get("ok", True):
                 err = res.get("error", "diagnosis failed")
             if err:
-                self._straighten_status.configure(text=err, foreground=WARN)
+                self._straighten_status.configure(text=err, style="Warn.TLabel")
                 self.log(f"Waviness job failed: {err}", "ERROR")
                 return
             lines = [f"=== {label} ==="]
@@ -1153,7 +1162,7 @@ class ReductionApp:
                     lines.append(f"median waviness A1 = {a1:.4g}")
                 status = (f"straightened {res.get('n_straightened', 0)}"
                           f"/{res.get('n_frames', 0)} frames")
-            self._straighten_status.configure(text=status, foreground=MUTED)
+            self._straighten_status.configure(text=status, style="Muted.TLabel")
             for ln in lines:
                 self.log(ln)
             try:
@@ -1168,13 +1177,13 @@ class ReductionApp:
 
     @staticmethod
     def _style_review_ax(ax):
-        ax.set_facecolor(BG2)
-        ax.tick_params(colors=FG, which="both", labelsize=8)
-        ax.xaxis.label.set_color(FG)
-        ax.yaxis.label.set_color(FG)
-        ax.title.set_color(FG)
+        ax.set_facecolor(theme.C.BG2)
+        ax.tick_params(colors=theme.C.FG, which="both", labelsize=8)
+        ax.xaxis.label.set_color(theme.C.FG)
+        ax.yaxis.label.set_color(theme.C.FG)
+        ax.title.set_color(theme.C.FG)
         for s in ax.spines.values():
-            s.set_edgecolor(FG)
+            s.set_edgecolor(theme.C.FG)
 
     def _draw_review_cake(self, ax, review):
         import numpy as np
@@ -1219,7 +1228,7 @@ class ReductionApp:
             from matplotlib.figure import Figure
         except Exception as e:
             self.ttk.Label(self.review_plot_frame, text=f"matplotlib unavailable: {e}",
-                           foreground=WARN).pack(anchor="center", expand=True)
+                           style="Warn.TLabel").pack(anchor="center", expand=True)
             return
         import numpy as np
 
@@ -1236,7 +1245,7 @@ class ReductionApp:
             nrows = 1 + (1 if cake_present else 0)
             fig = Figure(figsize=(5.5, 5.6), dpi=100, layout="constrained")
             self._review_fig = fig
-            fig.patch.set_facecolor(BG)
+            fig.patch.set_facecolor(theme.C.BG)
             ax1 = fig.add_subplot(nrows, 1, 1)
             for pr in patterns:
                 y = np.asarray(pr["intensity"], dtype=float)
@@ -1261,15 +1270,15 @@ class ReductionApp:
         per_in = 1.7
         fig = Figure(figsize=(5.5, max(2.2, per_in * rows)), dpi=100, layout="constrained")
         self._review_fig = fig
-        fig.patch.set_facecolor(BG)
+        fig.patch.set_facecolor(theme.C.BG)
         axes = fig.subplots(rows, 1, squeeze=False)[:, 0]
         for k, pr in enumerate(patterns):
             ax = axes[k]
             y = np.asarray(pr["intensity"], dtype=float)
             if x is not None and x.shape == y.shape:
-                ax.plot(x, y, lw=0.9, color=ACCENT2)
+                ax.plot(x, y, lw=0.9, color=theme.C.ACCENT2)
             else:
-                ax.plot(y, lw=0.9, color=ACCENT2)
+                ax.plot(y, lw=0.9, color=theme.C.ACCENT2)
             ax.set_title(pr.get("name") or f"frame {pr.get('index')}", fontsize=9)
             ax.set_ylabel(INTENSITY_LABEL, fontsize=8)
             ax.set_xlabel(unit_label(unit), fontsize=8)
@@ -1301,7 +1310,7 @@ class ReductionApp:
 
         container = ttk.Frame(parent)
         container.pack(fill="both", expand=True)
-        sc = tk.Canvas(container, bg=BG, highlightthickness=0)
+        sc = tk.Canvas(container, bg=theme.C.BG, highlightthickness=0)
         vsb = ttk.Scrollbar(container, orient="vertical", command=sc.yview)
         sc.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
@@ -1343,17 +1352,17 @@ class ReductionApp:
             # hides them. Give buttons a light fill; keep the frame + coordinate
             # label on the dark palette.
             try:
-                tb.configure(background=BG)
+                tb.configure(background=theme.C.BG)
                 for child in tb.winfo_children():
                     cls = child.winfo_class()
                     try:
                         if cls in ("Button", "Checkbutton", "Radiobutton"):
-                            child.configure(background=FG, activebackground=ACCENT,
-                                            highlightbackground=BG, relief="flat")
+                            child.configure(background=theme.C.FG, activebackground=theme.C.ACCENT,
+                                            highlightbackground=theme.C.BG, relief="flat")
                         elif cls == "Label":
-                            child.configure(background=BG, foreground=FG)
+                            child.configure(background=theme.C.BG, foreground=theme.C.FG)
                         else:
-                            child.configure(background=BG)
+                            child.configure(background=theme.C.BG)
                     except Exception:
                         pass
             except Exception:
@@ -1375,15 +1384,15 @@ class ReductionApp:
         top = ttk.Frame(frame)
         top.pack(fill="x")
         ttk.Button(top, text="Load gallery", command=self.load_gallery).pack(side="left", padx=4, pady=4)
-        self.gallery_status = ttk.Label(top, text="No gallery loaded.", foreground=MUTED)
+        self.gallery_status = ttk.Label(top, text="No gallery loaded.", style="Muted.TLabel")
         self.gallery_status.pack(side="left", padx=12)
         ttk.Label(top, text="Click a frame to exclude/include it (saved to the .h5).",
-                  foreground=MUTED).pack(side="right", padx=8)
+                  style="Muted.TLabel").pack(side="right", padx=8)
 
         # Scrollable canvas holding the cell grid.
         body = ttk.Frame(frame)
         body.pack(fill="both", expand=True)
-        self.gallery_canvas = tk.Canvas(body, bg=BG, highlightthickness=0)
+        self.gallery_canvas = tk.Canvas(body, bg=theme.C.BG, highlightthickness=0)
         vsb = ttk.Scrollbar(body, orient="vertical", command=self.gallery_canvas.yview)
         self.gallery_canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
@@ -1479,12 +1488,12 @@ class ReductionApp:
         if not cell or fr is None:
             return
         if fr["excluded"]:
-            cell["label"].configure(foreground=WARN)
+            cell["label"].configure(style="Warn.TLabel")
             cell["frame"].configure(relief="solid", borderwidth=2)
         elif not fr["ok"]:
             cell["label"].configure(foreground="#fab387")  # failed frame
         else:
-            cell["label"].configure(foreground=FG)
+            cell["label"].configure(style="TLabel")
             cell["frame"].configure(relief="solid", borderwidth=1)
 
     def _on_gallery_configure(self, event):

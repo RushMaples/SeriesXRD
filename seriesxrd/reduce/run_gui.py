@@ -18,10 +18,8 @@ if __package__ in (None, ""):
     if _pkg_parent not in sys.path:
         sys.path.insert(0, _pkg_parent)
     from seriesxrd.core.config import print_status
-    from seriesxrd.reduce.gui import run_app
 else:
     from ..core.config import print_status
-    from .gui import run_app
 
 _CONFIG_SEARCH_PATHS = [
     Path.cwd() / "reduction_session_config.json",
@@ -42,7 +40,21 @@ def _auto_find_config() -> "Path | None":
 def main() -> int:
     parser = argparse.ArgumentParser(description="Launch the SeriesXRD Batch Reduction GUI")
     parser.add_argument("--config", default="", help="Path to reduction_session_config.json (optional — auto-found if omitted)")
+    parser.add_argument("--theme", choices=("mocha", "latte"), default=None,
+                        help="UI theme override (default: saved preference).")
     args = parser.parse_args()
+
+    if __package__ in (None, ""):
+        from seriesxrd.core.uiprefs import load_prefs
+        from seriesxrd.guikit import theme
+    else:
+        from ..core.uiprefs import load_prefs
+        from ..guikit import theme
+    theme.set_theme(args.theme or load_prefs().get("theme", "mocha"))
+    if __package__ in (None, ""):
+        from seriesxrd.reduce.gui import run_app
+    else:
+        from .gui import run_app
 
     if args.config:
         cfg = Path(args.config).expanduser().resolve()

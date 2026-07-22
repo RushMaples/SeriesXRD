@@ -6,6 +6,7 @@ mods = [
     'seriesxrd',
     'seriesxrd.core', 'seriesxrd.core.config', 'seriesxrd.core.env', 'seriesxrd.core.naming',
     'seriesxrd.core.io', 'seriesxrd.core.masks', 'seriesxrd.core.handoff', 'seriesxrd.core.inspect',
+    'seriesxrd.core.uiprefs',
     'seriesxrd.guikit', 'seriesxrd.guikit.theme', 'seriesxrd.guikit.tkstyle',
     'seriesxrd.guikit.tooltip', 'seriesxrd.guikit.dpi', 'seriesxrd.guikit.dpi',
     'seriesxrd.calib', 'seriesxrd.calib.processing', 'seriesxrd.calib.dioptas',

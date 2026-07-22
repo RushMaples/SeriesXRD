@@ -29,6 +29,22 @@ I/O and HDF5/NeXus stack ingestion, masks, handoff contract, provenance) and
 `guikit/` (theme, ttk styling, tooltips, DPI awareness, embedded matplotlib
 figures) — `core/` depends only on the stdlib and numpy.
 
+### UI theming
+
+`guikit/theme.py` is the single source of semantic UI colors. Its mutable
+palette object changes in place, then weakly registered pane callbacks repaint
+ttk styles, persistent raw-Tk widgets, and any live embedded Matplotlib
+figures. A theme change is therefore a presentation-only operation: panes,
+scientific state, and crash-isolated workers remain alive. The selected theme
+is stored in the platform's per-user configuration directory by
+`core/uiprefs.py`, never in a workspace or scientific provenance record.
+
+Interactive figures follow the UI palette. Publication exports deliberately
+select the light palette and a white background, so their appearance is
+stable regardless of the screen theme. Plot data colors are preserved during
+restyling; only surfaces, structural text, ticks, spines, legends, and grids
+change.
+
 ## Analysis pipeline
 
 ```
