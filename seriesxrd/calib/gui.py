@@ -27,7 +27,8 @@ from ..core.io import read_detector_image
 from ..core.masks import automatic_mask, save_mask_npz, save_mask_preview_png, load_mask_npz, polygon_to_mask
 from ..core.naming import next_available_path
 from ..core.processes import terminate_process_tree, worker_popen
-from ..guikit.theme import BG, BG2, FG, ACCENT, ACCENT2, WARN, BORDER, ENTRY_BG, BTN_BG, BTN_ACT, MUTED
+from ..guikit import theme
+from ..guikit.tkstyle import apply_theme
 from ..guikit.tooltip import ToolTip as _ToolTip
 from ..guikit.mpl_embed import embed_figure, request_canvas_draw
 from .dioptas import launch_dioptas, dioptas_manual_instructions
@@ -126,6 +127,8 @@ class CalibrationApp:
         self._resize_after_id: Optional[str] = None
         self._last_viewer_width: int = 0
         self._build_gui()
+        theme.register_widget_tree(self._embed_parent or self.root)
+        theme.register_restyle(self._restyle_theme)
         self._drain_log_queue()
         self.log("GUI initialized")
         self.save_config(silent=True)
@@ -145,19 +148,19 @@ class CalibrationApp:
         ttk = self.ttk
         bar = self._status_bar_frame
         # Left: session name
-        self.status_session = ttk.Label(bar, text="", foreground=MUTED, anchor="w")
+        self.status_session = ttk.Label(bar, text="", style="Muted.TLabel", anchor="w")
         self.status_session.pack(side="left", padx=(6, 12))
         # Mask state
-        self.status_mask = ttk.Label(bar, text="mask: none", foreground=MUTED, anchor="w")
+        self.status_mask = ttk.Label(bar, text="mask: none", style="Muted.TLabel", anchor="w")
         self.status_mask.pack(side="left", padx=(0, 12))
         # Current generation
-        self.status_gen = ttk.Label(bar, text="", foreground=MUTED, anchor="w")
+        self.status_gen = ttk.Label(bar, text="", style="Muted.TLabel", anchor="w")
         self.status_gen.pack(side="left", padx=(0, 12))
         # Worker status (right-aligned)
-        self.status_worker = ttk.Label(bar, text="idle", foreground=MUTED, anchor="e")
+        self.status_worker = ttk.Label(bar, text="idle", style="Muted.TLabel", anchor="e")
         self.status_worker.pack(side="right", padx=6)
         # Transient non-modal notifications (successful saves) land here.
-        self.status_notify = ttk.Label(bar, text="", foreground=ACCENT2, anchor="w")
+        self.status_notify = ttk.Label(bar, text="", style="Ok.TLabel", anchor="w")
         self.status_notify.pack(side="left", padx=(0, 12))
         self._notify_after_id = None
 
@@ -280,41 +283,19 @@ class CalibrationApp:
     # Theme + build
     # ------------------------------------------------------------------
 
+    def _restyle_theme(self):
+        """Repaint this live pane without touching calibration workers."""
+        apply_theme(self.root, self.ttk)
+        theme.register_widget_tree(self._embed_parent or self.root)
+        theme.restyle_widgets()
+        theme.restyle_owner_figures(self)
+
     def _apply_theme(self):
-        # When embedded in the unified app the host already applied the shared
-        # dark ttk theme; re-applying it here would restyle the whole host
-        # window and its other panes. Only style globally when we own the root.
+        # ttk styles are root-global. The unified host applies them once;
+        # standalone calibration owns the root and applies them here.
         if not self._owns_root:
             return
-        tk, ttk = self.tk, self.ttk
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure(".",             background=BG,       foreground=FG,      fieldbackground=ENTRY_BG,
-                         bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER)
-        style.configure("TFrame",        background=BG)
-        style.configure("TLabel",        background=BG,       foreground=FG)
-        style.configure("TButton",       background=BTN_BG,   foreground=FG,      bordercolor=BORDER, relief="flat", padding=4)
-        style.map(       "TButton",      background=[("active", BTN_ACT), ("pressed", BTN_ACT)])
-        style.configure("TEntry",        fieldbackground=ENTRY_BG, foreground=FG,  insertcolor=FG, bordercolor=BORDER)
-        style.configure("TCombobox",     fieldbackground=ENTRY_BG, foreground=FG,  background=BTN_BG, arrowcolor=FG)
-        style.map(       "TCombobox",    fieldbackground=[("readonly", ENTRY_BG)])
-        style.configure("TCheckbutton",  background=BG,       foreground=FG,      indicatorcolor=ACCENT)
-        style.map(       "TCheckbutton", background=[("active", BG2)])
-        style.configure("TRadiobutton",  background=BG,       foreground=FG,      indicatorcolor=ACCENT)
-        style.map(       "TRadiobutton", background=[("active", BG2)])
-        style.configure("TScrollbar",    background=BG2,      troughcolor=BG,     arrowcolor=FG)
-        style.configure("TNotebook",     background=BG,       tabmargins=[2, 5, 2, 0])
-        style.configure("TNotebook.Tab", background=BG2,      foreground=FG,      padding=[10, 4])
-        style.map(       "TNotebook.Tab",background=[("selected", BG)], foreground=[("selected", ACCENT)])
-        style.configure("TSeparator",    background=BORDER)
-        if self._owns_root:
-            self.root.configure(bg=BG)
-        try:
-            self.root.option_add("*TCombobox*Listbox.background", ENTRY_BG)
-            self.root.option_add("*TCombobox*Listbox.foreground", FG)
-            self.root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
-        except Exception:
-            pass
+        apply_theme(self.root, self.ttk)
 
     def _build_gui(self):
         tk, ttk = self.tk, self.ttk
@@ -498,9 +479,9 @@ class CalibrationApp:
 
     def _scrollable(self, parent):
         tk, ttk = self.tk, self.ttk
-        canvas = tk.Canvas(parent, borderwidth=0, highlightthickness=0, bg=BG)
+        canvas = tk.Canvas(parent, borderwidth=0, highlightthickness=0, bg=theme.C.BG)
         # Use tk.Frame with explicit bg to prevent white-region bleedthrough on Windows
-        frame  = tk.Frame(canvas, bg=BG, borderwidth=0, highlightthickness=0)
+        frame  = tk.Frame(canvas, bg=theme.C.BG, borderwidth=0, highlightthickness=0)
         sb     = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
@@ -788,7 +769,7 @@ class CalibrationApp:
         self.env_window = tk.Toplevel(self.root)
         self.env_window.title("Environment & Executable Settings")
         self.env_window.geometry("900x450")
-        self.env_window.configure(bg=BG)
+        self.env_window.configure(bg=theme.C.BG)
 
         self.env_window.grab_set() 
 
@@ -810,8 +791,8 @@ class CalibrationApp:
         ttk.Button(frame, text="Install missing packages", command=self.install_missing).grid(row=row, column=1, padx=4, pady=8, sticky="w")
         
         # portable font
-        ttk.Label(frame, text="Checks numpy, pyFAI, fabio, matplotlib, Pillow, tkinter.", foreground=MUTED).grid(row=row+1, column=0, columnspan=4, sticky="w", padx=4)
-        ttk.Label(frame, text="Installs any missing required packages using conda or pip.", foreground=MUTED).grid(row=row+2, column=0, columnspan=4, sticky="w", padx=4)
+        ttk.Label(frame, text="Checks numpy, pyFAI, fabio, matplotlib, Pillow, tkinter.", style="Muted.TLabel").grid(row=row+1, column=0, columnspan=4, sticky="w", padx=4)
+        ttk.Label(frame, text="Installs any missing required packages using conda or pip.", style="Muted.TLabel").grid(row=row+2, column=0, columnspan=4, sticky="w", padx=4)
 
     # ------------------------------------------------------------------
     # PONI inspector
@@ -1024,7 +1005,7 @@ class CalibrationApp:
         tk, ttk = self.tk, self.ttk
         win = tk.Toplevel(self.root)
         win.title("Choose cake orientation")
-        win.configure(bg=BG)
+        win.configure(bg=theme.C.BG)
         win.grab_set()
         ttk.Label(win, text="Pick the orientation whose calibrant rings are straight, vertical lines. "
                   "Wavy/sinusoidal rings mean the wrong orientation (or geometry that needs refining).",
@@ -1088,7 +1069,7 @@ class CalibrationApp:
         poni_btn_row = len(frame.grid_slaves())
         self.ttk.Button(frame, text="Inspect PONI", command=self._inspect_poni).grid(
             row=poni_btn_row, column=0, padx=4, pady=4, sticky="w")
-        self.poni_info_label = self.ttk.Label(frame, text="(no PONI loaded)", foreground=MUTED, wraplength=600, justify="left")
+        self.poni_info_label = self.ttk.Label(frame, text="(no PONI loaded)", style="Muted.TLabel", wraplength=600, justify="left")
         self.poni_info_label.grid(row=poni_btn_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
         # Auto-inspect when poni_file var changes.
         if "poni_file" in self.vars:
@@ -1102,7 +1083,7 @@ class CalibrationApp:
                         command=self.preview_cake_orientation).grid(
             row=prev_row, column=0, padx=4, pady=4, sticky="w")
         self.orientation_label = self.ttk.Label(
-            frame, text=self._orientation_text(), foreground=MUTED,
+            frame, text=self._orientation_text(), style="Muted.TLabel",
             wraplength=600, justify="left")
         self.orientation_label.grid(row=prev_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
 
@@ -1221,7 +1202,7 @@ class CalibrationApp:
 
         self.ttk.Label(frame, text="Distance, PONI, rotations, and wavelength are applied to integration. "
                        "Detector name and pixel size come from the PONI file.",
-                       foreground=MUTED, wraplength=600, justify="left").grid(
+                       style="Muted.TLabel", wraplength=600, justify="left").grid(
             row=len(frame.grid_slaves()), column=0, columnspan=4, sticky="w", padx=4, pady=(0, 6))
 
         self.ttk.Button(frame, text="Load image preview into Mask page", command=self.load_image_for_mask).grid(
@@ -1299,10 +1280,10 @@ class CalibrationApp:
         # --- 4. Status label + mask stats ---
         self.mask_mode = "None"
         self.mask_points: List[Tuple[float, float]] = []
-        self.mask_status = ttk.Label(left, text="Mode: None", foreground=MUTED, font=("TkDefaultFont", 9, "italic"))
+        self.mask_status = ttk.Label(left, text="Mode: None", style="Muted.TLabel", font=("TkDefaultFont", 9, "italic"))
         self.mask_status.pack(fill="x", padx=6, pady=8)
         # masked-pixel stats label — updated in refresh_mask_display.
-        self.mask_stats_label = ttk.Label(left, text="", foreground=MUTED, wraplength=170)
+        self.mask_stats_label = ttk.Label(left, text="", style="Muted.TLabel", wraplength=170)
         self.mask_stats_label.pack(fill="x", padx=6, pady=2)
         
         # --- 5. Main Canvas Area ---
@@ -1322,7 +1303,7 @@ class CalibrationApp:
         r = len(frame.grid_slaves())
         self.ttk.Button(frame, text="Use current input files",         command=self.sync_dioptas_fields).grid(row=r,   column=0, padx=4, pady=8, sticky="w")
         self.ttk.Button(frame, text="Launch Dioptas with selected files", command=self.open_dioptas).grid(row=r,   column=1, padx=4, pady=8, sticky="w")
-        self.ttk.Label(frame, text="Mask preference: .npy > .tif > .npz.  Dioptas reads .npy (flipud) natively.", foreground=MUTED, wraplength=600).grid(
+        self.ttk.Label(frame, text="Mask preference: .npy > .tif > .npz.  Dioptas reads .npy (flipud) natively.", style="Muted.TLabel", wraplength=600).grid(
             row=r+1, column=0, columnspan=4, sticky="w", padx=4, pady=2)
 
     # ------------------------------------------------------------------
@@ -1357,7 +1338,7 @@ class CalibrationApp:
         self.ttk.Button(frame, text="Auto-set bins from image/PONI",
                         command=lambda: self._suggest_generation_bins(force=True)).grid(row=8, column=0, padx=4, pady=6, sticky="w")
         self.ttk.Label(frame, text="Derives bin counts from the detector geometry (about 1 bin per pixel of radial extent). Won't overwrite values you've already edited.",
-                       foreground=MUTED, wraplength=700).grid(row=8, column=1, columnspan=3, sticky="w", padx=4)
+                       style="Muted.TLabel", wraplength=700).grid(row=8, column=1, columnspan=3, sticky="w", padx=4)
         self.entry_widgets.get("radial_min") and self.entry_widgets["radial_min"].configure(state="normal")
         self.entry_widgets.get("radial_max") and self.entry_widgets["radial_max"].configure(state="normal")
         self.generation_label = self.ttk.Label(frame, text="No generations yet")
@@ -1370,9 +1351,9 @@ class CalibrationApp:
         self.generate_progress.grid_remove()  # hidden initially
         self.checkbox(frame, "fast_qa", "Fast QA (skip cake integration)")
         self.ttk.Label(frame, text="Processing runs in the background so the application remains responsive.",
-                       foreground=MUTED).grid(row=52, column=0, columnspan=4, sticky="w", padx=4)
+                       style="Muted.TLabel").grid(row=52, column=0, columnspan=4, sticky="w", padx=4)
         self.ttk.Label(frame, text="2D cake uses no-split CSR (low memory). The pyFAI method above applies to 1D integration only.",
-                       foreground=MUTED).grid(row=53, column=0, columnspan=4, sticky="w", padx=4)
+                       style="Muted.TLabel").grid(row=53, column=0, columnspan=4, sticky="w", padx=4)
 
     # ------------------------------------------------------------------
     # Review — Calibration review
@@ -1451,7 +1432,7 @@ class CalibrationApp:
         # Centre: scrollable image canvas
         centre = ttk.Frame(body)
         centre.pack(side="left", fill="both", expand=True)
-        self.viewer_canvas = tk.Canvas(centre, bg=BG, highlightthickness=0)
+        self.viewer_canvas = tk.Canvas(centre, bg=theme.C.BG, highlightthickness=0)
         self.viewer_vsb    = ttk.Scrollbar(centre, orient="vertical",   command=self.viewer_canvas.yview)
         self.viewer_hsb    = ttk.Scrollbar(centre, orient="horizontal",  command=self.viewer_canvas.xview)
         self.viewer_canvas.configure(yscrollcommand=self.viewer_vsb.set, xscrollcommand=self.viewer_hsb.set)
@@ -1489,12 +1470,12 @@ class CalibrationApp:
         self._log_window = tk.Toplevel(self.root)
         self._log_window.title("SeriesXRD — Calibration log")
         self._log_window.geometry("900x420")
-        self._log_window.configure(bg=BG)
+        self._log_window.configure(bg=theme.C.BG)
         # Build the Text + scrollbar.
         self.log_text = tk.Text(
             self._log_window, wrap="word", state="disabled",
-            font=("TkFixedFont", 10), bg=BG2, fg=FG,
-            insertbackground=FG, selectbackground=ACCENT,
+            font=("TkFixedFont", 10), bg=theme.C.BG2, fg=theme.C.FG,
+            insertbackground=theme.C.FG, selectbackground=theme.C.ACCENT,
         )
         scroll = ttk.Scrollbar(self._log_window, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scroll.set)
@@ -1535,7 +1516,7 @@ class CalibrationApp:
         prov_lf = ttk.Frame(parent)
         prov_lf.pack(fill="x", pady=(0, 4))
         ttk.Label(prov_lf, text="Source generation:", font=("TkDefaultFont", 10, "bold")).pack(side="left", padx=4)
-        self.final_prov_label = ttk.Label(prov_lf, text="none", foreground=ACCENT)
+        self.final_prov_label = ttk.Label(prov_lf, text="none", style="Accent.TLabel")
         self.final_prov_label.pack(side="left", padx=4)
         ttk.Button(prov_lf, text="Use current viewer generation", command=self._final_use_current_gen).pack(side="left", padx=4)
         ttk.Button(prov_lf, text="Use latest generation",         command=self._final_use_latest_gen).pack(side="left", padx=4)
@@ -1611,8 +1592,9 @@ class CalibrationApp:
             v = self.tk.BooleanVar(value=exists)
             self._final_item_vars[key] = v
             self.ttk.Checkbutton(frame, text=label, variable=v).grid(row=row, column=0, sticky="w", padx=8, pady=1)
-            self.ttk.Label(frame, text=str(p) if p else "—", foreground=MUTED, wraplength=700).grid(row=row, column=1, sticky="w", padx=4)
-            self.ttk.Label(frame, text="✓" if exists else "missing", foreground=ACCENT2 if exists else WARN).grid(row=row, column=2, padx=4)
+            self.ttk.Label(frame, text=str(p) if p else "—", style="Muted.TLabel", wraplength=700).grid(row=row, column=1, sticky="w", padx=4)
+            self.ttk.Label(frame, text="✓" if exists else "missing",
+                           style="Ok.TLabel" if exists else "Warn.TLabel").grid(row=row, column=2, padx=4)
             row += 1
         self.ttk.Label(frame, text="Figures:", font=("TkDefaultFont", 9, "bold")).grid(row=row, column=0, columnspan=3, sticky="w", padx=4, pady=(6, 2))
         row += 1
@@ -1622,8 +1604,9 @@ class CalibrationApp:
             v      = self.tk.BooleanVar(value=exists)
             self._final_item_vars[key] = v
             self.ttk.Checkbutton(frame, text=label, variable=v).grid(row=row, column=0, sticky="w", padx=8, pady=1)
-            self.ttk.Label(frame, text=str(p) if p else "—", foreground=MUTED, wraplength=700).grid(row=row, column=1, sticky="w", padx=4)
-            self.ttk.Label(frame, text="✓" if exists else "missing", foreground=ACCENT2 if exists else WARN).grid(row=row, column=2, padx=4)
+            self.ttk.Label(frame, text=str(p) if p else "—", style="Muted.TLabel", wraplength=700).grid(row=row, column=1, sticky="w", padx=4)
+            self.ttk.Label(frame, text="✓" if exists else "missing",
+                           style="Ok.TLabel" if exists else "Warn.TLabel").grid(row=row, column=2, padx=4)
             row += 1
         self.ttk.Label(frame, text="Data:", font=("TkDefaultFont", 9, "bold")).grid(row=row, column=0, columnspan=3, sticky="w", padx=4, pady=(6, 2))
         row += 1
@@ -1633,8 +1616,9 @@ class CalibrationApp:
             v      = self.tk.BooleanVar(value=exists)
             self._final_item_vars[key] = v
             self.ttk.Checkbutton(frame, text=label, variable=v).grid(row=row, column=0, sticky="w", padx=8, pady=1)
-            self.ttk.Label(frame, text=str(p) if p else "—", foreground=MUTED, wraplength=700).grid(row=row, column=1, sticky="w", padx=4)
-            self.ttk.Label(frame, text="✓" if exists else "missing", foreground=ACCENT2 if exists else WARN).grid(row=row, column=2, padx=4)
+            self.ttk.Label(frame, text=str(p) if p else "—", style="Muted.TLabel", wraplength=700).grid(row=row, column=1, sticky="w", padx=4)
+            self.ttk.Label(frame, text="✓" if exists else "missing",
+                           style="Ok.TLabel" if exists else "Warn.TLabel").grid(row=row, column=2, padx=4)
             row += 1
 
     # ------------------------------------------------------------------
@@ -2011,7 +1995,7 @@ class CalibrationApp:
             tk = self.tk
             top = tk.Toplevel(self.root)
             top.title("Pixel intensity histogram")
-            top.configure(bg=BG)
+            top.configure(bg=theme.C.BG)
             arr = self.image_cache
             finite_vals = arr[np.isfinite(arr)].ravel()
             if finite_vals.size == 0:
@@ -2516,12 +2500,12 @@ class CalibrationApp:
         raw_paths = md.get("paths", {})
         visible_panels = [k for k, v in self._panel_vars.items() if v.get()]
         if not visible_panels:
-            self.viewer_canvas.create_text(20, 20, anchor="nw", text="No panels selected.", fill=FG)
+            self.viewer_canvas.create_text(20, 20, anchor="nw", text="No panels selected.", fill=theme.C.FG)
             return
         try:
             from PIL import Image, ImageTk  # type: ignore
         except ImportError:
-            self.viewer_canvas.create_text(20, 20, anchor="nw", text="Pillow not available.", fill=FG)
+            self.viewer_canvas.create_text(20, 20, anchor="nw", text="Pillow not available.", fill=theme.C.FG)
             return
         cw = max(200, self.viewer_canvas.winfo_width()  - 24)
         panel_w = int(cw * self._viewer_zoom)
@@ -2542,7 +2526,7 @@ class CalibrationApp:
                 y_offset += ph + 10
             except Exception as e:
                 self.viewer_canvas.create_text(12, y_offset, anchor="nw",
-                                               text=f"{key}: {repr(e)}", fill=WARN)
+                                               text=f"{key}: {repr(e)}", fill=theme.C.WARN)
                 y_offset += 20
         self.viewer_canvas.configure(scrollregion=(0, 0, panel_w + 24, y_offset + 10))
 

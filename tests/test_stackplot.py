@@ -78,6 +78,34 @@ def test_waterfall_style(analysis_file, tmp_path):
     assert man["n_panels"] == 3
 
 
+def test_publication_palette_has_white_figure_background(
+        analysis_file, tmp_path, monkeypatch):
+    from matplotlib.colors import to_hex
+    from matplotlib.figure import Figure
+    from seriesxrd.analysis.stackplot import FIGURE_PRESETS
+
+    captured = {}
+    original = Figure.savefig
+
+    def _capture_facecolor(self, *args, **kwargs):
+        captured["facecolor"] = to_hex(self.get_facecolor())
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", _capture_facecolor)
+    preset = FIGURE_PRESETS["publication"]
+    out = tmp_path / "publication.pdf"
+    man = stack_figure(
+        analysis_file, out, source="clean", frames=[0, 2],
+        palette=preset["palette"], background=preset["background"],
+        dpi=preset["dpi"],
+    )
+
+    assert out.is_file() and out.stat().st_size > 0
+    assert captured["facecolor"] == "#ffffff"
+    assert man["palette"] == "latte"
+    assert man["background"] == "#ffffff"
+
+
 def test_unknown_style_raises(analysis_file, tmp_path):
     with pytest.raises(ValueError):
         stack_figure(analysis_file, tmp_path / "y.png", source="clean",
