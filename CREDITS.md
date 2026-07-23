@@ -2,11 +2,15 @@
 
 ## Development
 
-- **Rush Maples** — lead developer and maintainer.
+- **Rush Maples**
+  ([ORCID 0009-0008-3743-4191](https://orcid.org/0009-0008-3743-4191)) — 
+  lead developer and maintainer.
 
 ## Project supervision
 
-- **Sheng Ran** — project supervisor.
+- **Sheng Ran**
+  ([ORCID 0000-0003-1557-267X](https://orcid.org/0000-0003-1557-267X)) — 
+  project supervisor.
 
 ## Acknowledgments
 

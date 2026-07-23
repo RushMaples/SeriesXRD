@@ -3,7 +3,7 @@
 All notable changes to SeriesXRD will be documented here. The project follows
 semantic versioning once a stable public API is declared.
 
-## [Unreleased]
+## [0.3.0] - 2026-07-23
 
 ### Added
 
