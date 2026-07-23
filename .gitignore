@@ -16,6 +16,8 @@ env/
 
 # Local agent/editor settings
 .claude/
+.codex_tmp/
+.codex_worktrees/
 
 # Machine-specific generated files (written at runtime; they contain local
 # absolute paths and must not be committed —
