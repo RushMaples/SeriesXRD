@@ -250,8 +250,8 @@ python -m pytest
 If SeriesXRD contributes to published research, please cite the exact version
 used:
 
-> Maples, R. (2026). *SeriesXRD* (Version 0.2.0) [Computer software].
-> Zenodo. https://doi.org/10.5281/zenodo.21479737
+> Maples, R. (2026). *SeriesXRD* (Version 0.3.0) [Computer software].
+> Zenodo. https://doi.org/10.5281/zenodo.21511143
 
 Machine-readable citation metadata is provided in
 [`CITATION.cff`](CITATION.cff). GitHub can use this file to generate a

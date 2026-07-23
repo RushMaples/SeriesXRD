@@ -3,8 +3,8 @@ message: "If you use SeriesXRD in your research, please cite the software using 
 title: "SeriesXRD"
 type: software
 version: 0.3.0
-doi: "10.5281/zenodo.21479737"
-date-released: 2026-07-21
+doi: "10.5281/zenodo.21511143"
+date-released: 2026-07-23
 authors:
   - family-names: "Maples"
     given-names: "Rush"
@@ -12,6 +12,6 @@ authors:
     affiliation: "Georgia Institute of Technology"
     orcid: "https://orcid.org/0009-0008-3743-4191"
 repository-code: "https://github.com/RushMaples/SeriesXRD"
-repository-artifact: "https://pypi.org/project/seriesxrd/0.2.0/"
+repository-artifact: "https://pypi.org/project/seriesxrd/0.3.0/"
 url: "https://github.com/RushMaples/SeriesXRD"
 license: MIT
