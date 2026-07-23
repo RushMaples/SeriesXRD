@@ -3,7 +3,7 @@
 [![PyPI](https://img.shields.io/pypi/v/seriesxrd.svg)](https://pypi.org/project/seriesxrd/)
 [![Python versions](https://img.shields.io/pypi/pyversions/seriesxrd.svg)](https://pypi.org/project/seriesxrd/)
 [![CI](https://github.com/RushMaples/SeriesXRD/actions/workflows/ci.yml/badge.svg)](https://github.com/RushMaples/SeriesXRD/actions/workflows/ci.yml)
-[![DOI](https://zenodo.org/badge/1270485939.svg)](https://doi.org/10.5281/zenodo.21479736)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21479736.svg)](https://doi.org/10.5281/zenodo.21479736)
 [![License: MIT](https://img.shields.io/pypi/l/seriesxrd.svg)](LICENSE)
 
 GUI-driven workflow for powder X-ray diffraction: detector calibration review,
