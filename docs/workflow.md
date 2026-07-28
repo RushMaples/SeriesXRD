@@ -222,6 +222,16 @@ Twelve tabs. Tabs 1–6 configure a run, tab 7 runs it, and tabs 8–12 review r
    category, space group, lattice, isotropic EOS, optional per-axis EOS for
    anisotropic compression); "Import CIF…" parses a CIF via pymatgen (or
    stores it for manual completion if pymatgen is absent).
+
+   Two things worth knowing about imported CIFs. Natural-sample structures
+   often share a site between species with occupancies summing above 1;
+   pymatgen rejects those outright, so seriesxrd retries with a relaxed
+   occupancy tolerance (`phases.CIF_OCCUPANCY_TOLERANCE`, default 5.0) and
+   notes the rescale on the phase. Peak positions are unaffected — only
+   calculated relative intensities are approximate, and identification weights
+   those gently anyway. And a database entry that refined only a unit cell
+   carries no atomic coordinates; no pattern can be simulated from it, and the
+   import says so rather than failing later at ranking time.
 5. **5 Metadata** — extract pressures from filenames, import a CSV,
    preview pressure vs. frame, and hand-edit P/σ/T per selected frame in the
    table. See [§5](#5-series-metadata-pressure-temperature-time).

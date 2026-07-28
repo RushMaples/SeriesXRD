@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import math
 import shutil
+import warnings
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -37,6 +38,22 @@ USER_JSON_NAME = "user_phases.json"
 _CIF_SUBDIR = "cifs"
 
 CATEGORIES = ("marker", "gasket", "medium", "sample", "other")
+
+# Occupancy tolerance used to RETRY a CIF that pymatgen refuses under its strict
+# default of 1.0. Natural-sample CIFs — minerals especially — routinely write
+# shared-site occupancies that sum above 1, and pymatgen then returns no
+# structure at all rather than a rescaled one. Retrying with a relaxed tolerance
+# rescales those occupancies: that perturbs calculated relative intensities, but
+# leaves the lattice untouched, and therefore every peak POSITION the matcher
+# actually decides on. Identification also weights intensities only gently
+# (``identify.intensity_k``), because DAC texture scrambles them anyway.
+#
+# Measured on 243 mineral CIFs downloaded from COD: 27 failed strict parsing,
+# and this fallback recovers 16 of them. The other 11 carry no atomic
+# coordinates at all (see ``_cif_lacks_coordinates``) and no tolerance can help.
+#
+# Set to 1.0 to disable the retry and restore pre-0.3.1 behaviour.
+CIF_OCCUPANCY_TOLERANCE = 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -242,21 +259,99 @@ def _require_pymatgen():
             "parse CIFs and simulate patterns, or enter lattice/EOS by hand.")
 
 
-def parse_cif(cif_path: "str | Path") -> Dict[str, Any]:
-    """Extract ``{formula, space_group, lattice, atoms}`` from a CIF via pymatgen.
+def _cif_lacks_coordinates(cif_path: "str | Path") -> bool:
+    """True when a CIF declares atom sites but every coordinate is a placeholder.
 
-    ``atoms`` is the symmetrized asymmetric unit so a Structure can be rebuilt
-    with :func:`structure_from_phase`. Raises an instructive error if pymatgen
-    is unavailable or the CIF can't be parsed.
+    Structure databases carry entries derived from studies that refined only the
+    unit cell; their ``_atom_site_fract_*`` columns are ``?``. pymatgen reports
+    those with the same opaque "no structures" error it uses for occupancy
+    problems, so distinguishing them is the difference between "raise your
+    tolerance" and "this entry can never work — pick another".
+    """
+    try:
+        text = Path(cif_path).expanduser().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    if "_atom_site_fract_x" not in text:
+        return True
+    body = text.split("_atom_site_fract_x", 1)[1]
+    rows: List[str] = []
+    for line in body.splitlines()[1:]:
+        s = line.strip()
+        if not s or s.startswith(("_", "#")):
+            continue
+        if s.startswith(("loop_", "data_")):
+            break
+        rows.append(s)
+    if not rows:
+        return True
+    # first token is the site label; the rest should be numbers
+    return all(set(r.split()[1:]) <= {"?", "."} for r in rows if r.split())
+
+
+def structure_from_cif(cif_path: "str | Path", *,
+                       occupancy_tolerance: "Optional[float]" = None):
+    """Parse a CIF into a pymatgen Structure, tolerating over-full site occupancy.
+
+    Tries pymatgen's strict settings first, so a well-formed CIF parses exactly
+    as it always did. Only on failure does it retry with
+    ``occupancy_tolerance`` (default :data:`CIF_OCCUPANCY_TOLERANCE`), which
+    rescales occupancies that sum above 1 — and it warns when it does, because
+    that changes calculated intensities.
+
+    Raises ``ValueError`` naming the actual problem rather than pymatgen's
+    generic message. Pass ``occupancy_tolerance=1.0`` to disable the retry.
     """
     _require_pymatgen()
-    from pymatgen.core import Structure  # type: ignore
-    from pymatgen.symmetry.analyzer import SpacegroupAnalyzer  # type: ignore
+    from pymatgen.io.cif import CifParser  # type: ignore
 
     p = Path(cif_path).expanduser()
     if not p.is_file():
         raise FileNotFoundError(f"CIF not found: {p}")
-    struct = Structure.from_file(str(p))
+
+    # primitive=False matches Structure.from_file's default, which this replaces.
+    try:
+        return CifParser(str(p)).parse_structures(primitive=False)[0]
+    except Exception as strict_err:
+        tol = (CIF_OCCUPANCY_TOLERANCE if occupancy_tolerance is None
+               else float(occupancy_tolerance))
+        if tol > 1.0:
+            try:
+                struct = CifParser(str(p), occupancy_tolerance=tol
+                                   ).parse_structures(primitive=False)[0]
+            except Exception:
+                pass
+            else:
+                warnings.warn(
+                    f"{p.name}: site occupancies sum above 1; re-parsed with "
+                    f"occupancy_tolerance={tol:g} and occupancies rescaled. "
+                    "Peak positions are unaffected; calculated relative "
+                    "intensities are approximate.",
+                    RuntimeWarning, stacklevel=2)
+                return struct
+        if _cif_lacks_coordinates(p):
+            raise ValueError(
+                f"{p.name} contains no atomic coordinates (its _atom_site_fract_* "
+                "values are '?'), so no diffraction pattern can be simulated "
+                "from it. Database entries that refined only the unit cell look "
+                "like this — choose an entry with a solved structure."
+            ) from strict_err
+        raise ValueError(f"could not parse CIF {p.name}: {strict_err}") from strict_err
+
+
+def parse_cif(cif_path: "str | Path", *,
+              occupancy_tolerance: "Optional[float]" = None) -> Dict[str, Any]:
+    """Extract ``{formula, space_group, lattice, atoms}`` from a CIF via pymatgen.
+
+    ``atoms`` is the symmetrized asymmetric unit so a Structure can be rebuilt
+    with :func:`structure_from_phase`. Raises an instructive error if pymatgen
+    is unavailable or the CIF can't be parsed. See :func:`structure_from_cif`
+    for the occupancy-tolerance fallback.
+    """
+    _require_pymatgen()
+    from pymatgen.symmetry.analyzer import SpacegroupAnalyzer  # type: ignore
+
+    struct = structure_from_cif(cif_path, occupancy_tolerance=occupancy_tolerance)
     sga = SpacegroupAnalyzer(struct)
     sym = sga.get_symmetrized_structure()
     lat = struct.lattice
@@ -303,15 +398,26 @@ def import_cif(workspace: "str | Path", cif_path: "str | Path", *,
                   eos=dict(eos or {}), source=source, notes=notes)
     if pymatgen_available():
         try:
-            meta = parse_cif(dst)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", RuntimeWarning)
+                meta = parse_cif(dst)
             phase.formula = meta["formula"]
             phase.space_group = meta["space_group"]
             phase.lattice = meta["lattice"]
             phase.atoms = meta["atoms"]
             if not name:
                 phase.name = meta["formula"] or phase.name
+            # Record an occupancy rescale so it survives into the library file
+            # rather than vanishing with the warning, and re-emit it so a
+            # caller watching stderr still sees it.
+            for w in caught:
+                if "occupancy_tolerance" in str(w.message):
+                    phase.notes = (phase.notes +
+                                   f"\n[CIF occupancies rescaled: {w.message}]").strip()
+                    warnings.warn(w.message, RuntimeWarning, stacklevel=2)
+                    break
         except Exception as e:  # keep the import; just couldn't auto-fill
-            phase.notes = (phase.notes + f"\n[CIF parse failed: {e!r}]").strip()
+            phase.notes = (phase.notes + f"\n[CIF parse failed: {e}]").strip()
     upsert_user_phase(workspace, phase)
     return phase
 
@@ -322,7 +428,7 @@ def structure_from_phase(phase: Phase):
     _require_pymatgen()
     from pymatgen.core import Lattice, Structure  # type: ignore
     if phase.cif_path and Path(phase.cif_path).is_file():
-        return Structure.from_file(phase.cif_path)
+        return structure_from_cif(phase.cif_path)
     if not (phase.lattice and phase.atoms and phase.space_group):
         raise ValueError(f"Phase {phase.name!r} lacks structure (need a CIF or "
                          "space group + lattice + atoms).")

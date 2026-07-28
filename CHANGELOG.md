@@ -3,6 +3,33 @@
 All notable changes to SeriesXRD will be documented here. The project follows
 semantic versioning once a stable public API is declared.
 
+## [Unreleased]
+
+### Fixed
+
+- CIFs whose site occupancies sum above 1 — the norm for natural-sample and
+  mineral structures, where a site is shared between species — no longer make a
+  phase silently unusable. pymatgen's strict default returns *no structure* for
+  these, so the phase was accepted into the library at import time and then
+  skipped at rank and identify time with only a log line. `structure_from_cif`
+  now retries with a relaxed `occupancy_tolerance`
+  (`phases.CIF_OCCUPANCY_TOLERANCE`, default 5.0), warns when it does so
+  because rescaling occupancies perturbs calculated relative intensities, and
+  records the rescale in the imported phase's notes. Peak positions, which is
+  what identification decides on, are unaffected. Measured on 243 mineral CIFs
+  from COD: 216 parsed before, 232 now.
+- A CIF carrying no atomic coordinates at all (`_atom_site_fract_*` set to `?`,
+  common for database entries that refined only a unit cell) now raises a
+  message saying exactly that, instead of pymatgen's generic "Invalid CIF file
+  with no structures!". Other parse failures report the underlying error rather
+  than swallowing it.
+
+### Added
+
+- `phases.structure_from_cif()` — the CIF-to-Structure entry point used by
+  `parse_cif` and `structure_from_phase`, with an `occupancy_tolerance`
+  parameter. Pass `1.0` to restore strict pre-0.3.1 parsing.
+
 ## [0.3.0] - 2026-07-23
 
 ### Added
