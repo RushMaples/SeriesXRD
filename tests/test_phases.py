@@ -129,6 +129,127 @@ def test_pymatgen_paths():
         assert "Au-test" in ph.load_library(td)
 
 
+_CIF_OVERFULL = """\
+data_overfull
+_cell_length_a 5.0
+_cell_length_b 5.0
+_cell_length_c 5.0
+_cell_angle_alpha 90.0
+_cell_angle_beta 90.0
+_cell_angle_gamma 90.0
+_symmetry_space_group_name_H-M 'P 1'
+loop_
+_symmetry_equiv_pos_as_xyz
+  'x, y, z'
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+Mg1 Mg 0.0 0.0 0.0 1.0
+Fe1 Fe 0.0 0.0 0.0 1.0
+"""
+
+_CIF_NO_COORDS = """\
+data_cellonly
+_cell_length_a 5.0
+_cell_length_b 5.0
+_cell_length_c 5.0
+_cell_angle_alpha 90.0
+_cell_angle_beta 90.0
+_cell_angle_gamma 90.0
+_symmetry_space_group_name_H-M 'P 1'
+loop_
+_atom_site_label
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+? ? ? ?
+"""
+
+
+def test_cif_lacks_coordinates():
+    """Coordinate-less CIFs are detected without pymatgen — the check is textual."""
+    with tempfile.TemporaryDirectory() as td:
+        bare = Path(td) / "cellonly.cif"
+        bare.write_text(_CIF_NO_COORDS, encoding="utf-8")
+        assert ph._cif_lacks_coordinates(bare)
+
+        full = Path(td) / "overfull.cif"
+        full.write_text(_CIF_OVERFULL, encoding="utf-8")
+        assert not ph._cif_lacks_coordinates(full)
+
+
+def test_cif_occupancy_tolerance():
+    """A CIF whose site occupancies sum above 1 must still yield a structure.
+
+    Natural-sample CIFs routinely share a site between species written with
+    occupancies summing over 1; pymatgen's strict default returns no structure
+    at all, which used to make the phase silently unusable downstream.
+    """
+    if not ph.pymatgen_available():
+        print("  (pymatgen not installed — skipping occupancy-tolerance tests)")
+        return
+    import warnings as _w
+
+    with tempfile.TemporaryDirectory() as td:
+        over = Path(td) / "overfull.cif"
+        over.write_text(_CIF_OVERFULL, encoding="utf-8")
+
+        # strict parsing rejects it ...
+        from pymatgen.io.cif import CifParser
+        try:
+            CifParser(str(over)).parse_structures(primitive=False)[0]
+            strict_ok = True
+        except Exception:
+            strict_ok = False
+
+        # ... but the library recovers it, and says so.
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always", RuntimeWarning)
+            struct = ph.structure_from_cif(over)
+        assert struct is not None and len(struct) >= 1
+        if not strict_ok:
+            assert any("occupancy_tolerance" in str(c.message) for c in caught), \
+                "a rescaled parse must warn — it changes calculated intensities"
+            # opting out restores the strict behaviour
+            try:
+                ph.structure_from_cif(over, occupancy_tolerance=1.0)
+                raise AssertionError("occupancy_tolerance=1.0 must not retry")
+            except ValueError:
+                pass
+
+        # A coordinate-less CIF is diagnosed specifically, not generically.
+        bare = Path(td) / "cellonly.cif"
+        bare.write_text(_CIF_NO_COORDS, encoding="utf-8")
+        try:
+            ph.structure_from_cif(bare)
+            raise AssertionError("a coordinate-less CIF must raise")
+        except ValueError as e:
+            assert "no atomic coordinates" in str(e), f"unhelpful message: {e}"
+
+
+def test_cif_strict_path_unchanged():
+    """A well-formed CIF parses with no warning and no tolerance relaxation."""
+    if not ph.pymatgen_available():
+        print("  (pymatgen not installed — skipping strict-path test)")
+        return
+    import warnings as _w
+    from pymatgen.core import Lattice, Structure
+
+    s = Structure.from_spacegroup("Fm-3m", Lattice.cubic(4.0782), ["Au"], [[0, 0, 0]])
+    with tempfile.TemporaryDirectory() as td:
+        cif = Path(td) / "au.cif"
+        s.to(filename=str(cif))
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always", RuntimeWarning)
+            struct = ph.structure_from_cif(cif)
+        assert struct is not None
+        assert not [c for c in caught if "occupancy_tolerance" in str(c.message)]
+
+
 def test_signed_axial_expansivity():
     """axial_eos axes may carry beta = d(ln x)/dP (1/GPa): beta > 0 EXPANDS
     under pressure (negative linear compressibility — e.g. the UOTe c-axis,
@@ -166,6 +287,9 @@ def main() -> None:
     test_eos_forms()
     test_compress_lattice()
     test_signed_axial_expansivity()
+    test_cif_lacks_coordinates()
+    test_cif_occupancy_tolerance()
+    test_cif_strict_path_unchanged()
     test_pymatgen_paths()
     print("PHASES TEST OK")
 

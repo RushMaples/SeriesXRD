@@ -73,15 +73,26 @@ The label names in the CSV must already exist in your workspace library, so
 import the corresponding RRUFF CIFs first (the benchmark measures the scorer,
 not library coverage).
 
+Mineral CIFs are messier than synthetic ones. In a 243-mineral sample drawn
+from COD, 27 failed pymatgen's strict parsing: 16 because shared-site
+occupancies sum above 1 (recovered automatically since 0.3.1 — see
+`phases.CIF_OCCUPANCY_TOLERANCE`), and 11 because the entry refined only a unit
+cell and carries no atomic coordinates. The latter can never be simulated, so
+screen them out of the labels before scoring — a pattern whose truth phase is
+unsimulable can never be hit, and leaving it in scores a library gap as a
+scorer failure.
+
 ### opXRD (large open experimental database)
 
-The Open Experimental Powder X-ray Diffraction database — ~90k real,
-labelled patterns contributed across several labs (Riesel et al., 2025;
-arXiv:2503.05577). Published on Zenodo; search Zenodo for "opXRD" for the
-current record and DOI. Much larger and messier than RRUFF (varied
-instruments, backgrounds, partial labels) — good for stress-testing the
-preprocessing and the scorer on realistic noise. Same `seriesxrd-benchmark`
-ingestion once you have a `filename,phases` CSV.
+The Open Experimental Powder X-ray Diffraction database — 92,552 real
+patterns contributed across six institutions, of which **2,179 are labelled**
+(Hollarek et al., 2026, *Adv. Intell. Discov.*, doi:10.1002/aidi.202500044;
+preprint arXiv:2503.05577). The labelled subset is the part
+`seriesxrd-benchmark` can score against. Published on Zenodo
+(<https://zenodo.org/records/15298026>). Much larger and messier than RRUFF
+(varied instruments, backgrounds, partial labels) — good for stress-testing
+the preprocessing and the scorer on realistic noise. Same
+`seriesxrd-benchmark` ingestion once you have a `filename,phases` CSV.
 
 ---
 
