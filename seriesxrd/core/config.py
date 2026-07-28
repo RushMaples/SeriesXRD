@@ -18,7 +18,7 @@ import shutil
 import sys
 
 # Keep in sync with [project] version in pyproject.toml.
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 TOOL_NAME = "SeriesXRD"
 
 # Files that must exist inside a valid backend (seriesxrd package) folder.
