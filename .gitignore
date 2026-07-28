@@ -56,3 +56,7 @@ reference_phases/
 *.npy
 *.npz
 *.csv
+
+
+# Manuscript working files — drafts, figures, benchmark scratch
+paper/
