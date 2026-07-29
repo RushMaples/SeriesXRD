@@ -47,6 +47,10 @@ _DEFAULTS = {
     "min_prominence_snr": "",     # blank = from sensitivity preset
     "window_factor": "3.0",
     "max_chi2": "25.0",
+    "max_rel_misfit": "0.05",     # rms residual / peak height above which a fit is
+                                  # ALSO bad; a peak must fail both this and max_chi2
+                                  # to be rejected. Without it the chi-square gate is
+                                  # an SNR gate (see peaks.DEFAULT_MAX_REL_MISFIT).
     "edge_bins": "",              # blank = from sensitivity preset
     "fit_min": "",               # optional radial-unit (2θ or q) lower fit bound; blank = auto
     "fit_max": "",               # optional upper fit bound; blank = auto

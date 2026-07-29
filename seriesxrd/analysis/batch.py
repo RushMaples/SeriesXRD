@@ -71,7 +71,8 @@ def _run(args) -> int:
             auto_range=not args.no_auto_range, hybrid_spike_bins=args.hybrid_spike_bins,
             min_snr=args.min_snr, min_prominence_snr=args.min_prominence_snr,
             window_factor=args.window_factor,
-            max_chi2=args.max_chi2, edge_bins=args.edge_bins,
+            max_chi2=args.max_chi2, max_rel_misfit=args.max_rel_misfit,
+            edge_bins=args.edge_bins,
             fit_min=args.fit_min, fit_max=args.fit_max,
             min_fwhm_bins=args.min_fwhm_bins,
             local_baseline_bins=args.detrend_bins,
@@ -229,6 +230,14 @@ def main(argv: "list[str] | None" = None) -> int:
                         "shoulder on a stronger peak counts). Default: preset.")
     p.add_argument("--window-factor", type=float, default=3.0)
     p.add_argument("--max-chi2", type=float, default=25.0)
+    # Literal rather than peaks.DEFAULT_MAX_REL_MISFIT: this builder runs before
+    # the deferred imports, so --help must not pull in numpy.
+    p.add_argument("--max-rel-misfit", type=float, default=0.05,
+                   help="Rms fit residual as a fraction of the peak's own height "
+                        "above which the fit is bad. A peak is rejected only if it "
+                        "fails BOTH this and --max-chi2: reduced chi-square is "
+                        "measured against the background noise, so on its own it "
+                        "rejects bright peaks for being well measured. Default 0.05.")
     p.add_argument("--edge-bins", type=int, default=None,
                    help="Drop peaks within this many bins of either pattern end. "
                         "Default: preset.")

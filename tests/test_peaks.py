@@ -88,7 +88,60 @@ def main() -> None:
     _test_seed_tracking_order()
     _test_pseudo_voigt_jac()
     _test_seeds_dont_cross_scans()
+    _test_bright_peak_survives_chi2_gate()
     print("PEAKS TEST OK")
+
+
+def _test_bright_peak_survives_chi2_gate():
+    """A bright peak fitted to ~1% of its own height must not be rejected.
+
+    The fit weights every point by one scalar noise estimate, so reduced
+    chi-square measures the misfit against the BACKGROUND noise. A profile that
+    is off by a fixed fraction of the peak height therefore drives chi-square up
+    as (height/noise)^2, and on real DAC data the strongest reflection of the
+    frame failed ``max_chi2`` in 1055 of 1288 frames while fitting to about 1%.
+    The relative-misfit clause is what keeps those peaks.
+
+    Same shape mismatch, two brightnesses: both must pass, and a badly wrong
+    shape must still be rejected at either brightness.
+    """
+    from seriesxrd.analysis.peaks import fit_pattern, FLAG_BAD_CHI2
+
+    x = np.linspace(2.0, 4.0, 1200)
+
+    def one(amp, k):
+        # Split profile: the right half is k times wider than the left. No
+        # symmetric pseudo-Voigt can reproduce that, so the misfit is a fixed
+        # FRACTION of the height. The noise stays at the same absolute level,
+        # so amplitude alone sets how well the peak is measured.
+        rng = np.random.default_rng(11)
+        w = 0.03
+        y = np.where(x < 3.0,
+                     pseudo_voigt(x, 3.0, amp, w, 0.5),
+                     pseudo_voigt(x, 3.0, amp, w * k, 0.5))
+        y = y + rng.normal(0, 0.3, x.size)
+        pk = [p for p in fit_pattern(x, y, min_snr=4.0, window_factor=3.0,
+                                     max_chi2=25.0, local_baseline_bins=81)
+              if abs(p["center"] - 3.0) < 0.08]
+        assert pk, f"peak not found at amp={amp}, k={k}"
+        return max(pk, key=lambda p: p["amplitude"])
+
+    faint = one(30.0, 1.15)
+    bright = one(3000.0, 1.15)
+    assert not (faint["flag"] & FLAG_BAD_CHI2), faint
+    assert not (bright["flag"] & FLAG_BAD_CHI2), (
+        f"bright peak rejected for being well measured: chi2={bright['chi2']:.0f}")
+    # Guard the premise: at this brightness chi-square alone would have thrown
+    # the good fit away, which is the whole point of the second clause.
+    assert bright["chi2"] > 25.0, (
+        "test no longer exercises the case it was written for: chi-square on "
+        f"the good bright fit is only {bright['chi2']:.1f}")
+    # And the gate has not simply been switched off.
+    for amp in (30.0, 3000.0):
+        wrong = one(amp, 4.0)
+        assert wrong["flag"] & FLAG_BAD_CHI2, (
+            f"a badly asymmetric profile passed at amp={amp}: "
+            f"chi2={wrong['chi2']:.0f}")
 
 
 def _test_seeds_dont_cross_scans():

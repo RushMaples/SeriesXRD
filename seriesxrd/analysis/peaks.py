@@ -53,6 +53,27 @@ FLAG_CENTER_DRIFT = 4   # center pinned at its ±0.5·FWHM seed bound (ran away)
 FLAG_WIDTH_BOUND = 8    # fwhm pinned to a bound (degenerate width)
 FLAG_NO_CONVERGE = 16   # optimizer did not converge
 
+# Companion to ``max_chi2``: the largest rms residual, as a FRACTION of the peak
+# height, that still counts as a good fit.
+#
+# The fit weights every point by one scalar sigma — the MAD noise floor of the
+# background — so a reduced chi-square measures the misfit in units of the
+# BACKGROUND noise. For a fixed *fractional* profile mismatch that grows as
+# (peak height / noise)^2, which makes ``max_chi2`` alone an SNR gate: on the
+# archived DAC series the fitted log-log slope above SNR 200 is 2.1 (r = 0.87),
+# and the strongest reflection of the frame was rejected in 1055 of 1288 frames
+# while fitting to about 1% of its own height. Peaks measured well enough are
+# rejected for being measured well.
+#
+# A peak is now rejected only when the fit is bad on BOTH counts — bad against
+# the noise AND bad relative to the peak itself. Weak peaks are noise-limited,
+# so the chi-square clause still governs them; strong peaks are systematics-
+# limited and are judged on relative misfit. Across the archived run the
+# relative misfit of a good fit sits at 1.1-1.8% for every SNR band above 30,
+# with a 90th percentile near 2.9%, so 5% is roughly three times the spread of
+# a healthy fit and sits at the knee of the rejection curve.
+DEFAULT_MAX_REL_MISFIT = 0.05
+
 _GAUSS_C = 4.0 * np.log(2.0)          # exp(-_GAUSS_C * (dx/fwhm)^2) has the given FWHM
 _GAUSS_AREA = np.sqrt(np.pi / _GAUSS_C)   # integral of unit-height gaussian / fwhm
 _LN2 = np.log(2.0)                    # gaussian exponent factor (see pseudo_voigt)
@@ -299,7 +320,8 @@ def _group_peaks(cands: List[Dict[str, float]], window_factor: float,
     return out
 
 
-def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
+def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float,
+               max_rel_misfit: float = DEFAULT_MAX_REL_MISFIT
                ) -> List[Dict[str, Any]]:
     """Jointly fit one cluster of peaks (sum of pseudo-Voigts + LOCAL LINEAR
     baseline).
@@ -391,6 +413,15 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
     except Exception:
         esd = np.full(p.size, np.nan)
 
+    # Scale-free companion to chi-square: rms residual as a fraction of the
+    # tallest peak in the group. chi2 is shared across a jointly-fitted group,
+    # and it is the tallest peak that sets the residual, so the whole group is
+    # judged against that one — the same way the chi-square verdict is shared.
+    # See DEFAULT_MAX_REL_MISFIT for why the absolute test alone is an SNR gate.
+    a_max = float(np.max(p[1:4 * K:4])) if K else 0.0
+    rel_misfit = (sig * np.sqrt(max(chi2, 0.0)) / a_max) if a_max > 0 else np.inf
+    poor_fit = (chi2 > max_chi2) and (rel_misfit > float(max_rel_misfit))
+
     out: List[Dict[str, Any]] = []
     for j, g in enumerate(group):
         c, a, w, e = p[4 * j:4 * j + 4]
@@ -398,7 +429,7 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
         flag = FLAG_OK if converged else FLAG_NO_CONVERGE
         if a < 2.0 * sig:
             flag |= FLAG_LOW_AMP
-        if chi2 > max_chi2:
+        if poor_fit:
             flag |= FLAG_BAD_CHI2
         # The fit bounds already confine the center to seed ± 0.5·FWHM, so "moved
         # more than a FWHM" can never happen — a runaway center shows up as the
@@ -442,7 +473,9 @@ def _window_mask(x: np.ndarray, edge_bins: int,
 
 
 def fit_pattern(x, y, *, min_snr: float = 5.0, window_factor: float = 3.0,
-                max_chi2: float = 25.0, min_prominence_snr: Optional[float] = None,
+                max_chi2: float = 25.0,
+                max_rel_misfit: float = DEFAULT_MAX_REL_MISFIT,
+                min_prominence_snr: Optional[float] = None,
                 edge_bins: int = 0, fit_min: Optional[float] = None,
                 fit_max: Optional[float] = None, min_fwhm_bins: float = 0.0,
                 local_baseline_bins: int = 0,
@@ -494,7 +527,8 @@ def fit_pattern(x, y, *, min_snr: float = 5.0, window_factor: float = 3.0,
     peaks: List[Dict[str, Any]] = []
     for group in _group_peaks(cands, window_factor):
         peaks.extend(_fit_group(x, y, group, sig, window_factor=window_factor,
-                                max_chi2=max_chi2))
+                                max_chi2=max_chi2,
+                                max_rel_misfit=max_rel_misfit))
     # Sub-resolution rejection: a real Bragg peak spans several bins.
     dx = float(np.median(np.abs(np.diff(x)))) if x.size > 1 else 1.0
     min_fwhm = float(min_fwhm_bins) * dx
@@ -509,7 +543,9 @@ def fit_pattern(x, y, *, min_snr: float = 5.0, window_factor: float = 3.0,
 
 
 def fit_dataset(radial, clean, *, min_snr: float = 5.0, window_factor: float = 3.0,
-                max_chi2: float = 25.0, min_prominence_snr: Optional[float] = None,
+                max_chi2: float = 25.0,
+                max_rel_misfit: float = DEFAULT_MAX_REL_MISFIT,
+                min_prominence_snr: Optional[float] = None,
                 edge_bins: int = 0, fit_min: Optional[float] = None,
                 fit_max: Optional[float] = None, min_fwhm_bins: float = 0.0,
                 local_baseline_bins: int = 0,
@@ -528,6 +564,7 @@ def fit_dataset(radial, clean, *, min_snr: float = 5.0, window_factor: float = 3
     for i in range(clean.shape[0]):
         peaks = fit_pattern(radial, clean[i], min_snr=min_snr,
                             window_factor=window_factor, max_chi2=max_chi2,
+                            max_rel_misfit=max_rel_misfit,
                             min_prominence_snr=min_prominence_snr,
                             edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
                             min_fwhm_bins=min_fwhm_bins,
@@ -837,6 +874,7 @@ def _fit_ordered_rows(radial: np.ndarray, clean_rows: np.ndarray,
                       axis_values: np.ndarray, *,
                       min_snr: float, window_factor: float, max_chi2: float,
                       propagate: bool,
+                      max_rel_misfit: float = DEFAULT_MAX_REL_MISFIT,
                       min_prominence_snr: "Optional[float]",
                       edge_bins: int, fit_min: "Optional[float]",
                       fit_max: "Optional[float]", min_fwhm_bins: float,
@@ -865,6 +903,7 @@ def _fit_ordered_rows(radial: np.ndarray, clean_rows: np.ndarray,
                  if propagate else None)
         peaks = fit_pattern(radial, clean_rows[jj], min_snr=min_snr,
                             window_factor=window_factor, max_chi2=max_chi2,
+                            max_rel_misfit=max_rel_misfit,
                             min_prominence_snr=min_prominence_snr,
                             edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
                             min_fwhm_bins=min_fwhm_bins,
@@ -892,13 +931,15 @@ def _peaks_chunk(payload):
     frames are skipped (count 0) and do not seed their neighbours.
     """
     (radial, clean_c, excluded_c, min_snr, window_factor, max_chi2,
-     propagate, min_prominence_snr, edge_bins, fit_min, fit_max, min_fwhm_bins,
+     max_rel_misfit, propagate, min_prominence_snr, edge_bins, fit_min, fit_max,
+     min_fwhm_bins,
      local_baseline_bins, seed_max_axis_gap, seed_axis_predictor) = payload
     m = clean_c.shape[0]
     return _fit_ordered_rows(
         radial, clean_c, excluded_c, np.arange(m, dtype=int),
         np.arange(m, dtype=float),
         min_snr=min_snr, window_factor=window_factor, max_chi2=max_chi2,
+        max_rel_misfit=max_rel_misfit,
         propagate=propagate, min_prominence_snr=min_prominence_snr,
         edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
         min_fwhm_bins=min_fwhm_bins, local_baseline_bins=local_baseline_bins,
@@ -910,7 +951,8 @@ def _peaks_chunk(payload):
 def _peaks_order_chunk(payload):
     """Worker: fit one explicit propagation path and return global frame ids."""
     (radial, clean_c, excluded_c, global_order, axis_values,
-     min_snr, window_factor, max_chi2, propagate, min_prominence_snr,
+     min_snr, window_factor, max_chi2, max_rel_misfit, propagate,
+     min_prominence_snr,
      edge_bins, fit_min, fit_max, min_fwhm_bins, local_baseline_bins,
      seed_max_axis_gap, seed_axis_predictor) = payload
     m = clean_c.shape[0]
@@ -918,6 +960,7 @@ def _peaks_order_chunk(payload):
         radial, clean_c, excluded_c, np.arange(m, dtype=int),
         np.asarray(axis_values, dtype=float),
         min_snr=min_snr, window_factor=window_factor, max_chi2=max_chi2,
+        max_rel_misfit=max_rel_misfit,
         propagate=propagate, min_prominence_snr=min_prominence_snr,
         edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
         min_fwhm_bins=min_fwhm_bins, local_baseline_bins=local_baseline_bins,
@@ -940,6 +983,7 @@ def run_peak_fitting(
     min_snr: "Optional[float]" = None,
     window_factor: float = 3.0,
     max_chi2: float = 25.0,
+    max_rel_misfit: float = DEFAULT_MAX_REL_MISFIT,
     min_prominence_snr: Optional[float] = None,
     edge_bins: "Optional[int]" = None,
     fit_min: Optional[float] = None,
@@ -968,6 +1012,12 @@ def run_peak_fitting(
     as ``None``; pass it ``None`` to keep the historical explicit defaults.
     ``auto_range`` fills a blank ``fit_min``/``fit_max`` from
     :func:`auto_fit_range`.
+
+    Fit quality is judged on two tests and a peak has to fail BOTH to be
+    flagged: ``max_chi2`` against the background noise, and ``max_rel_misfit``
+    — the rms residual as a fraction of the peak's own height. On its own the
+    chi-square test is an SNR gate, because the fit weights every point by one
+    scalar noise estimate; see :data:`DEFAULT_MAX_REL_MISFIT`.
 
     Seed propagation defaults to historical frame order. Set
     ``seed_group_by="scan"`` (or ``"folder"``) so seeds propagate only WITHIN a
@@ -1151,7 +1201,8 @@ def run_peak_fitting(
         seed_orders = _seed_frame_orders(n, seed_axis_values, seed_axis_key, seed_group_values)
         payloads = [
             (radial, clean[order], excluded[order], order, seed_axis_values[order],
-             r_min_snr, window_factor, max_chi2, propagate_seeds, r_prom,
+             r_min_snr, window_factor, max_chi2, max_rel_misfit,
+             propagate_seeds, r_prom,
              r_edge, fit_min, fit_max, r_fwhm, local_baseline_bins,
              seed_max_axis_gap, bool(seed_axis_predictor and seed_axis_key != "frame"))
             for order in seed_orders if len(order)
@@ -1171,7 +1222,7 @@ def run_peak_fitting(
     elif workers > 1 and n > 1:
         ranges = chunk_ranges(n, workers)
         payloads = [(radial, clean[a:b], excluded[a:b], r_min_snr, window_factor,
-                     max_chi2, propagate_seeds, r_prom,
+                     max_chi2, max_rel_misfit, propagate_seeds, r_prom,
                      r_edge, fit_min, fit_max, r_fwhm,
                      local_baseline_bins, seed_max_axis_gap,
                      bool(seed_axis_predictor and seed_axis_key != "frame"))
@@ -1184,7 +1235,7 @@ def run_peak_fitting(
                 print(f"[PEAKS] {done} {n}", flush=True)
     else:
         _absorb(0, _peaks_chunk((radial, clean, excluded, r_min_snr, window_factor,
-                                 max_chi2, propagate_seeds, r_prom,
+                                 max_chi2, max_rel_misfit, propagate_seeds, r_prom,
                                  r_edge, fit_min, fit_max, r_fwhm,
                                  local_baseline_bins, seed_max_axis_gap,
                                  bool(seed_axis_predictor and seed_axis_key != "frame"))))
@@ -1220,6 +1271,7 @@ def run_peak_fitting(
                                  r_min_snr if r_prom is None else r_prom),
                              "window_factor": float(window_factor),
                              "max_chi2": float(max_chi2),
+                             "max_rel_misfit": float(max_rel_misfit),
                              "edge_bins": int(r_edge),
                              "fit_min": float(fit_min) if fit_min is not None else np.nan,
                              "fit_max": float(fit_max) if fit_max is not None else np.nan,
@@ -1280,6 +1332,7 @@ def run_peak_fitting(
         "fit_max": float(fit_max) if fit_max is not None else None,
         "min_snr": float(r_min_snr), "window_factor": float(window_factor),
         "max_chi2": float(max_chi2),
+        "max_rel_misfit": float(max_rel_misfit),
         "seed_tracking_axis": str(seed_axis_key),
         "seed_group_by": str(seed_group_key),
         "seed_axis_predictor": bool(seed_axis_predictor),

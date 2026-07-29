@@ -207,8 +207,16 @@ def test_batch_cli_step2_knobs():
             good = centers[flags == 0]
             assert good.size > 0
             assert good.min() >= 3.0 and good.max() <= 4.5, (good.min(), good.max())
-            # only the 3.6 reflection sits inside the window
-            assert np.all(np.abs(good - good.mean()) < 0.2)
+            # The 3.6 reflection is inside the window and is found in every
+            # non-excluded frame. The fixture's "diamond spike" at 4.2 is also
+            # in the window and is also kept: it is 8.5 bins wide, and the
+            # hybrid source removes only features narrower than
+            # hybrid_spike_bins (5), treating anything broader as real textured
+            # signal. It used to disappear because its fit tripped the
+            # chi-square gate on brightness alone — see
+            # peaks.DEFAULT_MAX_REL_MISFIT — not because anything rejected it
+            # as a spike.
+            assert np.sum(np.abs(good - 3.6) < 0.1) == 3, sorted(good)
 
 
 def main() -> None:

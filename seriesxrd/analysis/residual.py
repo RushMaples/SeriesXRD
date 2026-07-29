@@ -33,7 +33,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .identify import radial_to_d, predicted_d, _parse_hkl, _h5_safe, DEFAULT_MIN_MATCHED
-from .peaks import pseudo_voigt, fit_pattern, build_fit_source
+from .peaks import (pseudo_voigt, fit_pattern, build_fit_source,
+                    DEFAULT_MAX_REL_MISFIT)
 from .phases import Phase
 from ..core.config import VERSION
 from ..core.provenance import manifest_provenance, write_step_provenance
@@ -147,6 +148,7 @@ def run_residual(
     min_snr: "Optional[float]" = None,
     window_factor: "Optional[float]" = None,
     max_chi2: "Optional[float]" = None,
+    max_rel_misfit: "Optional[float]" = None,
     min_prominence_snr: "Optional[float]" = None,
     edge_bins: "Optional[int]" = None,
     fit_min: "Optional[float]" = None,
@@ -232,6 +234,10 @@ def run_residual(
                          else (_attr_float("window_factor", 3.0) or 3.0))
         r_chi2 = float(max_chi2 if max_chi2 is not None
                        else (_attr_float("max_chi2", 25.0) or 25.0))
+        r_rel = float(max_rel_misfit if max_rel_misfit is not None
+                      else (_attr_float("max_rel_misfit",
+                                        DEFAULT_MAX_REL_MISFIT)
+                            or DEFAULT_MAX_REL_MISFIT))
         r_prom = (float(min_prominence_snr) if min_prominence_snr is not None
                   else _attr_float("min_prominence_snr", None))
         r_edge = int(edge_bins if edge_bins is not None
@@ -354,6 +360,7 @@ def run_residual(
             min_snr=r_min_snr,
             window_factor=r_window,
             max_chi2=r_chi2,
+            max_rel_misfit=r_rel,
             min_prominence_snr=r_prom,
             edge_bins=r_edge,
             fit_min=r_fit_min,
@@ -383,6 +390,7 @@ def run_residual(
                 "seriesxrd_version": VERSION, "seen_conf": float(seen_conf),
                 "rel_tol": float(rel_tol), "min_snr": float(r_min_snr),
                 "window_factor": float(r_window), "max_chi2": float(r_chi2),
+                "max_rel_misfit": float(r_rel),
                 "min_prominence_snr": float(r_prom) if r_prom is not None else np.nan,
                 "edge_bins": int(r_edge),
                 "fit_min": float(r_fit_min) if r_fit_min is not None else np.nan,
@@ -424,6 +432,7 @@ def run_residual(
         "fit_source": str(used_source), "min_snr": float(r_min_snr),
         "min_prominence_snr": float(r_prom) if r_prom is not None else None,
         "window_factor": float(r_window), "max_chi2": float(r_chi2),
+        "max_rel_misfit": float(r_rel),
         "edge_bins": int(r_edge),
         "fit_min": float(r_fit_min) if r_fit_min is not None else None,
         "fit_max": float(r_fit_max) if r_fit_max is not None else None,

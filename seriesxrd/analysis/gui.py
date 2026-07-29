@@ -182,7 +182,15 @@ HELP: Dict[str, str] = {
     ),
     "max_chi2": (
         "Reduced χ² above which a fit is flagged bad. Default 25. Tighten for "
-        "cleaner peak maps; loosen if good peaks are being rejected."
+        "cleaner peak maps; loosen if good peaks are being rejected. Judged "
+        "together with Max rel. misfit — a peak has to fail both."
+    ),
+    "max_rel_misfit": (
+        "Rms fit residual as a fraction of the peak's own height, above which "
+        "the fit is bad. Default 0.05. χ² is measured against the background "
+        "noise, so a bright peak fails it for being well measured; this is the "
+        "scale-free test that lets those through. Raise it to reject fewer "
+        "strong peaks, lower it to be stricter about profile shape."
     ),
     "fit_min": (
         "Lower fit bound (q or 2θ). Set just above the beamstop onset — the "
@@ -1054,16 +1062,17 @@ class AnalysisApp:
         self.field(frame, "min_prominence_snr", "Min prominence SNR", row=6, width=12)
         self.field(frame, "window_factor", "Window factor (× FWHM)", row=7, width=12)
         self.field(frame, "max_chi2", "Max reduced χ²", row=8, width=12)
-        self.field(frame, "fit_min", "Fit 2θ/q min (blank=auto)", row=9, width=12)
+        self.field(frame, "max_rel_misfit", "Max rel. misfit", row=9, width=12)
+        self.field(frame, "fit_min", "Fit 2θ/q min (blank=auto)", row=10, width=12)
         self.field(frame, "fit_max", "Fit 2θ/q max (blank=auto)", row=5, width=12, col=1)
         self.field(frame, "edge_bins", "Edge guard (bins)", row=6, width=12, col=1)
         self.field(frame, "min_fwhm_bins", "Min FWHM (bins)", row=7, width=12, col=1)
         self.field(frame, "hybrid_spike_bins", "Hybrid spike width (bins)", row=8, width=12, col=1)
         self.field(frame, "detrend_bins", "Detrend window (bins, 0=off)", row=9, width=12, col=1)
         self.checkbox(frame, "propagate_seeds",
-                      "Propagate peak seeds frame-to-frame", row=10)
+                      "Propagate peak seeds frame-to-frame", row=11)
         seedrow = ttk.Frame(frame)
-        seedrow.grid(row=11, column=0, columnspan=6, sticky="w", padx=4, pady=3)
+        seedrow.grid(row=12, column=0, columnspan=6, sticky="w", padx=4, pady=3)
         ttk.Label(seedrow, text="Seed order", style="Muted.TLabel").pack(side="left", padx=(0, 4))
         self.vars["seed_tracking_axis"] = tk.StringVar(
             value=str(self.config.get("seed_tracking_axis", "frame") or "frame"))
@@ -1108,7 +1117,7 @@ class AnalysisApp:
             ),
             style="Muted.TLabel", justify="left", wraplength=640,
         )
-        _pk_help.grid(row=12, column=0, columnspan=6, sticky="w", padx=6, pady=(12, 4))
+        _pk_help.grid(row=13, column=0, columnspan=6, sticky="w", padx=6, pady=(12, 4))
         self.autowrap(_pk_help)
 
     # ------------------------------------------------------------------
