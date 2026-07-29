@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -208,6 +209,7 @@ def run_benchmark(
     reflections: "Optional[Dict[str, Reflections]]" = None,
     run_identify: bool = True,
     rel_tol: float = 0.01,
+    num_workers: "Optional[int]" = None,
 ) -> Dict[str, Any]:
     """Ingest → rank → (optionally identify) → scorecard vs the labels.
 
@@ -215,11 +217,20 @@ def run_benchmark(
     the SAME command twice to compare a trained scorer against the pinned
     cosine baseline. ``labels`` maps pattern filenames (any of full/base/stem)
     to library phase names. The report JSON lands in ``out_dir``.
+
+    ``num_workers`` is passed to the Step-3a verification pass. It defaults to
+    most of the available cores rather than to :func:`run_identification`'s own
+    default of 1: a benchmark scores every library phase against every pattern,
+    so on a library of a few hundred phases a single-threaded verify runs for
+    the better part of a day and looks indistinguishable from a hang. Pass 1
+    explicitly to serialise.
     """
     from .ml_rank import rank_candidates
     from .identify import run_identification
     from .phases import pymatgen_available
 
+    if num_workers is None:
+        num_workers = max(1, min(8, (os.cpu_count() or 2) - 1))
     out = Path(out_dir).expanduser().resolve()
     ing = ingest_patterns(pattern_files, out, unit=unit, wavelength=wavelength)
     analysis = ing["analysis_h5"]
@@ -278,7 +289,8 @@ def run_benchmark(
                         _idf.pymatgen_available, _idf.phase_reflections = saved
                 else:
                     run_identification(analysis, list(phases), rel_tol=rel_tol,
-                                       use_frame_pressure=False)
+                                       use_frame_pressure=False,
+                                       num_workers=num_workers)
                 with h5py.File(analysis, "r") as h5:
                     gid = h5["identify"]
                     hits = n_lab = 0
@@ -340,6 +352,9 @@ def main(argv: "Optional[List[str]]" = None) -> int:
                    help="'cosine' (default) or 'torch:<model.pt>'.")
     p.add_argument("--no-identify", action="store_true",
                    help="Skip the Step-3a verify metrics (rank-only, no pymatgen).")
+    p.add_argument("--workers", type=int, default=None,
+                   help="Worker processes for the Step-3a verify pass "
+                        "(default: most available cores; 1 to serialise).")
     args = p.parse_args(argv)
 
     from .phases import load_library
@@ -362,7 +377,8 @@ def main(argv: "Optional[List[str]]" = None) -> int:
         run_benchmark(files, pool, labels, out_dir=args.out, unit=args.unit,
                       wavelength=args.wavelength, top_k=args.top_k,
                       scorer=(args.ml_scorer or None),
-                      run_identify=not args.no_identify)
+                      run_identify=not args.no_identify,
+                      num_workers=args.workers)
     except (RuntimeError, ValueError, FileNotFoundError) as e:
         print(f"[ERROR] {e}", flush=True)
         return 1
