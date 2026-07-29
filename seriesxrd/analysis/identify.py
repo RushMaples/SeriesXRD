@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -163,6 +164,20 @@ def phase_reflections(phase: Phase, *, max_reflections: int = _REFL_CAP_BASE,
     hkl = [h for h, k in zip(hkl, keep) if k]
     order = np.argsort(w)[::-1][:max_reflections]
     return d[order], w[order], [hkl[i] for i in order]
+
+
+def _simulate_one(phase: Phase, d_min: float, max_reflections: int):
+    """Pool entry point for :func:`phase_reflections`.
+
+    Module level and returning plain data so it pickles: a bound method or a
+    closure would not survive the process boundary. Errors come back as a value
+    rather than propagating, so one unsimulable phase cannot abort the pool.
+    """
+    try:
+        return phase.name, phase_reflections(
+            phase, d_min=d_min, max_reflections=max_reflections), None
+    except Exception as e:                                # noqa: BLE001
+        return phase.name, None, f"{type(e).__name__}: {e}"
 
 
 def scale_at_pressure(phase: Phase, pressure: float) -> float:
@@ -937,15 +952,42 @@ def run_identification(
     # Reflections simulated once in the parent (needs pymatgen); workers only
     # score. Guard each simulation so one phase that pymatgen chokes on (bad CIF,
     # exotic element) is skipped with a warning rather than killing the run.
+    #
+    # This step, not the scoring, dominates on a large library: pymatgen's cost
+    # climbs steeply with cell size (measured on a 879-phase library: ~0.4 s at
+    # 24 atoms, ~11 s at 56, ~23 s at 315). Serially that is hours before a
+    # single frame is scored, and `workers` does not touch it because the fan-out
+    # happens afterwards. So simulate in a pool too. Phases are independent here
+    # and results are keyed by name, so this changes timing only.
     refl_cache = {}
-    kept = []
-    for ph in phases:
+    t_sim = time.time()
+    if workers > 1 and len(phases) > 1:
         try:
-            refl_cache[ph.name] = phase_reflections(
-                ph, d_min=sim_d_min, max_reflections=sim_max_refl)
-            kept.append(ph)
-        except Exception as e:
-            print(f"[IDENTIFY] skipped {ph.name!r}: simulation failed ({e})", flush=True)
+            with ProcessPoolExecutor(max_workers=workers) as ex:
+                futs = {ex.submit(_simulate_one, ph, sim_d_min, sim_max_refl):
+                        ph for ph in phases}
+                for fut in futs:
+                    name, refl, err = fut.result()
+                    if refl is not None:
+                        refl_cache[name] = refl
+                    else:
+                        print(f"[IDENTIFY] skipped {name!r}: simulation failed "
+                              f"({err})", flush=True)
+        except Exception as e:                      # pool unusable -> serial
+            print(f"[IDENTIFY] parallel simulation unavailable ({e}); "
+                  f"falling back to serial", flush=True)
+            refl_cache = {}
+    if not refl_cache:
+        for ph in phases:
+            try:
+                refl_cache[ph.name] = phase_reflections(
+                    ph, d_min=sim_d_min, max_reflections=sim_max_refl)
+            except Exception as e:
+                print(f"[IDENTIFY] skipped {ph.name!r}: simulation failed ({e})",
+                      flush=True)
+    kept = [ph for ph in phases if ph.name in refl_cache]
+    print(f"[IDENTIFY] simulated {len(kept)}/{len(phases)} phases in "
+          f"{time.time() - t_sim:.0f}s", flush=True)
     phases = kept
     if not phases:
         raise ValueError("No phases could be simulated for identification.")
