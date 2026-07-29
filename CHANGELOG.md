@@ -5,6 +5,57 @@ semantic versioning once a stable public API is declared.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-29
+
+### Fixed
+
+- The peak-fit quality gate no longer rejects a peak for being well measured.
+  `_fit_group` weights every point by one scalar sigma — the MAD noise floor of
+  the background — so a reduced chi-square measures the misfit in units of
+  background noise, and for a profile mismatch that is a fixed *fraction* of
+  the peak it grows as (height/noise)². `max_chi2` on its own was therefore an
+  SNR gate. On a 1288-frame diamond-anvil series the log-log slope of
+  chi-square against SNR is 2.12 (r = 0.87) above SNR 200, rejection runs 8% /
+  61% / 99.9% / 100% across the SNR 100-300 / 300-1000 / 1000-3000 / 3000+
+  bands, and the strongest reflection of the frame was rejected in 1055 of 1288
+  frames while fitting to about 1% of its own height. Raising `max_chi2` does
+  not help: the median chi-square of those rejected peaks is 1015.
+
+  Fit quality is now judged on two tests and a peak must fail **both** to be
+  flagged `FLAG_BAD_CHI2`: `max_chi2` as before, and the new `max_rel_misfit`
+  (default 0.05) — the rms residual as a fraction of the peak's own height,
+  shared across a jointly-fitted group via its tallest peak. Weak peaks are
+  noise-limited and still governed by chi-square; bright peaks are
+  systematics-limited and judged on relative misfit. Re-fitting 118 frames of
+  that series, with detection unchanged: good peaks 80.4% → 98.1%, and the
+  strongest peak of the frame survives in 98.3% of frames instead of 17.8%.
+
+  **This changes results.** Steps 3a, 3c, the spot tracker and the benchmark
+  harness all consume unflagged peaks, so an existing analysis re-run on this
+  version will attribute more reflections, subtract more of them, and — because
+  `spots.detect_spots` excludes blobs near attributed powder peaks — may return
+  a different spot list. Set `max_rel_misfit=0` to restore the old behaviour
+  exactly.
+
+### Added
+
+- `max_rel_misfit` on `fit_pattern`, `fit_dataset`, `run_peak_fitting` and
+  `run_residual`, as `--max-rel-misfit` on `seriesxrd-analyze`, as a field in
+  the Analysis GUI and the worker config, and recorded in the `/peaks` and
+  `/residual` attributes.
+
+### Changed
+
+- `run_identification` simulates each candidate phase's reflection list in
+  parallel (`num_workers`) instead of serially in the parent process, and
+  reports how long it took. On an open-set run over a large library this was
+  the dominant cost before any frame was scored.
+- `benchmark.run_benchmark` takes `num_workers` (`--workers` on
+  `seriesxrd-benchmark`), defaulting to one less than the core count, so the
+  Step-3a verification pass is no longer single-threaded.
+
+## [0.3.1] - 2026-07-28
+
 ### Fixed
 
 - CIFs whose site occupancies sum above 1 — the norm for natural-sample and
