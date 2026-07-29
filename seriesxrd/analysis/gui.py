@@ -181,16 +181,16 @@ HELP: Dict[str, str] = {
         "Fit-window half-width as a multiple of the estimated FWHM. Default 3."
     ),
     "max_chi2": (
-        "Reduced χ² above which a fit is flagged bad. Default 25. Tighten for "
-        "cleaner peak maps; loosen if good peaks are being rejected. Judged "
-        "together with Max rel. misfit — a peak has to fail both."
+        "Reduced χ² over a peak's own span, above which its fit may be flagged "
+        "bad. Default 25. This is the test that governs weak, noise-limited "
+        "peaks. Judged together with Max rel. misfit — a peak has to fail both."
     ),
     "max_rel_misfit": (
         "Rms fit residual as a fraction of the peak's own height, above which "
-        "the fit is bad. Default 0.05. χ² is measured against the background "
-        "noise, so a bright peak fails it for being well measured; this is the "
-        "scale-free test that lets those through. Raise it to reject fewer "
-        "strong peaks, lower it to be stricter about profile shape."
+        "the fit is bad. Default 0.05. This is the test that governs bright "
+        "peaks: χ² is measured against the background noise, so a bright peak "
+        "fails it for being well measured. Both measures are per peak, not per "
+        "fitted group. Lower it (0.03–0.04) to be stricter about profile shape."
     ),
     "fit_min": (
         "Lower fit bound (q or 2θ). Set just above the beamstop onset — the "

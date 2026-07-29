@@ -87,12 +87,39 @@ and no cakes or thumbnails.
 /peaks/fwhm        (P,)  full width at half maximum      per frame)
 /peaks/eta         (P,)  Lorentzian fraction ∈ [0, 1]
 /peaks/area        (P,)  integrated intensity
-/peaks/chi2        (P,)  reduced chi-square of the fit
+/peaks/chi2        (P,)  reduced chi-square of the whole joint fit — the
+                         GROUP's adequacy, identical for every peak fitted
+                         together. Reported for inspection; not a rejection
+/peaks/chi2_local  (P,)  reduced chi-square over this peak's own span
+/peaks/rel_misfit  (P,)  rms residual over that span, as a fraction of this
+                         peak's own height
 /peaks/flag        (P,)  int; 0 = good, else bitmask (low amplitude, bad
                          chi², center drift, width at bound, no convergence)
 /peaks/center_err, amplitude_err, fwhm_err   (P,)  1σ estimated standard
                          deviations from the least-squares covariance
 ```
+
+`chi2_local` and `rel_misfit` are the two measures the `FLAG_BAD_CHI2` decision
+is made on, and a peak has to fail both to be flagged (`max_chi2` and
+`max_rel_misfit`). They model two different error regimes: a weak peak is
+limited by random noise, so its residual matters in units of the noise floor; a
+bright peak exposes systematic profile mismatch, so what matters is the residual
+as a fraction of its own height. One threshold on either measure alone
+mis-judges the other regime.
+
+The noise used is the pattern's MAD background floor, not per-point counting
+statistics. That is deliberate: these patterns are azimuthal quantile-band
+means rather than raw counts, and an intensity-dependent noise model fitted to
+them is unstable at this sampling (peaks span ~4 bins, so every high-intensity
+bin sits on a steep flank and the estimator measures the peak's slope instead
+of its noise — measured gains ranged 1.96 to 30.9 across frames).
+
+Both columns are exposed so a consumer can apply its own standard: a peak can be
+sound enough for position-based phase attribution while being too poorly modelled
+for quantitative area or width use. Nothing downstream currently tiers on them —
+`identify`, `fractions` and `microstructure` all still take `flag == 0` — because
+loosening what identification accepts needs a false-attribution measurement on
+labelled data first.
 
 ### Appended by Step 3a (`analysis/identify.py` + `analysis/residual.py`)
 

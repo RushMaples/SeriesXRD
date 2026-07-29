@@ -65,14 +65,73 @@ FLAG_NO_CONVERGE = 16   # optimizer did not converge
 # while fitting to about 1% of its own height. Peaks measured well enough are
 # rejected for being measured well.
 #
-# A peak is now rejected only when the fit is bad on BOTH counts — bad against
-# the noise AND bad relative to the peak itself. Weak peaks are noise-limited,
-# so the chi-square clause still governs them; strong peaks are systematics-
-# limited and are judged on relative misfit. Across the archived run the
-# relative misfit of a good fit sits at 1.1-1.8% for every SNR band above 30,
-# with a 90th percentile near 2.9%, so 5% is roughly three times the spread of
-# a healthy fit and sits at the knee of the rejection curve.
+# A peak is rejected only when the fit is bad on BOTH counts — bad against the
+# noise AND bad relative to the peak itself. Weak peaks are noise-limited, so
+# the chi-square clause still governs them; strong peaks are systematics-limited
+# and are judged on relative misfit. Both are evaluated over the peak's OWN span
+# and against its OWN height, not the enclosing group's: see ``_fit_group``.
+#
+# The tolerance is not a physical constant — it depends on sampling, overlap,
+# background treatment and what the peak will be used for, so it is calibrated,
+# not derived. Calibrated here on 1402 peaks from 144 frames of a real DAC
+# series, excluding peaks that carry a hard failure (no convergence, width or
+# centre pinned at a bound) since those are rejected regardless. Local relative
+# misfit of a fit with no hard failure:
+#
+#     SNR band        median   90th    95th
+#     10-30           2.97%   5.46%   6.16%
+#     30-100          1.71%   3.02%   3.56%
+#     100-300         1.41%   2.71%   3.21%
+#     300-1000        1.32%   2.23%   2.51%
+#     1000-3000       1.63%   2.81%   3.08%
+#
+# It is flat in SNR, which is the point — a healthy fit misfits by about the
+# same fraction however brightly it is measured. Sweeping the threshold, the
+# rejection rate runs 8.06% / 2.28% / 1.14% / 0.71% / 0.50% at 2 / 3 / 4 / 5 / 6%
+# and then flattens, so the knee is near 5%. That clears the 95th percentile of
+# every band above SNR 30 with margin, and preserves the frame's strongest
+# reflection in 97.9% of frames (71.5% at a 2% threshold). Tighten to 0.03-0.04
+# for a stricter peak map; the cost is strong reflections, not weak ones.
 DEFAULT_MAX_REL_MISFIT = 0.05
+
+
+# Fitness tiers. "Good peak" is not one claim: a reflection whose centre is
+# solid can still be modelled too poorly for its area or width to mean anything.
+# Hard failures — no convergence, width or centre pinned at a bound — are
+# failures at every tier regardless of how small the residual is.
+TIER_REJECT = "reject"              # unusable
+TIER_POSITION = "position"          # centre is usable; area/width are not
+TIER_QUANTITATIVE = "quantitative"  # profile is modelled well enough to integrate
+
+_HARD_FLAGS = FLAG_NO_CONVERGE | FLAG_WIDTH_BOUND | FLAG_CENTER_DRIFT
+
+
+def quality_tier(flag, rel_misfit,
+                 max_rel_misfit: float = None):  # type: ignore[assignment]
+    """What a fitted peak may be used for. Scalars or arrays.
+
+    ``TIER_REJECT`` for any flagged peak. Otherwise ``TIER_QUANTITATIVE`` when
+    the profile residual is within ``max_rel_misfit`` of the peak's own height,
+    else ``TIER_POSITION`` — the centre survived the noise-limited test but the
+    shape is not modelled well enough to trust an integrated intensity or a
+    width from it. That case is real and invisible to ``flag`` alone: a weak
+    peak passes on chi-square while its rms residual is tens of percent of its
+    height.
+
+    Nothing in the pipeline calls this yet. ``identify``, ``fractions`` and
+    ``microstructure`` all still take ``flag == 0``; wiring the tiers in changes
+    what those report, so it wants its own validation run rather than riding
+    along with the gate change.
+    """
+    if max_rel_misfit is None:
+        max_rel_misfit = DEFAULT_MAX_REL_MISFIT
+    flag_a = np.asarray(flag, dtype=int)
+    rel_a = np.asarray(rel_misfit, dtype=float)
+    tier = np.where(flag_a != FLAG_OK, TIER_REJECT,
+                    np.where(np.isfinite(rel_a) & (rel_a <= float(max_rel_misfit)),
+                             TIER_QUANTITATIVE, TIER_POSITION))
+    return tier if tier.ndim else str(tier[()])
+
 
 _GAUSS_C = 4.0 * np.log(2.0)          # exp(-_GAUSS_C * (dx/fwhm)^2) has the given FWHM
 _GAUSS_AREA = np.sqrt(np.pi / _GAUSS_C)   # integral of unit-height gaussian / fwhm
@@ -413,19 +472,44 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float,
     except Exception:
         esd = np.full(p.size, np.nan)
 
-    # Scale-free companion to chi-square: rms residual as a fraction of the
-    # tallest peak in the group. chi2 is shared across a jointly-fitted group,
-    # and it is the tallest peak that sets the residual, so the whole group is
-    # judged against that one — the same way the chi-square verdict is shared.
-    # See DEFAULT_MAX_REL_MISFIT for why the absolute test alone is an SNR gate.
-    a_max = float(np.max(p[1:4 * K:4])) if K else 0.0
-    rel_misfit = (sig * np.sqrt(max(chi2, 0.0)) / a_max) if a_max > 0 else np.inf
-    poor_fit = (chi2 > max_chi2) and (rel_misfit > float(max_rel_misfit))
-
+    # Fit quality is judged PER PEAK, over that peak's own span, on two measures
+    # (see DEFAULT_MAX_REL_MISFIT for why one is not enough):
+    #
+    #   chi2_local  the residual in units of the measurement noise floor, which
+    #               is the meaningful test for a weak, noise-limited peak;
+    #   rel_misfit  the rms residual as a fraction of THAT peak's own height,
+    #               the meaningful test for a bright, systematics-limited one.
+    #
+    # Both are local because the group answer is a different claim. A joint
+    # model can fit a region well overall and still contain one badly modelled
+    # weak component, and judging every member by the tallest peak's height is
+    # only ever more lenient (a_max >= a_j): measured on a 1288-frame series,
+    # 121 peaks were excused by a bright neighbour while being bad on their own,
+    # and none were condemned by one. The group's own reduced chi-square is
+    # still reported, as ``chi2``, so group adequacy stays inspectable — it is
+    # deliberately not a rejection, because making it one brings back exactly
+    # the "one bad peak condemns its neighbours" behaviour this replaced.
+    #
+    # The residual is taken from the FULL group model, so a neighbour's
+    # intensity inside the window is accounted for rather than counted as
+    # misfit.
+    resid_all = model(p) - yw
     out: List[Dict[str, Any]] = []
     for j, g in enumerate(group):
         c, a, w, e = p[4 * j:4 * j + 4]
         c_err, a_err, w_err = esd[4 * j], esd[4 * j + 1], esd[4 * j + 2]
+
+        span = window_factor * max(abs(w), 1e-9)
+        loc = np.abs(xw - c) <= span
+        if int(loc.sum()) < 5:                 # too narrow to judge on its own
+            loc = np.ones_like(xw, dtype=bool)
+        rj = resid_all[loc]
+        dof_j = max(int(loc.sum()) - 4, 1)
+        chi2_local = float(np.sum((rj / sig) ** 2) / dof_j)
+        rms_j = float(np.sqrt(np.mean(rj ** 2)))
+        rel_misfit = rms_j / a if a > 0 else np.inf
+        poor_fit = (chi2_local > max_chi2) and (rel_misfit > float(max_rel_misfit))
+
         flag = FLAG_OK if converged else FLAG_NO_CONVERGE
         if a < 2.0 * sig:
             flag |= FLAG_LOW_AMP
@@ -442,7 +526,8 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float,
             "center": float(c), "amplitude": float(a), "fwhm": float(abs(w)),
             "eta": float(np.clip(e, 0.0, 1.0)),
             "area": float(pseudo_voigt_area(a, abs(w), np.clip(e, 0.0, 1.0))),
-            "chi2": chi2, "flag": int(flag),
+            "chi2": chi2, "chi2_local": chi2_local,
+            "rel_misfit": float(rel_misfit), "flag": int(flag),
             "center_err": float(c_err), "amplitude_err": float(a_err),
             "fwhm_err": float(w_err),
         })
@@ -452,7 +537,8 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float,
 def _failed_peak(g: Dict[str, float], flag: int) -> Dict[str, Any]:
     return {"center": float(g["center"]), "amplitude": float(g["amplitude"]),
             "fwhm": float(g["fwhm"]), "eta": 0.5, "area": 0.0,
-            "chi2": np.inf, "flag": int(flag),
+            "chi2": np.inf, "chi2_local": np.inf, "rel_misfit": np.inf,
+            "flag": int(flag),
             "center_err": np.nan, "amplitude_err": np.nan, "fwhm_err": np.nan}
 
 
@@ -774,7 +860,8 @@ def auto_fit_range(radial, signal, *, max_trim_frac: float = 0.15,
 # ---------------------------------------------------------------------------
 
 SCHEMA_VERSION = "1"
-_PEAK_COLS = ("center", "amplitude", "fwhm", "eta", "area", "chi2", "flag",
+_PEAK_COLS = ("center", "amplitude", "fwhm", "eta", "area", "chi2",
+              "chi2_local", "rel_misfit", "flag",
               "center_err", "amplitude_err", "fwhm_err")
 SEED_TRACKING_AXES = ("frame", "pressure", "temperature", "time")
 SEED_GROUPS = ("none", "scan", "folder")
@@ -1037,8 +1124,15 @@ def run_peak_fitting(
         /peaks/amplitude   (P,)           |
         /peaks/fwhm        (P,)           |  one row per fitted peak,
         /peaks/eta         (P,)           |  grouped/ordered by frame then center
-        /peaks/area        (P,)           |
-        /peaks/chi2        (P,)          /
+        /peaks/area        (P,)          /
+        /peaks/chi2        (P,)          reduced chi-square of the whole joint
+                                         fit — the GROUP's adequacy, shared by
+                                         every member; reported, never a
+                                         rejection on its own
+        /peaks/chi2_local  (P,)          reduced chi-square over this peak's own
+                                         span (the noise-limited test)
+        /peaks/rel_misfit  (P,)          rms residual there / this peak's height
+                                         (the systematics-limited test)
         /peaks/flag        (P,) int      0 = good, else FLAG_* bitmask
         /peaks/center_err  (P,)          1σ fit uncertainties (NaN = fit failed);
         /peaks/amplitude_err, fwhm_err   esd-weighting + Williamson-Hall errors

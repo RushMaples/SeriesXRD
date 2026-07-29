@@ -89,6 +89,8 @@ def main() -> None:
     _test_pseudo_voigt_jac()
     _test_seeds_dont_cross_scans()
     _test_bright_peak_survives_chi2_gate()
+    _test_group_verdict_is_per_peak()
+    _test_quality_tiers()
     print("PEAKS TEST OK")
 
 
@@ -142,6 +144,72 @@ def _test_bright_peak_survives_chi2_gate():
         assert wrong["flag"] & FLAG_BAD_CHI2, (
             f"a badly asymmetric profile passed at amp={amp}: "
             f"chi2={wrong['chi2']:.0f}")
+    # Both measures are reported per peak so a caller can tier its own use of a
+    # peak (position vs intensity) without re-deriving them.
+    for key in ("chi2", "chi2_local", "rel_misfit"):
+        assert key in bright and np.isfinite(bright[key]), (key, bright)
+    assert bright["rel_misfit"] < 0.05, bright["rel_misfit"]
+
+
+def _test_quality_tiers():
+    """A peak's centre can be usable while its area is not, and a hard failure
+    is a failure at every tier however small its residual."""
+    from seriesxrd.analysis.peaks import (quality_tier, TIER_REJECT,
+                                          TIER_POSITION, TIER_QUANTITATIVE,
+                                          FLAG_OK, FLAG_WIDTH_BOUND,
+                                          FLAG_NO_CONVERGE, FLAG_BAD_CHI2)
+
+    assert quality_tier(FLAG_OK, 0.01) == TIER_QUANTITATIVE
+    # Passed on chi-square (noise-limited) but the shape is 20% off: the centre
+    # is usable, an integrated intensity from it is not.
+    assert quality_tier(FLAG_OK, 0.20) == TIER_POSITION
+    assert quality_tier(FLAG_BAD_CHI2, 0.01) == TIER_REJECT
+    # Hard failures ignore the residual entirely.
+    for f in (FLAG_WIDTH_BOUND, FLAG_NO_CONVERGE):
+        assert quality_tier(f, 0.0) == TIER_REJECT, f
+    assert quality_tier(FLAG_OK, np.nan) == TIER_POSITION
+    # Threshold is a parameter, and the call vectorizes.
+    assert quality_tier(FLAG_OK, 0.04, max_rel_misfit=0.02) == TIER_POSITION
+    out = quality_tier(np.array([FLAG_OK, FLAG_OK, FLAG_WIDTH_BOUND]),
+                       np.array([0.01, 0.20, 0.01]))
+    assert list(out) == [TIER_QUANTITATIVE, TIER_POSITION, TIER_REJECT], out
+
+
+def _test_group_verdict_is_per_peak():
+    """A bad weak peak beside a good bright one must be flagged alone.
+
+    Judging a jointly-fitted group by one shared verdict is only ever more
+    lenient, because the tallest peak sets the denominator: on a real series 121
+    peaks were excused by a bright neighbour while being bad on their own, and
+    none were condemned by one. Both peaks here are fitted in the same group.
+    """
+    from seriesxrd.analysis.peaks import fit_pattern, FLAG_BAD_CHI2
+
+    x = np.linspace(2.0, 4.0, 1600)
+    rng = np.random.default_rng(5)
+    # Bright, symmetric, well modelled at 2.85; weak and badly asymmetric at
+    # 3.00 — close enough that window_factor=3 puts them in one joint fit.
+    good = pseudo_voigt(x, 2.85, 2500.0, 0.035, 0.5)
+    bad = np.where(x < 3.00,
+                   pseudo_voigt(x, 3.00, 120.0, 0.020, 0.5),
+                   pseudo_voigt(x, 3.00, 120.0, 0.020 * 8.0, 0.5))
+    y = good + bad + rng.normal(0, 0.3, x.size)
+    pk = fit_pattern(x, y, min_snr=4.0, window_factor=3.0, max_chi2=25.0,
+                     local_baseline_bins=81)
+    near = lambda c: [p for p in pk if abs(p["center"] - c) < 0.06]
+    g, b = near(2.85), near(3.00)
+    assert g and b, [round(p["center"], 3) for p in pk]
+    g, b = g[0], max(b, key=lambda p: p["amplitude"])
+    # Same joint fit, so the same group chi-square...
+    assert abs(g["chi2"] - b["chi2"]) < 1e-9, (g["chi2"], b["chi2"])
+    # ...but separate verdicts: the bright peak keeps its fit, the weak
+    # mis-modelled one does not hide behind it.
+    assert not (g["flag"] & FLAG_BAD_CHI2), (
+        f"bright well-fitted peak condemned by its neighbour: {g}")
+    assert b["flag"] & FLAG_BAD_CHI2, (
+        f"weak mis-modelled peak excused by its bright neighbour: "
+        f"rel_misfit={b['rel_misfit']:.3f} chi2_local={b['chi2_local']:.0f}")
+    assert b["rel_misfit"] > g["rel_misfit"], (g["rel_misfit"], b["rel_misfit"])
 
 
 def _test_seeds_dont_cross_scans():
@@ -167,7 +235,8 @@ def _test_seeds_dont_cross_scans():
         c = float(y[0])
         recorded[c] = None if seeds is None else [round(s, 3) for s in seeds]
         return [{"center": c, "amplitude": 100.0, "fwhm": 0.05, "eta": 0.5,
-                 "area": 1.0, "chi2": 1.0, "flag": FLAG_OK,
+                 "area": 1.0, "chi2": 1.0, "chi2_local": 1.0,
+                 "rel_misfit": 0.01, "flag": FLAG_OK,
                  "center_err": 0.01, "amplitude_err": 1.0, "fwhm_err": 0.01}]
 
     def _run(orders):

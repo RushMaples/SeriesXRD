@@ -21,14 +21,32 @@ semantic versioning once a stable public API is declared.
   frames while fitting to about 1% of its own height. Raising `max_chi2` does
   not help: the median chi-square of those rejected peaks is 1015.
 
-  Fit quality is now judged on two tests and a peak must fail **both** to be
-  flagged `FLAG_BAD_CHI2`: `max_chi2` as before, and the new `max_rel_misfit`
-  (default 0.05) — the rms residual as a fraction of the peak's own height,
-  shared across a jointly-fitted group via its tallest peak. Weak peaks are
-  noise-limited and still governed by chi-square; bright peaks are
-  systematics-limited and judged on relative misfit. Re-fitting 118 frames of
-  that series, with detection unchanged: good peaks 80.4% → 98.1%, and the
-  strongest peak of the frame survives in 98.3% of frames instead of 17.8%.
+  Fit quality is now judged on two tests, **per peak**, and a peak must fail
+  both to be flagged `FLAG_BAD_CHI2`. They model two error regimes: a weak peak
+  is limited by random noise, so its residual matters in units of the noise
+  floor (`max_chi2` on the new `/peaks/chi2_local`); a bright peak exposes
+  systematic profile mismatch, so what matters is the residual as a fraction of
+  its own height (the new `max_rel_misfit`, default 0.05, on
+  `/peaks/rel_misfit`). Both are measured over that peak's own span, using the
+  full joint model so a neighbour's intensity is accounted for rather than
+  counted as misfit.
+
+  Group adequacy and individual reliability are reported as the separate claims
+  they are. `/peaks/chi2` still carries the whole joint fit's reduced
+  chi-square, but it no longer decides anything: one verdict shared across a
+  group is only ever more lenient, because the tallest peak sets the
+  denominator. On that series 121 peaks were excused by a bright neighbour while
+  being bad on their own, and none were condemned by one.
+
+  The threshold is calibrated rather than derived — it depends on sampling,
+  overlap and background treatment. On 1402 peaks from 144 real frames, a fit
+  with no hard failure misfits by 1.3–3.0% (median) at every SNR band above 10,
+  flat in brightness, and the rejection curve knees near 5%. Measured effect,
+  with detection unchanged: good peaks 66.3% → 97.9%, and the strongest
+  reflection of the frame survives in 97.9% of frames instead of 16.0%.
+
+  Hard failures — no convergence, width or centre pinned at a bound — are
+  unchanged and still reject regardless of residual size.
 
   **This changes results.** Steps 3a, 3c, the spot tracker and the benchmark
   harness all consume unflagged peaks, so an existing analysis re-run on this
@@ -43,6 +61,19 @@ semantic versioning once a stable public API is declared.
   `run_residual`, as `--max-rel-misfit` on `seriesxrd-analyze`, as a field in
   the Analysis GUI and the worker config, and recorded in the `/peaks` and
   `/residual` attributes.
+- `/peaks/chi2_local` and `/peaks/rel_misfit` — the two per-peak measures the
+  quality decision is made on, stored so a consumer can apply its own standard.
+- `peaks.quality_tier()` and `TIER_REJECT` / `TIER_POSITION` /
+  `TIER_QUANTITATIVE`. "Good peak" is not one claim: a reflection whose centre
+  is solid can still be modelled too poorly for its area or width to mean
+  anything, and `flag` alone cannot say so — a weak peak passes the
+  noise-limited test while its rms residual is tens of percent of its height.
+  Hard failures (no convergence, width or centre at a bound) are rejections at
+  every tier regardless of residual size. Nothing in the pipeline calls this
+  yet: `identify`, `fractions` and `microstructure` all still take `flag == 0`.
+  Wiring the tiers in changes what those report, and loosening what
+  identification accepts needs a false-attribution measurement on labelled data,
+  so it is deliberately not riding along with the gate change.
 
 ### Changed
 
