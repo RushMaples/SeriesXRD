@@ -73,26 +73,48 @@ FLAG_NO_CONVERGE = 16   # optimizer did not converge
 #
 # The tolerance is not a physical constant — it depends on sampling, overlap,
 # background treatment and what the peak will be used for, so it is calibrated,
-# not derived. Calibrated here on 1402 peaks from 144 frames of a real DAC
-# series, excluding peaks that carry a hard failure (no convergence, width or
-# centre pinned at a bound) since those are rejected regardless. Local relative
-# misfit of a fit with no hard failure:
+# not derived. Calibrated on 1402 peaks from 144 frames of a real DAC series,
+# excluding peaks that carry a hard failure (no convergence, width or centre
+# pinned at a bound) since those are rejected regardless:
 #
-#     SNR band        median   90th    95th
-#     10-30           2.97%   5.46%   6.16%
-#     30-100          1.71%   3.02%   3.56%
-#     100-300         1.41%   2.71%   3.21%
-#     300-1000        1.32%   2.23%   2.51%
-#     1000-3000       1.63%   2.81%   3.08%
+#     SNR band     median   90th    95th        (synchrotron DAC series)
+#     10-30         3.14%   6.05%   6.93%
+#     30-100        1.97%   3.46%   4.25%
+#     100-300       1.70%   3.27%   3.92%
+#     300-1000      1.58%   2.72%   3.10%
+#     1000-3000     1.98%   3.46%   3.81%
 #
-# It is flat in SNR, which is the point — a healthy fit misfits by about the
-# same fraction however brightly it is measured. Sweeping the threshold, the
-# rejection rate runs 8.06% / 2.28% / 1.14% / 0.71% / 0.50% at 2 / 3 / 4 / 5 / 6%
-# and then flattens, so the knee is near 5%. That clears the 95th percentile of
-# every band above SNR 30 with margin, and preserves the frame's strongest
-# reflection in 97.9% of frames (71.5% at a 2% threshold). Tighten to 0.03-0.04
-# for a stricter peak map; the cost is strong reflections, not weak ones.
+# Nearly flat above SNR 30, which is what makes one threshold workable there.
+# Sweeping it, the rejection rate runs 14.98% / 6.56% / 2.78% / 1.43% / 1.00% at
+# 2 / 3 / 4 / 5 / 6% and then flattens, so the knee is near 5%; that clears the
+# 95th percentile of every band above SNR 30 and keeps the frame's strongest
+# reflection in 97.9% of frames (56.9% at a 2% threshold).
+#
+# GENERALITY. Both measures are dimensionless, and were verified invariant to
+# detector gain (x1000) and to a flat pedestal exactly, and to within 1% under a
+# doubling of bins per FWHM — so neither has to be re-derived per detector. The
+# NUMBER is not universal. On opXRD (2188 peaks from labelled experimental
+# patterns taken on many different instruments) the same measure is larger and
+# FALLS with brightness rather than staying flat — median 8.1% below SNR 10,
+# 2.6% at 30-100, 0.9% at 1000-3000 — because laboratory profiles are broader,
+# more asymmetric and more overlapped than a synchrotron DAC ring. The two-clause
+# structure is what protects those weak peaks: one with a 10% relative misfit is
+# still governed by chi-square and is rejected only if it is also inconsistent
+# with the noise. There the threshold barely matters (rejection moves 9.7% ->
+# 5.9% across 2-10%), because the rejections are dominated by fits that are bad
+# on both counts. Re-calibrate for a very different instrument; tighten to
+# 0.03-0.04 for a stricter map, where the cost falls on strong reflections.
 DEFAULT_MAX_REL_MISFIT = 0.05
+
+# Half-width, in FWHM, of the span each peak's quality is measured over (further
+# restricted to the points where that peak's own profile is the group's tallest —
+# see ``_fit_group``). Fixed rather than tied to ``window_factor``: both measures
+# average residuals over this span, so widening it dilutes them with baseline.
+# Measured on one peak at
+# window_factor 2 / 3 / 5, the relative misfit reads 0.88% / 0.79% / 0.65% — a
+# calibrated threshold would silently change meaning whenever the fit window
+# knob moved, which is not what that knob is for.
+QUALITY_WINDOW_FWHM = 2.0
 
 
 # Fitness tiers. "Good peak" is not one claim: a reflection whose centre is
@@ -493,17 +515,34 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float,
     # The residual is taken from the FULL group model, so a neighbour's
     # intensity inside the window is accounted for rather than counted as
     # misfit.
+    #
+    # Each peak is scored on the points it OWNS — inside its span and where its
+    # own profile is the largest of the group's. Without that, neighbours' spans
+    # overlap, a badly modelled component leaks into the peak beside it, and the
+    # "condemned by a neighbour" failure comes straight back at a local scale.
     resid_all = model(p) - yw
+    pc_j = p[0:4 * K:4]; pa_j = p[1:4 * K:4]
+    pw_j = p[2:4 * K:4]; pe_j = p[3:4 * K:4]
+    prof = pseudo_voigt(xw[:, None], pc_j[None, :], pa_j[None, :],
+                        pw_j[None, :], pe_j[None, :])
+    owner = np.argmax(prof, axis=1) if K > 1 else np.zeros(xw.size, int)
+
     out: List[Dict[str, Any]] = []
     for j, g in enumerate(group):
         c, a, w, e = p[4 * j:4 * j + 4]
         c_err, a_err, w_err = esd[4 * j], esd[4 * j + 1], esd[4 * j + 2]
 
-        span = window_factor * max(abs(w), 1e-9)
-        loc = np.abs(xw - c) <= span
-        if int(loc.sum()) < 5:                 # too narrow to judge on its own
+        span = QUALITY_WINDOW_FWHM * max(abs(w), 1e-9)
+        loc = (np.abs(xw - c) <= span) & (owner == j)
+        if int(loc.sum()) < 5:                 # too few to judge on its own
+            loc = np.abs(xw - c) <= span
+        if int(loc.sum()) < 5:
             loc = np.ones_like(xw, dtype=bool)
         rj = resid_all[loc]
+        # Scaled residual sum, not a strict reduced chi-square: the parameters
+        # were fitted over the whole group window and the baseline pair is
+        # shared, so subtracting this peak's own 4 is an approximation. It is
+        # read against a calibrated threshold, never used as a p-value.
         dof_j = max(int(loc.sum()) - 4, 1)
         chi2_local = float(np.sum((rj / sig) ** 2) / dof_j)
         rms_j = float(np.sqrt(np.mean(rj ** 2)))

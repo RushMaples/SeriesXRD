@@ -38,12 +38,33 @@ semantic versioning once a stable public API is declared.
   denominator. On that series 121 peaks were excused by a bright neighbour while
   being bad on their own, and none were condemned by one.
 
+  The span a peak is judged over is fixed at ±2 FWHM
+  (`peaks.QUALITY_WINDOW_FWHM`) rather than following `window_factor`, so a
+  calibrated threshold keeps its meaning when the fit window is tuned.
+
   The threshold is calibrated rather than derived — it depends on sampling,
   overlap and background treatment. On 1402 peaks from 144 real frames, a fit
-  with no hard failure misfits by 1.3–3.0% (median) at every SNR band above 10,
-  flat in brightness, and the rejection curve knees near 5%. Measured effect,
-  with detection unchanged: good peaks 66.3% → 97.9%, and the strongest
+  with no hard failure misfits by 1.6–2.0% (median) at every SNR band above 30,
+  nearly flat in brightness, and the rejection curve knees near 5%. Measured
+  effect, with detection unchanged: good peaks 66.3% → 97.9%, and the strongest
   reflection of the frame survives in 97.9% of frames instead of 16.0%.
+
+  Each peak is scored only on the points it owns — inside its span and where its
+  own profile is the group's tallest — so a badly modelled component cannot leak
+  into the peak beside it.
+
+  Both measures are dimensionless and were verified invariant to detector gain
+  (×1000) and to a flat pedestal exactly, and to within 1% under a doubling of
+  bins per FWHM, so neither has to be re-derived per detector. The threshold is
+  not universal: on opXRD, 2188 peaks from labelled patterns taken on many
+  different instruments, the same measure is larger and falls with brightness
+  instead of staying flat (median 8.1% below SNR 10, 0.9% at SNR 1000–3000),
+  because laboratory profiles are broader and more overlapped than a synchrotron
+  DAC ring. The two-clause structure protects those weak peaks — one with a 10%
+  relative misfit is still governed by chi-square — and on that corpus the
+  threshold barely matters (rejection moves 9.7% → 5.9% across 2–10%).
+  `docs/workflow.md` says what to re-calibrate, when, and what a strongly
+  asymmetric instrument profile does to it.
 
   Hard failures — no convergence, width or centre pinned at a bound — are
   unchanged and still reject regardless of residual size.
@@ -77,6 +98,10 @@ semantic versioning once a stable public API is declared.
 
 ### Changed
 
+- `seriesxrd-spots` records **which** frames a run excluded, as
+  `/spots/excluded_frames`, not just how many. Only the count was stored, and
+  nothing else in the file said what had been dropped, so a spot list could not
+  be regenerated from its own provenance.
 - `run_identification` simulates each candidate phase's reflection list in
   parallel (`num_workers`) instead of serially in the parent process, and
   reports how long it took. On an open-set run over a large library this was
