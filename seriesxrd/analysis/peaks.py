@@ -53,6 +53,108 @@ FLAG_CENTER_DRIFT = 4   # center pinned at its ±0.5·FWHM seed bound (ran away)
 FLAG_WIDTH_BOUND = 8    # fwhm pinned to a bound (degenerate width)
 FLAG_NO_CONVERGE = 16   # optimizer did not converge
 
+# Companion to ``max_chi2``: the largest rms residual, as a FRACTION of the peak
+# height, that still counts as a good fit.
+#
+# The fit weights every point by one scalar sigma — the MAD noise floor of the
+# background — so a reduced chi-square measures the misfit in units of the
+# BACKGROUND noise. For a fixed *fractional* profile mismatch that grows as
+# (peak height / noise)^2, which makes ``max_chi2`` alone an SNR gate: on the
+# archived DAC series the fitted log-log slope above SNR 200 is 2.1 (r = 0.87),
+# and the strongest reflection of the frame was rejected in 1055 of 1288 frames
+# while fitting to about 1% of its own height. Peaks measured well enough are
+# rejected for being measured well.
+#
+# A peak is rejected only when the fit is bad on BOTH counts — bad against the
+# noise AND bad relative to the peak itself. Weak peaks are noise-limited, so
+# the chi-square clause still governs them; strong peaks are systematics-limited
+# and are judged on relative misfit. Both are evaluated over the peak's OWN span
+# and against its OWN height, not the enclosing group's: see ``_fit_group``.
+#
+# The tolerance is not a physical constant — it depends on sampling, overlap,
+# background treatment and what the peak will be used for, so it is calibrated,
+# not derived. Calibrated on 1402 peaks from 144 frames of a real DAC series,
+# excluding peaks that carry a hard failure (no convergence, width or centre
+# pinned at a bound) since those are rejected regardless:
+#
+#     SNR band     median   90th    95th        (synchrotron DAC series)
+#     10-30         3.14%   6.05%   6.93%
+#     30-100        1.97%   3.46%   4.25%
+#     100-300       1.70%   3.27%   3.92%
+#     300-1000      1.58%   2.72%   3.10%
+#     1000-3000     1.98%   3.46%   3.81%
+#
+# Nearly flat above SNR 30, which is what makes one threshold workable there.
+# Sweeping it, the rejection rate runs 14.98% / 6.56% / 2.78% / 1.43% / 1.00% at
+# 2 / 3 / 4 / 5 / 6% and then flattens, so the knee is near 5%; that clears the
+# 95th percentile of every band above SNR 30 and keeps the frame's strongest
+# reflection in 97.9% of frames (56.9% at a 2% threshold).
+#
+# GENERALITY. Both measures are dimensionless, and were verified invariant to
+# detector gain (x1000) and to a flat pedestal exactly, and to within 1% under a
+# doubling of bins per FWHM — so neither has to be re-derived per detector. The
+# NUMBER is not universal. On opXRD (2188 peaks from labelled experimental
+# patterns taken on many different instruments) the same measure is larger and
+# FALLS with brightness rather than staying flat — median 8.1% below SNR 10,
+# 2.6% at 30-100, 0.9% at 1000-3000 — because laboratory profiles are broader,
+# more asymmetric and more overlapped than a synchrotron DAC ring. The two-clause
+# structure is what protects those weak peaks: one with a 10% relative misfit is
+# still governed by chi-square and is rejected only if it is also inconsistent
+# with the noise. There the threshold barely matters (rejection moves 9.7% ->
+# 5.9% across 2-10%), because the rejections are dominated by fits that are bad
+# on both counts. Re-calibrate for a very different instrument; tighten to
+# 0.03-0.04 for a stricter map, where the cost falls on strong reflections.
+DEFAULT_MAX_REL_MISFIT = 0.05
+
+# Half-width, in FWHM, of the span each peak's quality is measured over (further
+# restricted to the points where that peak's own profile is the group's tallest —
+# see ``_fit_group``). Fixed rather than tied to ``window_factor``: both measures
+# average residuals over this span, so widening it dilutes them with baseline.
+# Measured on one peak at
+# window_factor 2 / 3 / 5, the relative misfit reads 0.88% / 0.79% / 0.65% — a
+# calibrated threshold would silently change meaning whenever the fit window
+# knob moved, which is not what that knob is for.
+QUALITY_WINDOW_FWHM = 2.0
+
+
+# Fitness tiers. "Good peak" is not one claim: a reflection whose centre is
+# solid can still be modelled too poorly for its area or width to mean anything.
+# Hard failures — no convergence, width or centre pinned at a bound — are
+# failures at every tier regardless of how small the residual is.
+TIER_REJECT = "reject"              # unusable
+TIER_POSITION = "position"          # centre is usable; area/width are not
+TIER_QUANTITATIVE = "quantitative"  # profile is modelled well enough to integrate
+
+_HARD_FLAGS = FLAG_NO_CONVERGE | FLAG_WIDTH_BOUND | FLAG_CENTER_DRIFT
+
+
+def quality_tier(flag, rel_misfit,
+                 max_rel_misfit: float = None):  # type: ignore[assignment]
+    """What a fitted peak may be used for. Scalars or arrays.
+
+    ``TIER_REJECT`` for any flagged peak. Otherwise ``TIER_QUANTITATIVE`` when
+    the profile residual is within ``max_rel_misfit`` of the peak's own height,
+    else ``TIER_POSITION`` — the centre survived the noise-limited test but the
+    shape is not modelled well enough to trust an integrated intensity or a
+    width from it. That case is real and invisible to ``flag`` alone: a weak
+    peak passes on chi-square while its rms residual is tens of percent of its
+    height.
+
+    Nothing in the pipeline calls this yet. ``identify``, ``fractions`` and
+    ``microstructure`` all still take ``flag == 0``; wiring the tiers in changes
+    what those report, so it wants its own validation run rather than riding
+    along with the gate change.
+    """
+    if max_rel_misfit is None:
+        max_rel_misfit = DEFAULT_MAX_REL_MISFIT
+    flag_a = np.asarray(flag, dtype=int)
+    rel_a = np.asarray(rel_misfit, dtype=float)
+    tier = np.where(flag_a != FLAG_OK, TIER_REJECT,
+                    np.where(np.isfinite(rel_a) & (rel_a <= float(max_rel_misfit)),
+                             TIER_QUANTITATIVE, TIER_POSITION))
+    return tier if tier.ndim else str(tier[()])
+
+
 _GAUSS_C = 4.0 * np.log(2.0)          # exp(-_GAUSS_C * (dx/fwhm)^2) has the given FWHM
 _GAUSS_AREA = np.sqrt(np.pi / _GAUSS_C)   # integral of unit-height gaussian / fwhm
 _LN2 = np.log(2.0)                    # gaussian exponent factor (see pseudo_voigt)
@@ -299,7 +401,8 @@ def _group_peaks(cands: List[Dict[str, float]], window_factor: float,
     return out
 
 
-def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
+def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float,
+               max_rel_misfit: float = DEFAULT_MAX_REL_MISFIT
                ) -> List[Dict[str, Any]]:
     """Jointly fit one cluster of peaks (sum of pseudo-Voigts + LOCAL LINEAR
     baseline).
@@ -391,14 +494,65 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
     except Exception:
         esd = np.full(p.size, np.nan)
 
+    # Fit quality is judged PER PEAK, over that peak's own span, on two measures
+    # (see DEFAULT_MAX_REL_MISFIT for why one is not enough):
+    #
+    #   chi2_local  the residual in units of the measurement noise floor, which
+    #               is the meaningful test for a weak, noise-limited peak;
+    #   rel_misfit  the rms residual as a fraction of THAT peak's own height,
+    #               the meaningful test for a bright, systematics-limited one.
+    #
+    # Both are local because the group answer is a different claim. A joint
+    # model can fit a region well overall and still contain one badly modelled
+    # weak component, and judging every member by the tallest peak's height is
+    # only ever more lenient (a_max >= a_j): measured on a 1288-frame series,
+    # 121 peaks were excused by a bright neighbour while being bad on their own,
+    # and none were condemned by one. The group's own reduced chi-square is
+    # still reported, as ``chi2``, so group adequacy stays inspectable — it is
+    # deliberately not a rejection, because making it one brings back exactly
+    # the "one bad peak condemns its neighbours" behaviour this replaced.
+    #
+    # The residual is taken from the FULL group model, so a neighbour's
+    # intensity inside the window is accounted for rather than counted as
+    # misfit.
+    #
+    # Each peak is scored on the points it OWNS — inside its span and where its
+    # own profile is the largest of the group's. Without that, neighbours' spans
+    # overlap, a badly modelled component leaks into the peak beside it, and the
+    # "condemned by a neighbour" failure comes straight back at a local scale.
+    resid_all = model(p) - yw
+    pc_j = p[0:4 * K:4]; pa_j = p[1:4 * K:4]
+    pw_j = p[2:4 * K:4]; pe_j = p[3:4 * K:4]
+    prof = pseudo_voigt(xw[:, None], pc_j[None, :], pa_j[None, :],
+                        pw_j[None, :], pe_j[None, :])
+    owner = np.argmax(prof, axis=1) if K > 1 else np.zeros(xw.size, int)
+
     out: List[Dict[str, Any]] = []
     for j, g in enumerate(group):
         c, a, w, e = p[4 * j:4 * j + 4]
         c_err, a_err, w_err = esd[4 * j], esd[4 * j + 1], esd[4 * j + 2]
+
+        span = QUALITY_WINDOW_FWHM * max(abs(w), 1e-9)
+        loc = (np.abs(xw - c) <= span) & (owner == j)
+        if int(loc.sum()) < 5:                 # too few to judge on its own
+            loc = np.abs(xw - c) <= span
+        if int(loc.sum()) < 5:
+            loc = np.ones_like(xw, dtype=bool)
+        rj = resid_all[loc]
+        # Scaled residual sum, not a strict reduced chi-square: the parameters
+        # were fitted over the whole group window and the baseline pair is
+        # shared, so subtracting this peak's own 4 is an approximation. It is
+        # read against a calibrated threshold, never used as a p-value.
+        dof_j = max(int(loc.sum()) - 4, 1)
+        chi2_local = float(np.sum((rj / sig) ** 2) / dof_j)
+        rms_j = float(np.sqrt(np.mean(rj ** 2)))
+        rel_misfit = rms_j / a if a > 0 else np.inf
+        poor_fit = (chi2_local > max_chi2) and (rel_misfit > float(max_rel_misfit))
+
         flag = FLAG_OK if converged else FLAG_NO_CONVERGE
         if a < 2.0 * sig:
             flag |= FLAG_LOW_AMP
-        if chi2 > max_chi2:
+        if poor_fit:
             flag |= FLAG_BAD_CHI2
         # The fit bounds already confine the center to seed ± 0.5·FWHM, so "moved
         # more than a FWHM" can never happen — a runaway center shows up as the
@@ -411,7 +565,8 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
             "center": float(c), "amplitude": float(a), "fwhm": float(abs(w)),
             "eta": float(np.clip(e, 0.0, 1.0)),
             "area": float(pseudo_voigt_area(a, abs(w), np.clip(e, 0.0, 1.0))),
-            "chi2": chi2, "flag": int(flag),
+            "chi2": chi2, "chi2_local": chi2_local,
+            "rel_misfit": float(rel_misfit), "flag": int(flag),
             "center_err": float(c_err), "amplitude_err": float(a_err),
             "fwhm_err": float(w_err),
         })
@@ -421,7 +576,8 @@ def _fit_group(x, y, group, sigma, *, window_factor: float, max_chi2: float
 def _failed_peak(g: Dict[str, float], flag: int) -> Dict[str, Any]:
     return {"center": float(g["center"]), "amplitude": float(g["amplitude"]),
             "fwhm": float(g["fwhm"]), "eta": 0.5, "area": 0.0,
-            "chi2": np.inf, "flag": int(flag),
+            "chi2": np.inf, "chi2_local": np.inf, "rel_misfit": np.inf,
+            "flag": int(flag),
             "center_err": np.nan, "amplitude_err": np.nan, "fwhm_err": np.nan}
 
 
@@ -442,7 +598,9 @@ def _window_mask(x: np.ndarray, edge_bins: int,
 
 
 def fit_pattern(x, y, *, min_snr: float = 5.0, window_factor: float = 3.0,
-                max_chi2: float = 25.0, min_prominence_snr: Optional[float] = None,
+                max_chi2: float = 25.0,
+                max_rel_misfit: float = DEFAULT_MAX_REL_MISFIT,
+                min_prominence_snr: Optional[float] = None,
                 edge_bins: int = 0, fit_min: Optional[float] = None,
                 fit_max: Optional[float] = None, min_fwhm_bins: float = 0.0,
                 local_baseline_bins: int = 0,
@@ -494,7 +652,8 @@ def fit_pattern(x, y, *, min_snr: float = 5.0, window_factor: float = 3.0,
     peaks: List[Dict[str, Any]] = []
     for group in _group_peaks(cands, window_factor):
         peaks.extend(_fit_group(x, y, group, sig, window_factor=window_factor,
-                                max_chi2=max_chi2))
+                                max_chi2=max_chi2,
+                                max_rel_misfit=max_rel_misfit))
     # Sub-resolution rejection: a real Bragg peak spans several bins.
     dx = float(np.median(np.abs(np.diff(x)))) if x.size > 1 else 1.0
     min_fwhm = float(min_fwhm_bins) * dx
@@ -509,7 +668,9 @@ def fit_pattern(x, y, *, min_snr: float = 5.0, window_factor: float = 3.0,
 
 
 def fit_dataset(radial, clean, *, min_snr: float = 5.0, window_factor: float = 3.0,
-                max_chi2: float = 25.0, min_prominence_snr: Optional[float] = None,
+                max_chi2: float = 25.0,
+                max_rel_misfit: float = DEFAULT_MAX_REL_MISFIT,
+                min_prominence_snr: Optional[float] = None,
                 edge_bins: int = 0, fit_min: Optional[float] = None,
                 fit_max: Optional[float] = None, min_fwhm_bins: float = 0.0,
                 local_baseline_bins: int = 0,
@@ -528,6 +689,7 @@ def fit_dataset(radial, clean, *, min_snr: float = 5.0, window_factor: float = 3
     for i in range(clean.shape[0]):
         peaks = fit_pattern(radial, clean[i], min_snr=min_snr,
                             window_factor=window_factor, max_chi2=max_chi2,
+                            max_rel_misfit=max_rel_misfit,
                             min_prominence_snr=min_prominence_snr,
                             edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
                             min_fwhm_bins=min_fwhm_bins,
@@ -737,7 +899,8 @@ def auto_fit_range(radial, signal, *, max_trim_frac: float = 0.15,
 # ---------------------------------------------------------------------------
 
 SCHEMA_VERSION = "1"
-_PEAK_COLS = ("center", "amplitude", "fwhm", "eta", "area", "chi2", "flag",
+_PEAK_COLS = ("center", "amplitude", "fwhm", "eta", "area", "chi2",
+              "chi2_local", "rel_misfit", "flag",
               "center_err", "amplitude_err", "fwhm_err")
 SEED_TRACKING_AXES = ("frame", "pressure", "temperature", "time")
 SEED_GROUPS = ("none", "scan", "folder")
@@ -837,6 +1000,7 @@ def _fit_ordered_rows(radial: np.ndarray, clean_rows: np.ndarray,
                       axis_values: np.ndarray, *,
                       min_snr: float, window_factor: float, max_chi2: float,
                       propagate: bool,
+                      max_rel_misfit: float = DEFAULT_MAX_REL_MISFIT,
                       min_prominence_snr: "Optional[float]",
                       edge_bins: int, fit_min: "Optional[float]",
                       fit_max: "Optional[float]", min_fwhm_bins: float,
@@ -865,6 +1029,7 @@ def _fit_ordered_rows(radial: np.ndarray, clean_rows: np.ndarray,
                  if propagate else None)
         peaks = fit_pattern(radial, clean_rows[jj], min_snr=min_snr,
                             window_factor=window_factor, max_chi2=max_chi2,
+                            max_rel_misfit=max_rel_misfit,
                             min_prominence_snr=min_prominence_snr,
                             edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
                             min_fwhm_bins=min_fwhm_bins,
@@ -892,13 +1057,15 @@ def _peaks_chunk(payload):
     frames are skipped (count 0) and do not seed their neighbours.
     """
     (radial, clean_c, excluded_c, min_snr, window_factor, max_chi2,
-     propagate, min_prominence_snr, edge_bins, fit_min, fit_max, min_fwhm_bins,
+     max_rel_misfit, propagate, min_prominence_snr, edge_bins, fit_min, fit_max,
+     min_fwhm_bins,
      local_baseline_bins, seed_max_axis_gap, seed_axis_predictor) = payload
     m = clean_c.shape[0]
     return _fit_ordered_rows(
         radial, clean_c, excluded_c, np.arange(m, dtype=int),
         np.arange(m, dtype=float),
         min_snr=min_snr, window_factor=window_factor, max_chi2=max_chi2,
+        max_rel_misfit=max_rel_misfit,
         propagate=propagate, min_prominence_snr=min_prominence_snr,
         edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
         min_fwhm_bins=min_fwhm_bins, local_baseline_bins=local_baseline_bins,
@@ -910,7 +1077,8 @@ def _peaks_chunk(payload):
 def _peaks_order_chunk(payload):
     """Worker: fit one explicit propagation path and return global frame ids."""
     (radial, clean_c, excluded_c, global_order, axis_values,
-     min_snr, window_factor, max_chi2, propagate, min_prominence_snr,
+     min_snr, window_factor, max_chi2, max_rel_misfit, propagate,
+     min_prominence_snr,
      edge_bins, fit_min, fit_max, min_fwhm_bins, local_baseline_bins,
      seed_max_axis_gap, seed_axis_predictor) = payload
     m = clean_c.shape[0]
@@ -918,6 +1086,7 @@ def _peaks_order_chunk(payload):
         radial, clean_c, excluded_c, np.arange(m, dtype=int),
         np.asarray(axis_values, dtype=float),
         min_snr=min_snr, window_factor=window_factor, max_chi2=max_chi2,
+        max_rel_misfit=max_rel_misfit,
         propagate=propagate, min_prominence_snr=min_prominence_snr,
         edge_bins=edge_bins, fit_min=fit_min, fit_max=fit_max,
         min_fwhm_bins=min_fwhm_bins, local_baseline_bins=local_baseline_bins,
@@ -940,6 +1109,7 @@ def run_peak_fitting(
     min_snr: "Optional[float]" = None,
     window_factor: float = 3.0,
     max_chi2: float = 25.0,
+    max_rel_misfit: float = DEFAULT_MAX_REL_MISFIT,
     min_prominence_snr: Optional[float] = None,
     edge_bins: "Optional[int]" = None,
     fit_min: Optional[float] = None,
@@ -969,6 +1139,12 @@ def run_peak_fitting(
     ``auto_range`` fills a blank ``fit_min``/``fit_max`` from
     :func:`auto_fit_range`.
 
+    Fit quality is judged on two tests and a peak has to fail BOTH to be
+    flagged: ``max_chi2`` against the background noise, and ``max_rel_misfit``
+    — the rms residual as a fraction of the peak's own height. On its own the
+    chi-square test is an SNR gate, because the fit weights every point by one
+    scalar noise estimate; see :data:`DEFAULT_MAX_REL_MISFIT`.
+
     Seed propagation defaults to historical frame order. Set
     ``seed_group_by="scan"`` (or ``"folder"``) so seeds propagate only WITHIN a
     scan and never across a scan border — scan identity is parsed from the frame
@@ -987,8 +1163,15 @@ def run_peak_fitting(
         /peaks/amplitude   (P,)           |
         /peaks/fwhm        (P,)           |  one row per fitted peak,
         /peaks/eta         (P,)           |  grouped/ordered by frame then center
-        /peaks/area        (P,)           |
-        /peaks/chi2        (P,)          /
+        /peaks/area        (P,)          /
+        /peaks/chi2        (P,)          reduced chi-square of the whole joint
+                                         fit — the GROUP's adequacy, shared by
+                                         every member; reported, never a
+                                         rejection on its own
+        /peaks/chi2_local  (P,)          reduced chi-square over this peak's own
+                                         span (the noise-limited test)
+        /peaks/rel_misfit  (P,)          rms residual there / this peak's height
+                                         (the systematics-limited test)
         /peaks/flag        (P,) int      0 = good, else FLAG_* bitmask
         /peaks/center_err  (P,)          1σ fit uncertainties (NaN = fit failed);
         /peaks/amplitude_err, fwhm_err   esd-weighting + Williamson-Hall errors
@@ -1151,7 +1334,8 @@ def run_peak_fitting(
         seed_orders = _seed_frame_orders(n, seed_axis_values, seed_axis_key, seed_group_values)
         payloads = [
             (radial, clean[order], excluded[order], order, seed_axis_values[order],
-             r_min_snr, window_factor, max_chi2, propagate_seeds, r_prom,
+             r_min_snr, window_factor, max_chi2, max_rel_misfit,
+             propagate_seeds, r_prom,
              r_edge, fit_min, fit_max, r_fwhm, local_baseline_bins,
              seed_max_axis_gap, bool(seed_axis_predictor and seed_axis_key != "frame"))
             for order in seed_orders if len(order)
@@ -1171,7 +1355,7 @@ def run_peak_fitting(
     elif workers > 1 and n > 1:
         ranges = chunk_ranges(n, workers)
         payloads = [(radial, clean[a:b], excluded[a:b], r_min_snr, window_factor,
-                     max_chi2, propagate_seeds, r_prom,
+                     max_chi2, max_rel_misfit, propagate_seeds, r_prom,
                      r_edge, fit_min, fit_max, r_fwhm,
                      local_baseline_bins, seed_max_axis_gap,
                      bool(seed_axis_predictor and seed_axis_key != "frame"))
@@ -1184,7 +1368,7 @@ def run_peak_fitting(
                 print(f"[PEAKS] {done} {n}", flush=True)
     else:
         _absorb(0, _peaks_chunk((radial, clean, excluded, r_min_snr, window_factor,
-                                 max_chi2, propagate_seeds, r_prom,
+                                 max_chi2, max_rel_misfit, propagate_seeds, r_prom,
                                  r_edge, fit_min, fit_max, r_fwhm,
                                  local_baseline_bins, seed_max_axis_gap,
                                  bool(seed_axis_predictor and seed_axis_key != "frame"))))
@@ -1220,6 +1404,7 @@ def run_peak_fitting(
                                  r_min_snr if r_prom is None else r_prom),
                              "window_factor": float(window_factor),
                              "max_chi2": float(max_chi2),
+                             "max_rel_misfit": float(max_rel_misfit),
                              "edge_bins": int(r_edge),
                              "fit_min": float(fit_min) if fit_min is not None else np.nan,
                              "fit_max": float(fit_max) if fit_max is not None else np.nan,
@@ -1280,6 +1465,7 @@ def run_peak_fitting(
         "fit_max": float(fit_max) if fit_max is not None else None,
         "min_snr": float(r_min_snr), "window_factor": float(window_factor),
         "max_chi2": float(max_chi2),
+        "max_rel_misfit": float(max_rel_misfit),
         "seed_tracking_axis": str(seed_axis_key),
         "seed_group_by": str(seed_group_key),
         "seed_axis_predictor": bool(seed_axis_predictor),

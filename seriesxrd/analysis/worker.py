@@ -39,7 +39,7 @@ if __package__ in (None, ""):
         sys.path.insert(0, _pkg_parent)
     from seriesxrd.core.config import read_json, write_json, print_status, make_stdio_robust
     from seriesxrd.analysis.background import run_background_separation
-    from seriesxrd.analysis.peaks import run_peak_fitting
+    from seriesxrd.analysis.peaks import run_peak_fitting, DEFAULT_MAX_REL_MISFIT
     from seriesxrd.analysis.identify import run_identification
     from seriesxrd.analysis.residual import run_residual
     from seriesxrd.analysis.phases import load_library, pymatgen_available
@@ -49,7 +49,7 @@ if __package__ in (None, ""):
 else:
     from ..core.config import read_json, write_json, print_status, make_stdio_robust
     from .background import run_background_separation
-    from .peaks import run_peak_fitting
+    from .peaks import run_peak_fitting, DEFAULT_MAX_REL_MISFIT
     from .identify import run_identification
     from .residual import run_residual
     from .phases import load_library, pymatgen_available
@@ -179,6 +179,8 @@ def run_analysis(cfg: dict) -> dict:
             min_prominence_snr=_opt_float(cfg.get("min_prominence_snr")),
             window_factor=_as_float(cfg.get("window_factor"), 3.0),
             max_chi2=_as_float(cfg.get("max_chi2"), 25.0),
+            max_rel_misfit=_as_float(cfg.get("max_rel_misfit"),
+                                     DEFAULT_MAX_REL_MISFIT),
             edge_bins=_opt_int(cfg.get("edge_bins")),
             fit_min=_opt_float(cfg.get("fit_min")),
             fit_max=_opt_float(cfg.get("fit_max")),
@@ -291,6 +293,7 @@ def run_analysis(cfg: dict) -> dict:
             min_prominence_snr=_opt_float(cfg.get("min_prominence_snr")),
             window_factor=_opt_float(cfg.get("window_factor")),
             max_chi2=_opt_float(cfg.get("max_chi2")),
+            max_rel_misfit=_opt_float(cfg.get("max_rel_misfit")),
             edge_bins=_opt_int(cfg.get("edge_bins")),
             fit_min=_opt_float(cfg.get("fit_min")),
             fit_max=_opt_float(cfg.get("fit_max")),

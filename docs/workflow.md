@@ -444,7 +444,40 @@ table follows each stage's knobs.
 | `min_fwhm_bins` | preset (2.0 for normal) | Rejects sub-resolution single-bin spikes as noise. If *real* peaks trip this, the pattern is under-sampled — re-reduce with more `npt_1d` bins rather than lowering this. |
 | `edge_bins` | preset (5 for normal) | Bins excluded from detection at either end of the pattern (kills beamstop-onset and detector-truncation artifacts). Raise it if edge artifacts are still leaking through as spurious peaks. |
 | `window_factor` | `3.0` | Fit-window half-width as a multiple of the estimated FWHM. Structural, not part of the sensitivity preset — rarely needs changing. |
-| `max_chi2` | `25.0` | Reduced χ² above which a fit is flagged `FLAG_BAD_CHI2`. Tighten (lower) for a cleaner peak map at the cost of more rejected fits; loosen if visibly good fits are being flagged bad. |
+| `max_chi2` | `25.0` | Reduced χ² **over the peak's own span** (`/peaks/chi2_local`) above which a fit *may* be flagged `FLAG_BAD_CHI2` — judged together with `max_rel_misfit`, and a peak must fail both. This is the test that governs weak, noise-limited peaks. Tighten for a cleaner peak map at the cost of more rejected fits. |
+| `max_rel_misfit` | `0.05` | Rms fit residual over that same span as a fraction of the peak's **own height** (`/peaks/rel_misfit`). This is the test that governs bright, systematics-limited peaks. Two tests are needed because the fit weights every point by one scalar noise estimate taken from the background: a reduced χ² therefore measures misfit in units of background noise and grows as (height/noise)² for any fixed fractional profile mismatch, so on its own it rejects peaks *for being well measured* — on a 1288-frame DAC series the strongest reflection of the frame failed it in 1055 of 1288 frames while fitting to ~1% of its own height. Calibrated on 1402 real peaks from that series: a healthy fit misfits by 1.6–2.0% (median) at every band above SNR 30, and the rejection curve knees near 5%. Tighten to 0.03–0.04 for a stricter map; the cost falls on strong reflections, not weak ones. |
+
+The span each peak is judged over is fixed at ±2 FWHM
+(`peaks.QUALITY_WINDOW_FWHM`) rather than following `window_factor`, so a
+calibrated threshold keeps its meaning when the fit window is tuned.
+
+**Porting to another instrument.** Both measures are dimensionless and were
+verified invariant to detector gain (×1000) and a flat pedestal exactly, and to
+within 1% under a doubling of bins per FWHM, so neither needs re-deriving per
+detector. The *threshold* is not universal. On opXRD — 2188 peaks from labelled
+patterns taken on many different instruments — the same measure is larger and
+falls with brightness rather than staying flat (median 8.1% below SNR 10, 2.6% at
+30–100, 0.9% at 1000–3000), because laboratory profiles are broader, more
+asymmetric and more overlapped than a synchrotron DAC ring. The two-clause
+structure is what protects those weak peaks: a 10% relative misfit is still
+governed by χ² and is only rejected if it is *also* inconsistent with the noise.
+On that corpus the threshold barely matters (rejection moves 9.7% → 5.9% across
+2–10%) because the rejections are dominated by fits that are bad on both counts.
+Re-calibrate if your profiles differ markedly from either case.
+
+One known limitation follows from the profile model rather than the gate: a
+pseudo-Voigt is symmetric, so a strongly asymmetric instrument profile — axial
+divergence at low angle on a laboratory diffractometer, for instance — leaves a
+systematic residual that `rel_misfit` correctly reports as a poor fit. On such
+data expect more rejections at low angle, and either raise `max_rel_misfit` or
+treat those peaks as position-only (`peaks.quality_tier`), rather than reading
+areas from them.
+
+Both measures are **per peak**, not per fitted group. `/peaks/chi2` still reports
+the whole joint fit's reduced χ² so group adequacy stays inspectable, but it is
+not a rejection: a shared verdict is only ever more lenient, since the tallest
+peak sets the denominator. Measured on that series, 121 peaks were excused by a
+bright neighbour while being bad on their own, and none were condemned by one.
 | `auto_range` / `fit_min` / `fit_max` | on / blank / blank | Leave `auto_range` on and both bounds blank for the conservative automatic trim (skips the beamstop ramp and dead/noisy tail, capped at ~15% of the axis per end). Set `fit_min` above the beamstop onset explicitly if the low-angle ramp is still inflating the noise floor and hiding weak peaks; set `fit_max` below a noisy detector tail similarly. |
 | `hybrid_spike_bins` | `5` | Only matters with `peak_source=hybrid`. Radial width (bins) below which the azimuthal-mean excess is treated as a diamond spike and removed; above it, kept as real ring texture. Lower it if diamond spikes are still bleeding through into `hybrid`; raise it if it's clipping genuinely broad real texture. |
 | `detrend_bins` | `81` (GUI and `seriesxrd-analyze --detrend-bins`; the bare `run_peak_fitting()` function default is `0`=off) | Detection-only local-baseline window: removes residual broad background SNIP left behind so weak peaks clear the noise threshold (fitting still uses the un-detrended signal). Size it to a few peak widths; `0` disables it. |

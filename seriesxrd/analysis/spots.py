@@ -1477,10 +1477,12 @@ def run_spot_tracking(
             if "ok" in fr:
                 skip |= ~np.asarray(fr["ok"][:], bool)
         n_excluded_arg = 0
+        excluded_arg = np.zeros(0, int)
         if exclude_frames is not None:
             ef = np.asarray(sorted(set(int(f) for f in exclude_frames)), int)
             ef = ef[(ef >= 0) & (ef < n_frames)]
             skip[ef] = True
+            excluded_arg = ef
             n_excluded_arg = int(ef.size)
             if n_excluded_arg:
                 print(f"[SPOTS] excluding {n_excluded_arg} listed frame(s) "
@@ -1771,6 +1773,10 @@ def run_spot_tracking(
                                   schema_version=SCHEMA_VERSION)
             g.attrs["seriesxrd_version"] = VERSION
             g.attrs.update(params)
+            # WHICH frames were excluded, not just how many. Storing only the
+            # count makes a run unreproducible: nothing else in the file says
+            # what was dropped, so the spot list cannot be regenerated.
+            g.create_dataset("excluded_frames", data=excluded_arg.astype("i4"))
             go = g.create_group("obs")
             go.create_dataset("frame", data=o_frame.astype("i4"))
             go.create_dataset("group", data=obs_group.astype("i4"))
