@@ -60,3 +60,13 @@ reference_phases/
 
 # Manuscript working files — drafts, figures, benchmark scratch
 paper/
+
+# Correlation-mapping prototype: code is tracked, local research data is not.
+prototypes/correlation_mapping/results/
+prototypes/correlation_mapping/incoming/
+prototypes/correlation_mapping/UOTe*/
+prototypes/correlation_mapping/uote_xy_handoff*/
+prototypes/correlation_mapping/correlation-explorer/node_modules
+prototypes/correlation_mapping/correlation-explorer/dist/
+prototypes/correlation_mapping/correlation-explorer/data/*.json
+prototypes/correlation_mapping/correlation-explorer/*.tsbuildinfo

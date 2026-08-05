@@ -1,0 +1,91 @@
+{
+  "profile": "uniform-correlation-v2",
+  "status": "OFFICIAL_FROZEN",
+  "algorithm_version": "2.0.0",
+  "random_seed": 0,
+  "input": {
+    "minimum_coverage_fraction": 0.9,
+    "minimum_points_per_pattern": 128,
+    "require_wavelength": true,
+    "allow_extrapolation": false
+  },
+  "baseline": {
+    "method": "asymmetric_least_squares",
+    "asls_p": 0.01,
+    "asls_iterations": 10,
+    "lambda_minimum_span_deg": 0.5,
+    "lambda_minimum_span_bins": 20,
+    "lambda_rule": "(max(0.5_deg,20*dx)/dx)^4"
+  },
+  "peak_detection": {
+    "gaussian_sigma_bins": 1.0,
+    "noise_method": "1.4826*MAD(diff(residual))/sqrt(2)",
+    "minimum_prominence_sigma": 5.0,
+    "minimum_height_sigma": 3.0,
+    "minimum_width_bins": 2.0
+  },
+  "peak_fit": {
+    "model": "linear_background_plus_pseudo_voigt",
+    "loss": "soft_l1",
+    "minimum_delta_bic": 10.0,
+    "minimum_area_over_se": 3.0,
+    "maximum_function_evaluations": 4000,
+    "boundary_relative_tolerance": 0.0001,
+    "reject_parameter_bound_hits": true,
+    "overlap_grouping": true
+  },
+  "consensus": {
+    "coordinate": "q_A^-1",
+    "clustering": "complete_link",
+    "fwhm_distance_factor": 0.5,
+    "distance_rule": "abs(dq)<=0.5*(fwhm_q_i+fwhm_q_j)",
+    "support_rule": "min(N,max(5,ceil(0.1*N)))"
+  },
+  "tracking": {
+    "assignment": "bidirectional_hungarian_constant_velocity",
+    "gate_factor": 1.5,
+    "width_cost_weight": 0.1,
+    "gate_rule": "1.5*sqrt(w_pred^2+w_obs^2)*max(1,dP/median_positive_dP)",
+    "cost_rule": "(dq/gate)^2+0.1*log(w_obs/w_pred)^2",
+    "maximum_missing_pressure_levels": 2,
+    "minimum_pressure_support_rule": "min(M,max(3,ceil(0.1*M)))",
+    "allow_extrapolation": false,
+    "ambiguous_cost_margin": 0.25
+  },
+  "similarity": {
+    "area": "min(relative_area_i,relative_area_j)/max(relative_area_i,relative_area_j)",
+    "location": "exp(-(q_i-q_j)^2/(2*(sigma_q_i^2+sigma_q_j^2)))",
+    "sigma_q": "fwhm_q/(2*sqrt(2*ln(2)))",
+    "presence": "n11/(n11+n10+n01)",
+    "missing_area_location": "NaN"
+  },
+  "statistics": {
+    "pair_support_rule": "min(N,max(5,ceil(0.1*N)))",
+    "bootstrap_resamples": 2000,
+    "bootstrap_unit": "scan",
+    "ci_percentiles": [2.5, 97.5],
+    "near_gap_quantile": 0.25,
+    "far_gap_quantile": 0.75,
+    "minimum_distinct_pressure_gaps": 4,
+    "minimum_supported_group_values": 5
+  },
+  "windows": {
+    "width_rule": "analysis_span/6",
+    "step_rule": "window_width/5",
+    "window_count": 26,
+    "fingerprint": "standardized_positive_lag_fft_acf",
+    "strict_acf_primary": true,
+    "direct_strict_validation": true,
+    "shift_tolerant_neighbor_steps": 1,
+    "shift_tolerant_role": "SECONDARY",
+    "nonoverlap_stride_windows": 5,
+    "minimum_finite_fraction_per_window": 1.0
+  },
+  "plotting": {
+    "full_symmetric_matrices": true,
+    "conditional_score_range": [0.0, 1.0],
+    "pearson_score_range": [-1.0, 1.0],
+    "missing_color": "#BDBDBD",
+    "insufficient_support_hatch": "///"
+  }
+}

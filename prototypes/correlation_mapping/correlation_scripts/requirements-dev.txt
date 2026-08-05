@@ -1,0 +1,3 @@
+-r requirements-uote.txt
+
+pytest
