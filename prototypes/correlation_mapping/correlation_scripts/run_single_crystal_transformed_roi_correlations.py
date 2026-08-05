@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Run transformed single-crystal ROI correlations on the curated 275 spots.
+"""Run Log²-denoised, all-peak single-crystal ROI correlations.
 
-This runner changes only the scalar ROI intensity supplied to the existing
-``analyze_single_tracks_across_frames`` implementation.  Peak identities,
-locations, duplicate-observation collapse, frame ordering, min/max area
-similarity, matrices, and plots remain owned by that existing implementation.
+Every one of the 275 curated ROI observations is an independent anchor peak.
+The source ``track`` is retained only for provenance: it is never used to
+group, filter, match, or score peaks.  Each anchor is compared with the full
+Cartesian product of local peaks in every other registered frame.
 
 For every curated observation the raw TIFF pixels are selected with the formal
 detector mask, curated frame mask, geometric ROI, and radial sideband.  The
@@ -39,11 +39,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import nonlinear_intensity_preprocessing as nonlinear  # noqa: E402
 import run_refinement_legacy_correlations as formal  # noqa: E402
-from single_global_per_peak import (  # noqa: E402
-    analyze_single_tracks_across_frames,
-    branch_label,
-    orientation_base,
-)
+from all_peak_frame_correlations import generate_peak_dataset  # noqa: E402
 
 
 DEFAULT_DATA_ROOT = WORKSPACE_ROOT / "correlations" / "UOTe XRD Data Refinement"
@@ -58,13 +54,34 @@ DEFAULT_SCALE_QUANTILE = 0.995
 
 EXPECTED_OBSERVATIONS = 275
 EXPECTED_MASKED_FRAMES = (0, 4, 5, 7, 10, 11, 13, 15, 17, 19, 21, 27)
-EXPECTED_TRACKS = 75
 EXPECTED_ROI_PIXEL_INSTANCES = 90_398
 EXPECTED_POSITIVE_EXCESS_PIXEL_INSTANCES = 64_505
 EXPECTED_ZERO_EXCESS_PIXEL_INSTANCES = 25_893
 EXPECTED_Q995_POSITIVE_SCALE = 333.7071235707903
 EXPECTED_SIDEBAND_NOISE_FLOOR = 0.1976865895529851
 NORMAL_CONSISTENT_MAD_FACTOR = 1.4826
+
+
+def orientation_base(scan: str) -> str:
+    """Return the physical orientation without substring matching."""
+
+    if scan in {"orientation_10deg", "decompression_orientation_10deg"}:
+        return "10deg"
+    if scan == "orientation_0deg":
+        return "0deg"
+    return scan
+
+
+def branch_label(metadata_row: Mapping[str, Any]) -> str:
+    """Name acquisition branches while leaving peak identity untouched."""
+
+    scan = str(metadata_row["orientation"])
+    reason = str(metadata_row.get("exclusion_reason", ""))
+    if scan == "decompression_orientation_10deg":
+        return "10deg_decomp"
+    if reason.startswith("duplicate_scan_pressure"):
+        return "10deg_alt"
+    return orientation_base(scan)
 
 
 @dataclass(frozen=True)
@@ -366,7 +383,7 @@ def build_transformed_rows(
     spec: nonlinear.ROITransformSpec,
     metadata: Mapping[int, Mapping[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Build analyzer-compatible rows and complete per-observation QC."""
+    """Build one independent all-peak row and QC row per curated ROI."""
 
     output_rows: list[dict[str, Any]] = []
     qc_rows: list[dict[str, Any]] = []
@@ -418,8 +435,17 @@ def build_transformed_rows(
             "exposure_s": item.exposure_s,
             "exposure_source": "TIFF ImageDescription Exposure_time",
             "effective_pixels": item.effective_roi_pixels,
-            # This legacy key is intentionally preserved because the imported
-            # analyzer consumes it.  Its value is now dimensionless.
+            "integrated_area": transformed_mean,
+            "integrated_area_raw": raw_rate_mean,
+            "area_unit": "mean_log_squared_transformed_roi_pixel",
+            "area_method": (
+                "mean_per_pixel_log_squared_after_sideband_subtraction_"
+                "positive_clip_and_exposure_normalization"
+            ),
+            "source_state": "curated_kept_observation",
+            "source_reason": "",
+            "source_file": str(item.raw_tiff.resolve()),
+            # Retained for table compatibility; this value is dimensionless.
             "normalized_intensity_counts_per_s_per_pixel": transformed_mean,
             "intensity_status": status,
             "raw_tiff": str(item.raw_tiff.resolve()),
@@ -663,31 +689,55 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "one positive Q99.5 scale over all ROI pixel instances",
                 "bounded nonlinear transform per pixel",
                 "mean transformed pixels per observation",
-                "existing duplicate/frame median and min/max similarity",
+                "assign deterministic frame-local peak IDs without track grouping",
+                "complete cross-frame Cartesian product",
+                "min/max Log-squared ROI-area and radial-location similarity",
             ],
-            "downstream_analyzer": (
-                "single_global_per_peak.analyze_single_tracks_across_frames"
-            ),
+            "downstream_analyzer": "all_peak_frame_correlations.generate_peak_dataset",
             "legacy_intensity_field_now_dimensionless": (
                 "normalized_intensity_counts_per_s_per_pixel"
             ),
+            "track_semantics": "source provenance only; never grouped or scored",
             "contract": contract,
         },
     )
 
-    analysis_root = output_root / "single_crystal" / "per_peak_all_frames"
-    analysis_metrics = analyze_single_tracks_across_frames(
+    registered_frames = []
+    for frame in EXPECTED_MASKED_FRAMES:
+        meta = metadata[frame]
+        registered_frames.append(
+            {
+                "frame": frame,
+                "scan": meta["orientation"],
+                "orientation": meta["orientation"],
+                "pressure_GPa": float(meta["pressure_GPa"]),
+                "formal_ladder_included": int(meta["included_whole_pattern"]),
+                "formal_ladder_exclusion_reason": meta["exclusion_reason"],
+            }
+        )
+    analysis_root = output_root / "single_crystal" / "all_peak_log_squared"
+    analysis_metrics = generate_peak_dataset(
         analysis_root,
+        "single_crystal",
         transformed_rows,
-        metadata,
+        registered_frames,
+        {
+            "source": str(kept_path.resolve()),
+            "raw_observations": len(transformed_rows),
+            "track_used_for_selection_grouping_or_scoring": False,
+            "transform": spec.method,
+            "area_unit": "mean_log_squared_transformed_roi_pixel",
+        },
+        tolerance=0.06,
         make_plots=not args.no_plots,
     )
     if (
-        int(analysis_metrics["raw_observations"]) != EXPECTED_OBSERVATIONS
-        or int(analysis_metrics["tracks"]) != EXPECTED_TRACKS
-        or int(analysis_metrics["masked_frames"]) != len(EXPECTED_MASKED_FRAMES)
+        int(analysis_metrics["peaks"]) != EXPECTED_OBSERVATIONS
+        or int(analysis_metrics["per_anchor_peak_maps"]) != EXPECTED_OBSERVATIONS
+        or int(analysis_metrics["registered_frames"]) != len(EXPECTED_MASKED_FRAMES)
+        or analysis_metrics["track_used_for_selection_grouping_or_scoring"]
     ):
-        raise RuntimeError("existing downstream analyzer returned unexpected scope")
+        raise RuntimeError("all-peak downstream analyzer returned unexpected scope")
 
     source_paths = [
         kept_path,
@@ -695,7 +745,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         masked_dir / "_geometry.poni",
         Path(__file__).resolve(),
         Path(nonlinear.__file__).resolve(),
-        SCRIPT_DIR / "single_global_per_peak.py",
+        SCRIPT_DIR / "all_peak_frame_correlations.py",
     ]
     source_hashes = [
         {
@@ -723,7 +773,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "downstream_analysis": metrics_without_rows,
         "plots_generated": not args.no_plots,
         "location_semantics": (
-            "unchanged frozen curated coordinates; independent of intensity transform"
+            "all cross-frame local peaks; radial 2theta similarity; independent of intensity transform"
+        ),
+        "peak_semantics": (
+            "275 independent curated observations; track is provenance only"
         ),
     }
     _write_json(output_root / "RUN_COMPLETE.json", completion)
@@ -732,4 +785,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -22,9 +22,12 @@ os.environ.setdefault(
 
 import nonlinear_intensity_preprocessing as nonlinear  # noqa: E402
 import run_single_crystal_transformed_roi_correlations as runner  # noqa: E402
-from single_global_per_peak import (  # noqa: E402
-    collapse_frame_track_rows,
-    symmetric_similarity_matrix,
+import generate_single_crystal_all_peak_correlation_waterfalls as waterfall  # noqa: E402
+from all_peak_frame_correlations import (  # noqa: E402
+    assign_local_peak_ids,
+    build_anchor_peak_frame_slot_matrices,
+    build_frame_slot_grids,
+    group_peaks_by_frame,
 )
 
 
@@ -180,7 +183,7 @@ class TransformedSingleCrystalROITests(unittest.TestCase):
         self.assertEqual(noise, 1.0)
         self.assertAlmostEqual(spec.epsilon, (1.0 / 2.5) ** 2, places=15)
 
-    def test_rows_feed_existing_duplicate_median_and_minmax_similarity(self) -> None:
+    def test_rows_preserve_every_peak_and_ignore_track_for_identity(self) -> None:
         metadata = {
             0: {
                 "orientation": "orientation_10deg",
@@ -218,21 +221,59 @@ class TransformedSingleCrystalROITests(unittest.TestCase):
             noise_floor=1.0,
         )
         rows, _ = runner.build_transformed_rows(payloads, spec, metadata)
-        collapsed = collapse_frame_track_rows(rows)
-
         self.assertEqual(len(rows), 2)
-        self.assertEqual(len(collapsed), 1)
-        expected_observation_means = [0.5, 1.0]
-        self.assertAlmostEqual(
-            collapsed[0]["normalized_area_median_counts_per_s_per_pixel"],
-            np.median(expected_observation_means),
-            places=15,
+        self.assertEqual([row["track"] for row in rows], [7, 7])
+        self.assertEqual(
+            [row["integrated_area"] for row in rows],
+            [0.5, 1.0],
         )
-        matrix = symmetric_similarity_matrix(
-            np.asarray([0.75, 0.375]),
-            location=False,
+        peaks = assign_local_peak_ids(rows, "single_crystal")
+        self.assertEqual([row["peak_id"] for row in peaks], ["p0,1", "p0,2"])
+
+    def test_all_peak_map_compares_every_other_frame_peak(self) -> None:
+        raw = [
+            {
+                "frame": 0,
+                "obs_row": 1,
+                "track": 4,
+                "two_theta_deg": 10.0,
+                "azim_deg": 1.0,
+                "integrated_area": 0.5,
+            },
+            {
+                "frame": 0,
+                "obs_row": 2,
+                "track": 4,
+                "two_theta_deg": 11.0,
+                "azim_deg": 2.0,
+                "integrated_area": 1.0,
+            },
+            {
+                "frame": 4,
+                "obs_row": 3,
+                "track": 99,
+                "two_theta_deg": 10.03,
+                "azim_deg": 3.0,
+                "integrated_area": 0.25,
+            },
+        ]
+        peaks = assign_local_peak_ids(raw, "single_crystal")
+        grouped = group_peaks_by_frame(peaks)
+        layout, positions, areas = build_frame_slot_grids(
+            grouped,
+            [
+                {"frame": 0, "scan": "a", "pressure_GPa": 1.0},
+                {"frame": 4, "scan": "b", "pressure_GPa": 2.0},
+            ],
         )
-        self.assertEqual(matrix[0, 1], 0.5)
+        location, area = build_anchor_peak_frame_slot_matrices(
+            peaks[0], layout, positions, areas, 0.06
+        )
+        self.assertEqual(location.shape, (2, 2))
+        self.assertTrue(np.all(np.isnan(location[0])))
+        self.assertAlmostEqual(location[1, 0], 0.5)
+        self.assertAlmostEqual(area[1, 0], 0.5)
+        self.assertTrue(np.isnan(location[1, 1]))
 
     def test_cli_accepts_log_mode_and_output(self) -> None:
         parsed = runner.parse_args(
@@ -247,6 +288,18 @@ class TransformedSingleCrystalROITests(unittest.TestCase):
         self.assertEqual(parsed.mode, nonlinear.LOG_SQUARED)
         self.assertEqual(parsed.out_dir, Path("result"))
         self.assertTrue(parsed.no_plots)
+
+    def test_waterfall_support_lanes_preserve_overlapping_peaks(self) -> None:
+        peaks = [
+            {"peak_id": "p0,1", "q_A^-1": "4.0", "halfwidth_q_A^-1": "0.2"},
+            {"peak_id": "p0,2", "q_A^-1": "4.1", "halfwidth_q_A^-1": "0.2"},
+            {"peak_id": "p0,3", "q_A^-1": "5.0", "halfwidth_q_A^-1": "0.1"},
+        ]
+        lanes = waterfall.assign_interval_lanes(peaks)
+        self.assertNotEqual(lanes[0], lanes[1])
+        self.assertEqual(lanes[0], lanes[2])
+        left, right = waterfall.peak_support(peaks[0])
+        self.assertLess(left, right)
 
 
 if __name__ == "__main__":

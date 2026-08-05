@@ -66,9 +66,9 @@ index. The implementation keeps `Log²` correlation calculation separate from
 
 ## Verification record
 
-- Index build: PASS — 1,547 Log² PlotRecords, 1,547 Assets, 0 errors, 0 warnings.
+- Index build: PASS — 1,942 Log² PlotRecords, 1,942 Assets, 0 errors, 0 warnings.
 - Production build: PASS.
-- Automated tests: 12/12 PASS.
+- Automated tests: 15/15 PASS.
 - Browser console: 0 warnings or errors.
 - Desktop width: 1568 px viewport and 1568 px document width.
 - Mobile width: 390 px viewport and 390 px document width.

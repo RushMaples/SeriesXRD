@@ -5,9 +5,9 @@
 The active result mapping is
 `../configs/uote-formal-qwidth075.json`. The frontend currently indexes:
 
-- `results/uote_nonlinear_squared_qwidth075_comparison_20260803`;
-- its transformed-profile powder waterfall suite;
-- its Log-correlation/original-positive-profile powder waterfall suite;
+- powder/window sources from `uote_nonlinear_squared_qwidth075_comparison_20260803`;
+- `results/uote_single_crystal_all_peak_log_squared_20260805`;
+- powder and single-crystal Log-correlation/original-positive waterfalls.
 
 For a powder peak centered at (q_i), the formal support is
 
@@ -38,8 +38,12 @@ zero denominators therefore produce the finite correlation value 0.
   └─ distinct-frame mean per pressure-level peak
        └─ 280 anchor maps over 19 pressure levels
 
-curated single-crystal observations
-  └─ 2D ellipse extraction + exposure normalization + Log²
+275 curated single-crystal ROI observations / 12 masked frames
+  ├─ detector + frame mask, radial sideband, exposure normalization
+  ├─ fixed pooled Q99.5 scaling + per-pixel Log²
+  ├─ deterministic frame-local peak IDs; track is provenance only
+  └─ complete cross-frame Cartesian product
+       └─ 275 anchor maps, each 12 frames × 35 local peak slots
 
 1,060 accepted powder frames + single-crystal frame set
   └─ fixed windows 0–5, 1–6, ..., 27–32 degrees
@@ -69,8 +73,9 @@ remains 0.6 for reproducibility.
 
 Entrypoint: `run_single_crystal_transformed_roi_correlations.py`.
 
-This uses curated 2D ellipse observations and is scientifically independent of
-the powder q-width factor.
+This uses curated 2D ROI observations and is scientifically independent of the
+powder q-width factor. All 275 observations remain independent peaks; no track
+collapse, recurrence threshold, or track-based scoring is allowed.
 
 ### Window correlations
 
@@ -84,24 +89,25 @@ window results.
 ### Assembly and validation
 
 `assemble_denoised_core_science_root.py` assembles one compact tree per
-transform. Location, unaffected window products, and unaffected single-crystal
-products may be hardlinked from validated sources; reuse is recorded by
-SHA-256 and inode provenance.
+transform. Powder location and unchanged window products may be hardlinked
+from validated sources. Single-crystal area and location are taken together
+from the 275-anchor run; reuse is recorded by SHA-256 and inode provenance.
 
 `validate_package_denoised_correlation_suites.py` checks hierarchy, counts,
 score ranges, CSV/PNG pairing, strict-lower matrices, and location invariance.
 
-### Powder waterfalls
+### Original-XY waterfalls
 
 Entrypoint: `generate_denoised_peak_correlation_waterfall.py`.
 
-- `correlation_transform`: curve and fill height use the transformed profile.
-- `original_positive`: color remains the Log² correlation value, while
-  height uses measurement-normalized positive spots signal before transform.
+The explorer retains only `original_positive`: color is the Log² correlation
+value, while height uses positive source XY signal before the nonlinear
+transform. The single-crystal entrypoint is
+`generate_single_crystal_all_peak_correlation_waterfalls.py`; it joins every
+target frame/local peak and writes 275 validated plots.
 
 `validate_complete_formal_composite_waterfalls.py` audits plot, score,
-support, mapping, and master-index contracts. The current indexed waterfall
-deliverables are powder-only.
+support, mapping, and master-index contracts for powder.
 
 ## Expected Log² formal output counts
 
@@ -111,8 +117,8 @@ deliverables are powder-only.
 | Powder location | 280 | 280 |
 | Powder across frames | 168 | 168 |
 | Powder within frame | 40 | 40 |
-| Single ROI area | 75 | 75 |
-| Single location | 75 | 75 |
+| Single ROI area | 275 | 275 |
+| Single location | 275 | 275 |
 | Single across frames | 57 | 57 |
 | Single within frame | 12 | 12 |
 
@@ -121,7 +127,8 @@ deliverables are powder-only.
 From `correlation_mapping/`:
 
 ```bash
-python3 correlation_scripts/correlation_workspace.py status
+CORRELATION_RESULTS_ROOT=/path/to/correlation/results \
+  python3 correlation_scripts/correlation_workspace.py status
 python3 correlation_scripts/correlation_workspace.py check-code
 python3 correlation_scripts/correlation_workspace.py commands
 ```

@@ -25,10 +25,13 @@ const DATA_ROOT = path.join(EXPLORER_ROOT, 'data');
 
 const FORMAL_RUN_ID = 'uote_nonlinear_squared_qwidth075_comparison_20260803';
 const FORMAL_ROOT = path.join(RESULTS_ROOT, FORMAL_RUN_ID);
-const TRANSFORMED_WATERFALL_RUN_ID = 'waterfall_complete_formal_composite_qwidth075_20260803';
-const TRANSFORMED_WATERFALL_ROOT = path.join(FORMAL_ROOT, TRANSFORMED_WATERFALL_RUN_ID);
 const ORIGINAL_WATERFALL_RUN_ID = 'waterfall_log_correlation_on_original_profiles_qwidth075_20260804';
 const ORIGINAL_WATERFALL_ROOT = path.join(FORMAL_ROOT, ORIGINAL_WATERFALL_RUN_ID);
+const SINGLE_RUN_ID = 'uote_single_crystal_all_peak_log_squared_20260805';
+const SINGLE_ROOT = path.join(RESULTS_ROOT, SINGLE_RUN_ID);
+const SINGLE_ANALYSIS_ROOT = path.join(SINGLE_ROOT, 'single_crystal', 'all_peak_log_squared');
+const SINGLE_WATERFALL_RUN_ID = 'single_crystal_all_peak_original_xy_waterfalls';
+const SINGLE_WATERFALL_ROOT = path.join(SINGLE_ROOT, 'waterfall_original_xy');
 const MODES = ['log_squared'];
 const SAMPLES = ['powder', 'single_crystal'];
 const FAMILIES = [
@@ -39,10 +42,10 @@ const FAMILIES = [
 ];
 
 const EXPECTED = {
-  curated_total: 1547,
-  formal_main_total: 987,
-  transformed_waterfalls: 280,
-  original_profile_waterfalls: 280,
+  curated_total: 1942,
+  formal_main_total: 1387,
+  powder_original_profile_waterfalls: 280,
+  original_profile_waterfalls: 555,
   per_transform: {
     powder: {
       location: 280,
@@ -51,8 +54,8 @@ const EXPECTED = {
       window_to_window_within_same_frame: 40,
     },
     single_crystal: {
-      location: 75,
-      roi_area: 75,
+      location: 275,
+      roi_area: 275,
       window_to_window_across_frames: 57,
       window_to_window_within_same_frame: 12,
     },
@@ -274,35 +277,19 @@ function parsePowderAnchorToken(token, mode, metadata) {
   };
 }
 
-function loadSingleTrackMetadata(mode, manifestRows) {
-  const sourceRow = manifestRows.find(
-    (row) => row.sample === 'single_crystal' && row.category === 'roi_area' && row.destination_relative.endsWith('track_000.png'),
-  );
-  if (!sourceRow || !existsSync(sourceRow.source_absolute)) {
-    warnings.push(`Could not locate single-crystal source metadata for ${mode}`);
-    return new Map();
-  }
-  const metadataRoot = path.dirname(path.dirname(sourceRow.source_absolute));
-  const summaryPath = path.join(metadataRoot, 'track_summary.csv');
-  if (!existsSync(summaryPath)) {
-    warnings.push(`Missing single-crystal track_summary.csv for ${mode}: ${summaryPath}`);
-    return new Map();
-  }
-  return new Map(readCsv(summaryPath).map((row) => [Number(row.track), row]));
-}
-
-function singleTrackObject(trackNumber, summary) {
+function singlePeakObject(row) {
   return {
-    id: `track_${String(trackNumber).padStart(3, '0')}`,
-    source_track: trackNumber,
-    frame_count: numberOrNull(summary?.frame_count),
-    pressure_points: numberOrNull(summary?.pressure_points),
-    pressure_min_gpa: numberOrNull(summary?.pressure_min_GPa),
-    pressure_max_gpa: numberOrNull(summary?.pressure_max_GPa),
-    orientations_observed: summary?.orientations_observed || null,
-    branches_observed: summary?.branches_observed || null,
-    status: summary?.status || null,
-    observed_d_median_a: numberOrNull(summary?.observed_d_median_A),
+    id: row.peak_id,
+    frame: Number(row.frame),
+    local_peak_index: Number(row.local_peak_index),
+    pressure_gpa: numberOrNull(row.pressure_GPa),
+    two_theta_deg: numberOrNull(row.two_theta_deg),
+    q: numberOrNull(row['q_A^-1']),
+    azimuth_deg: numberOrNull(row.azim_deg),
+    source_track_provenance_only: numberOrNull(row.track),
+    observation_row: numberOrNull(row.obs_row),
+    transformed_roi_area: numberOrNull(row.integrated_area),
+    area_unit: row.area_unit,
   };
 }
 
@@ -374,10 +361,12 @@ function buildFormalMain() {
   for (const mode of MODES) {
     const manifest = loadFormalManifest(mode);
     const powderMetadata = loadPowderMetadata(mode);
-    const singleMetadata = loadSingleTrackMetadata(mode, manifest.rows);
     const modeRoot = path.join(FORMAL_ROOT, mode);
     for (const sample of SAMPLES) {
       for (const category of FAMILIES) {
+        // The former 75-track single-crystal peak maps are superseded by the
+        // independent 275-peak run indexed in buildSingleAllPeak().
+        if (sample === 'single_crystal' && (category === 'roi_area' || category === 'location')) continue;
         const categoryRoot = path.join(modeRoot, sample, category);
         const images = listFilesRecursive(categoryRoot, (filePath) => filePath.endsWith('.png'));
         for (const imagePath of images) {
@@ -408,14 +397,6 @@ function buildFormalMain() {
             entityType = 'powder_pressure_peak_anchor';
             matrixSemantics = 'anchor_to_all_other_pressures; anchor-pressure row and absent peak slots are blank; explicit 0 is computed zero';
             title = `${sampleLabel(sample)} · ${transformLabel(mode)} · ${category === 'roi_area' ? 'ROI area' : 'Location'} · ${pressureGpa} GPa peak ${anchor?.local_peak_index}`;
-          } else if (category === 'roi_area' || category === 'location') {
-            const trackMatch = base.match(/^track_(\d{3})$/);
-            invariant(Boolean(trackMatch), `Could not parse single-crystal track filename: ${relativeImage}`);
-            const trackNumber = trackMatch ? Number(trackMatch[1]) : null;
-            track = trackNumber === null ? null : singleTrackObject(trackNumber, singleMetadata.get(trackNumber));
-            entityType = 'single_crystal_track';
-            matrixSemantics = 'strict lower frame-pair triangle; diagonal/upper and frames without this track are blank';
-            title = `${sampleLabel(sample)} · ${transformLabel(mode)} · ${category === 'roi_area' ? 'ROI area' : 'Location'} · ${track?.id ?? base}`;
           } else {
             const classified = classifyWindow(category, sample, categoryRoot, imagePath);
             ({ channel, method, scope, pressure_gpa: pressureGpa, window: windowMetadata } = classified);
@@ -454,7 +435,7 @@ function buildFormalMain() {
             scope,
             pressure_gpa: pressureGpa,
             half_width_factor: category === 'roi_area' && sample === 'powder' ? 0.75 : null,
-            triangle_policy: category.startsWith('window_') || sample === 'single_crystal' ? 'strict_lower_no_diagonal' : 'not_applicable',
+            triangle_policy: category.startsWith('window_') ? 'strict_lower_no_diagonal' : 'not_applicable',
             matrix_semantics: matrixSemantics,
             tags: makeTags([
               sample,
@@ -476,6 +457,136 @@ function buildFormalMain() {
         }
       }
     }
+  }
+}
+
+function loadSingleAllPeakContext() {
+  const peaks = readCsv(path.join(SINGLE_ANALYSIS_ROOT, 'peak_registry.csv'));
+  const anchors = readCsv(path.join(SINGLE_ANALYSIS_ROOT, 'per_anchor_peak_map_index.csv'));
+  invariant(peaks.length === 275, `Single-crystal registry: expected 275 peaks, found ${peaks.length}`);
+  invariant(anchors.length === 275, `Single-crystal index: expected 275 anchors, found ${anchors.length}`);
+  const byFrameSlot = new Map(
+    peaks.map((row) => [`${Number(row.frame)}:${Number(row.local_peak_index)}`, row]),
+  );
+  const byPeakId = new Map(peaks.map((row) => [row.peak_id, row]));
+  return { peaks, anchors, byFrameSlot, byPeakId };
+}
+
+function buildSingleAllPeak(context) {
+  for (const family of ['location', 'roi_area']) {
+    const pngField = family === 'location' ? 'location_png' : 'area_png';
+    const csvField = family === 'location' ? 'location_csv' : 'area_csv';
+    for (const anchorRow of context.anchors) {
+      const key = `${Number(anchorRow.anchor_frame)}:${Number(anchorRow.anchor_local_peak)}`;
+      const peakRow = context.byFrameSlot.get(key);
+      invariant(Boolean(peakRow), `Missing single-crystal peak metadata for ${key}`);
+      const anchor = peakRow ? singlePeakObject(peakRow) : null;
+      const imagePath = path.join(SINGLE_ANALYSIS_ROOT, anchorRow[pngField]);
+      const matrixPath = path.join(SINGLE_ANALYSIS_ROOT, anchorRow[csvField]);
+      const assetId = addAsset(imagePath);
+      addRecord({
+        id: `single-all-peak:log_squared:${family}:${anchorRow.anchor_peak_id}`,
+        title: `Single crystal · Log-squared · ${family === 'roi_area' ? 'ROI area' : 'Location'} · ${anchor?.pressure_gpa} GPa frame ${anchor?.frame} peak ${anchor?.local_peak_index}`,
+        asset_id: assetId,
+        image_path: imagePath,
+        image_path_relative: relativeToCorrelations(imagePath),
+        companion_paths: [addCompanion('matrix_csv', matrixPath)],
+        run_id: SINGLE_RUN_ID,
+        result_status: 'current_formal',
+        validation_status: 'PASS',
+        sample: 'single_crystal',
+        correlation_transform: 'log_squared',
+        metric_transform_dependency: family !== 'location',
+        correlation_family: family,
+        visualization_type: 'heatmap',
+        display_profile_domain: 'not_applicable',
+        entity_type: 'single_crystal_frame_local_peak_anchor',
+        anchor,
+        track: null,
+        window: null,
+        channel: 'spots',
+        method: family === 'roi_area' ? 'min_max_log_squared_roi_area' : 'radial_location_tolerance',
+        scope: 'all_other_frames_all_local_peaks',
+        pressure_gpa: anchor?.pressure_gpa ?? null,
+        half_width_factor: null,
+        triangle_policy: 'anchor_frame_row_blank',
+        matrix_semantics: '12 registered frame rows × 35 frame-local peak slots; every other-frame peak is scored; absent slots and the anchor frame are blank; source track is provenance only.',
+        tags: makeTags([
+          'single_crystal',
+          'log_squared',
+          family,
+          'all peaks',
+          `${anchor?.pressure_gpa} GPa`,
+          `frame ${anchor?.frame}`,
+          `peak ${anchor?.local_peak_index}`,
+          anchor?.id,
+        ]),
+        classification_warnings: [],
+      });
+    }
+  }
+}
+
+function buildSingleOriginalWaterfalls(context) {
+  const indexPath = path.join(SINGLE_WATERFALL_ROOT, 'WATERFALL_INDEX.csv');
+  const validationPath = path.join(SINGLE_WATERFALL_ROOT, 'SUITE_VALIDATION.json');
+  const rows = readCsv(indexPath);
+  invariant(rows.length === 275, `Single-crystal waterfalls: expected 275, found ${rows.length}`);
+  for (const row of rows) {
+    const peakRow = context.byPeakId.get(row.anchor_peak_id);
+    invariant(Boolean(peakRow), `Missing waterfall peak metadata for ${row.anchor_peak_id}`);
+    const anchor = peakRow ? singlePeakObject(peakRow) : null;
+    const imagePath = path.join(SINGLE_WATERFALL_ROOT, row.png);
+    addRecord({
+      id: `waterfall:${SINGLE_WATERFALL_RUN_ID}:log_squared:${row.anchor_peak_id}`,
+      title: `Single crystal · Log-squared ROI waterfall · ${anchor?.pressure_gpa} GPa frame ${anchor?.frame} peak ${anchor?.local_peak_index} · original XY`,
+      asset_id: addAsset(imagePath),
+      image_path: imagePath,
+      image_path_relative: relativeToCorrelations(imagePath),
+      companion_paths: [
+        addCompanion('matrix_csv', row.source_area_matrix),
+        addCompanion('collection_index_csv', indexPath),
+        addCompanion('validation_json', validationPath),
+      ],
+      run_id: SINGLE_WATERFALL_RUN_ID,
+      parent_run_id: SINGLE_RUN_ID,
+      result_status: 'current_formal',
+      validation_status: 'PASS',
+      sample: 'single_crystal',
+      correlation_transform: 'log_squared',
+      metric_transform_dependency: true,
+      correlation_family: 'roi_area',
+      visualization_type: 'waterfall_shaded',
+      display_profile_domain: 'original_positive',
+      entity_type: 'single_crystal_frame_local_peak_anchor',
+      anchor,
+      track: null,
+      window: null,
+      channel: 'spots',
+      method: 'min_max_log_squared_roi_area',
+      scope: 'all_registered_frames',
+      pressure_gpa: anchor?.pressure_gpa ?? null,
+      half_width_factor: null,
+      trace_source: 'original_spot_masked_xy',
+      display_profile_source: 'original_positive_spot_masked_xy_per_tiff_exposure',
+      display_profile_construction: 'The source masked XY intensity is positive-clipped and divided by TIFF exposure. One shared 99.5% display cap sets waterfall height; no nonlinear transform changes the displayed curve.',
+      waterfall: {
+        cross_frame_colored_cells: numberOrNull(row.joined_cross_frame_peak_cells),
+        pressure_rows: 12,
+      },
+      matrix_semantics: 'Colors come from the Log-squared all-peak ROI-area matrix; curve height comes from the original spot-masked XY file. Every projected peak also has a lossless support ribbon.',
+      tags: makeTags([
+        'single_crystal',
+        'log_squared',
+        'roi_area',
+        'waterfall',
+        'original xy',
+        'all peaks',
+        `${anchor?.pressure_gpa} GPa`,
+        `peak ${anchor?.local_peak_index}`,
+      ]),
+      classification_warnings: [],
+    });
   }
 }
 
@@ -594,18 +705,19 @@ function nestedCounts(items, fields) {
 
 function countFormalMain(mode, sample, family) {
   return records.filter(
-    (record) => record.run_id === FORMAL_RUN_ID
+    (record) => record.visualization_type === 'heatmap'
       && record.correlation_transform === mode
       && record.sample === sample
       && record.correlation_family === family
-      && record.visualization_type === 'heatmap',
   ).length;
 }
 
 function buildAudit(assets) {
-  const formalMain = records.filter((record) => record.run_id === FORMAL_RUN_ID).length;
-  const transformedWaterfalls = records.filter((record) => record.run_id === TRANSFORMED_WATERFALL_RUN_ID).length;
-  const originalWaterfalls = records.filter((record) => record.run_id === ORIGINAL_WATERFALL_RUN_ID).length;
+  const formalMain = records.filter((record) => record.visualization_type === 'heatmap').length;
+  const originalWaterfalls = records.filter(
+    (record) => record.visualization_type === 'waterfall_shaded'
+      && record.display_profile_domain === 'original_positive',
+  ).length;
   const exactCountChecks = {};
   for (const mode of MODES) {
     for (const sample of SAMPLES) {
@@ -634,7 +746,6 @@ function buildAudit(assets) {
   const checks = {
     curated_total: { expected: EXPECTED.curated_total, actual: records.length, pass: records.length === EXPECTED.curated_total },
     formal_main_total: { expected: EXPECTED.formal_main_total, actual: formalMain, pass: formalMain === EXPECTED.formal_main_total },
-    transformed_waterfalls: { expected: EXPECTED.transformed_waterfalls, actual: transformedWaterfalls, pass: transformedWaterfalls === EXPECTED.transformed_waterfalls },
     original_profile_waterfalls: { expected: EXPECTED.original_profile_waterfalls, actual: originalWaterfalls, pass: originalWaterfalls === EXPECTED.original_profile_waterfalls },
     log_squared_only: {
       pass: records.every((record) => record.correlation_transform === 'log_squared'),
@@ -655,8 +766,8 @@ function buildAudit(assets) {
     all_gallery_images_under_allowlist: {
       pass: records.every((record) =>
         under(path.join(FORMAL_ROOT, 'log_squared'), record.image_path)
-        || under(TRANSFORMED_WATERFALL_ROOT, record.image_path)
-        || under(ORIGINAL_WATERFALL_ROOT, record.image_path)),
+        || under(ORIGINAL_WATERFALL_ROOT, record.image_path)
+        || under(SINGLE_ROOT, record.image_path)),
     },
   };
   const allChecksPass = Object.values(checks).every((check) => check.pass);
@@ -693,23 +804,19 @@ function writeJsonAtomic(filePath, value) {
 }
 
 function main() {
-  for (const requiredRoot of [FORMAL_ROOT, TRANSFORMED_WATERFALL_ROOT, ORIGINAL_WATERFALL_ROOT]) {
+  for (const requiredRoot of [FORMAL_ROOT, ORIGINAL_WATERFALL_ROOT, SINGLE_ANALYSIS_ROOT, SINGLE_WATERFALL_ROOT]) {
     if (!existsSync(requiredRoot)) throw new Error(`Required result root does not exist: ${requiredRoot}`);
   }
   buildFormalMain();
-  buildWaterfallSuite({
-    suiteRoot: TRANSFORMED_WATERFALL_ROOT,
-    suiteRunId: TRANSFORMED_WATERFALL_RUN_ID,
-    expected: EXPECTED.transformed_waterfalls,
-    displayProfileDomain: 'correlation_transform',
-    allowedModes: ['log_squared'],
-  });
+  const singleContext = loadSingleAllPeakContext();
+  buildSingleAllPeak(singleContext);
   buildWaterfallSuite({
     suiteRoot: ORIGINAL_WATERFALL_ROOT,
     suiteRunId: ORIGINAL_WATERFALL_RUN_ID,
-    expected: EXPECTED.original_profile_waterfalls,
+    expected: EXPECTED.powder_original_profile_waterfalls,
     displayProfileDomain: 'original_positive',
   });
+  buildSingleOriginalWaterfalls(singleContext);
 
   records.sort((a, b) => a.id.localeCompare(b.id));
   const assets = finaliseAssets();
@@ -721,8 +828,8 @@ function main() {
     results_root: RESULTS_ROOT,
     result_roots: {
       current_formal: FORMAL_ROOT,
-      transformed_waterfalls: TRANSFORMED_WATERFALL_ROOT,
       original_profile_waterfalls: ORIGINAL_WATERFALL_ROOT,
+      single_crystal_all_peak: SINGLE_ROOT,
     },
     scope: {
       policy: 'curated_allowlist',
@@ -731,7 +838,7 @@ function main() {
         'validation files as standalone plots',
         'intermediate quicklooks',
       ],
-      note: 'Only Log-squared results are indexed. Both the Log-denoised transformed-profile waterfall and the Log correlation shown on original-positive profiles are available. Companion files may come from whitelisted result metadata, but no _sources PNG is a gallery record.',
+      note: 'Only Log-squared correlation results are indexed. Waterfalls show Log-squared correlation colors on original-positive XY-derived profiles; obsolete transformed-profile and 75-track single-crystal plots are excluded.',
     },
     summary: {
       plot_records: records.length,

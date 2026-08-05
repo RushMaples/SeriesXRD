@@ -25,8 +25,8 @@ measurements:
    ROI-area features between pressures.
 2. **Peak-location correlation** — compares the positions of matched peaks;
    it is intentionally independent of the intensity transform.
-3. **Original-XY shaded waterfalls** — draws the original-positive powder XY
-   profile while using the Log² ROI correlation as the peak color.
+3. **Original-XY shaded waterfalls** — draws original-positive powder or
+   single-crystal XY profiles while using Log² ROI correlation as peak color.
 4. **Window-to-window correlation across frames** — compares the same angular
    window between pressure frames using direct and ACF-based fingerprints.
 5. **Window-to-window correlation within a frame** — compares different
@@ -96,6 +96,15 @@ The frozen powder parameters are:
 | Epsilon | `1.1690445418573338e-07` |
 | Epsilon floor | `1e-12` |
 
+The frozen single-crystal raw-TIFF ROI parameters are pooled independently:
+
+| Parameter | Value |
+|---|---:|
+| Curated ROI observations | `275` |
+| ROI pixel instances | `90,398` |
+| Fixed positive Q99.5 scale | `333.7071235707903` |
+| Sideband noise floor | `0.1976865895529851` |
+
 Implementation: [`nonlinear_intensity_preprocessing.py`](correlation_scripts/nonlinear_intensity_preprocessing.py).
 
 ### 2. Powder ROI-area correlation
@@ -136,16 +145,16 @@ Entrypoint:
 
 ### 3. Peak-location correlation
 
-Powder and the retained single-crystal track plots use the frozen 2θ location
-similarity:
+Powder and single-crystal all-peak maps use the frozen 2θ location similarity:
 
 ```text
 location_similarity = clip(1 - |2θᵢ - 2θⱼ| / 0.06°, 0, 1)
 ```
 
-Location is not changed by Log² preprocessing. The validator therefore checks
-all 355 Log² location matrices against the previous formal untransformed
-baseline, including relative paths, hashes, and numerical values.
+Location is not changed by Log² preprocessing. Powder location matrices are
+checked against the previous formal baseline. Single-crystal location maps
+have a new 275-anchor rectangular layout, so their independent all-Cartesian-
+cell contract validates the formula, masks, shapes, counts, and score range.
 
 ### 4. Single-crystal ROI-area and location correlation
 
@@ -156,18 +165,23 @@ TIFF exposure, and all 90,398 valid ROI-pixel instances share one pooled Q99.5
 scale. Log² is applied per pixel, and the mean transformed pixel value becomes
 the observation's ROI-area feature.
 
-Duplicate observations are median-collapsed within a global track/frame. For
-two finite non-negative transformed area features, the symmetric score is:
+All 275 observations remain independent peaks. Within each of the 12 curated
+frames, peaks are sorted deterministically by 2θ, azimuth, and source row and
+assigned local IDs such as `p15,9`. The source `track` value is retained only
+for provenance; it is never used to match, group, filter, or score peaks.
+
+For every pair of different frames, the runner evaluates the complete
+Cartesian product of their local peaks. For two finite non-negative Log² ROI
+features, the symmetric score is:
 
 ```text
 area_similarity = min(Aᵢ, Aⱼ) / max(Aᵢ, Aⱼ)
 ```
 
-The 75 retained heatmaps represent global tracks, not one independent anchor
-per pressure. A track may contain several pressure frames and orientations.
-In the organized result folder, a track image is therefore copied into every
-GPa folder actually represented by that track; assigning it to only one
-pressure would be scientifically misleading.
+Each peak is then used as an anchor. Its map contains 12 registered frame rows
+and 35 local-peak columns (the maximum peak count in any frame). The anchor's
+own frame row and nonexistent local slots are blank; every peak in every other
+frame is scored. This produces 275 ROI-area and 275 location heatmaps.
 
 Entrypoint:
 [`run_single_crystal_transformed_roi_correlations.py`](correlation_scripts/run_single_crystal_transformed_roi_correlations.py).
@@ -195,39 +209,44 @@ same frame and then apply the frozen scan-support aggregation rule. Powder
 contains `spots` and `fit_control` channels; single crystal contains the
 `spots` channel.
 
-Only the strict lower triangle is presented for square single-crystal and
-window matrices. The diagonal and upper triangle are blank by design, and a
-missing value is not the same as a computed zero.
+Only the strict lower triangle is presented for square window matrices. The
+single-crystal peak maps are rectangular anchor-to-frame-slot maps and instead
+blank the anchor's whole frame row. A missing value is not the same as a
+computed zero.
 
 Entrypoint:
 [`run_transformed_integer_window_correlations.py`](correlation_scripts/run_transformed_integer_window_correlations.py).
 
-### 6. Original-XY shaded powder waterfalls
+### 6. Original-XY shaded waterfalls
 
-The committed waterfall suite contains 280 powder plots, one for every anchor.
-Each plot deliberately separates two domains:
+The committed waterfall suite contains 280 powder plots and 275
+single-crystal plots, one for every anchor. Each plot deliberately separates
+two domains:
 
 - **vertical profile height:** the measurement-normalized, positive-clipped
   spots-channel signal before the nonlinear Log² transform;
 - **peak color:** the formal directional Log² ROI correlation for the selected
   anchor.
 
-The two domains are joined exactly by `(pressure_gpa, local_peak_index)`. The
-profile reconstruction uses the same 519 formal observation components and
-the same q-width supports as the ROI calculation. Components are summed within
-a frame, averaged across distinct frames for each pressure-level peak, and the
-12–22 peak profiles at one pressure are summed into a common XY trace. All
-pressure traces share one display scale.
+The two domains are joined exactly by frame-local peak identity. For powder,
+the profile reconstruction uses the same 519 formal observation components
+and q-width supports as the ROI calculation. Components are summed within a
+frame, averaged across distinct frames for each pressure-level peak, and the
+12–22 peak profiles at one pressure are summed into a common XY trace. For
+single crystal,
+the displayed trace is read directly from each original
+`frame_XXXX_masked.xy`, positive-clipped, divided by its TIFF exposure, and
+placed on one shared display scale. Log² changes the correlation color only;
+it is not applied to the displayed single-crystal curve.
 
 Because azimuthally distinct spots can overlap after projection onto 1D 2θ,
 the colored fill alone is not lossless. A non-overlapping ribbon below each
 trace is the authoritative peak-to-correlation encoding.
 
-Only a powder original-XY waterfall has been validated. The repository does
-not fabricate a single-crystal waterfall.
-
-Entrypoint:
-[`generate_denoised_peak_correlation_waterfall.py`](correlation_scripts/generate_denoised_peak_correlation_waterfall.py).
+Entrypoints:
+[`generate_denoised_peak_correlation_waterfall.py`](correlation_scripts/generate_denoised_peak_correlation_waterfall.py)
+and
+[`generate_single_crystal_all_peak_correlation_waterfalls.py`](correlation_scripts/generate_single_crystal_all_peak_correlation_waterfalls.py).
 
 ## Curated PNG result folder
 
@@ -245,7 +264,7 @@ latest_log_squared_heatmaps_organized_20260805/
 └── single_crystal/
     ├── roi_area_correlation/{pressure}_GPa/
     ├── location_correlation/{pressure}_GPa/
-    ├── waterfall_original_xy_shaded/          # empty: no validated source
+    ├── waterfall_original_xy_shaded/{pressure}_GPa/
     ├── window_to_window_across_frames/{channel}/{method}/
     └── window_to_window_within_frames/{channel}/{method}/
 ```
@@ -257,16 +276,17 @@ latest_log_squared_heatmaps_organized_20260805/
 | Powder original-XY waterfall | 280 | 280 |
 | Powder across frames | 168 | 168 |
 | Powder within frames | 40 | 40 |
-| Single-crystal ROI area | 263 | 75 |
-| Single-crystal location | 263 | 75 |
+| Single-crystal ROI area | 275 | 275 |
+| Single-crystal location | 275 | 275 |
+| Single-crystal original-XY waterfall | 275 | 275 |
 | Single-crystal across frames | 57 | 57 |
 | Single-crystal within frames | 12 | 12 |
-| **Total** | **1,643** | **1,267** |
+| **Total** | **1,942** | **1,942** |
 
-The difference between physical files and unique sources is intentional: a
-single-crystal track is repeated in every pressure folder it spans. Powder
-ROI, location, and waterfall products cover 19 pressure folders;
-single-crystal ROI and location products cover 12 pressure folders.
+Each scientific image occurs once. Powder ROI, location, and waterfall
+products cover 19 pressure folders; single-crystal ROI, location, and
+waterfall products cover 12 pressure folders. Single-crystal placement uses
+the anchor peak's pressure, not a multi-pressure track identity.
 
 ## Installation
 
@@ -286,7 +306,8 @@ pytest. The raw experimental files are intentionally not committed.
 Before a run, inspect the active contract and verify the retained source tree:
 
 ```bash
-python3 correlation_scripts/correlation_workspace.py status
+CORRELATION_RESULTS_ROOT=/path/to/correlation/results \
+  python3 correlation_scripts/correlation_workspace.py status
 python3 correlation_scripts/correlation_workspace.py catalog
 python3 correlation_scripts/correlation_workspace.py check-code
 ```
@@ -373,7 +394,9 @@ python3 correlation_scripts/validate_package_denoised_correlation_suites.py \
 
 The validator checks hierarchy, exact counts, one-to-one PNG/CSV pairs,
 `[0,1]` score ranges, strict-lower matrix structure, absence of supplementary
-`1-r` diagnostics, and exact Log² location equivalence to the baseline.
+`1-r` diagnostics, and exact powder location equivalence to the baseline.
+The single-crystal runner separately fails closed unless all 275 anchors,
+cross-frame Cartesian cells, rectangular masks, and finite scores validate.
 Remove `--dry-run` only when validation files should be written.
 
 ### F. Generate the original-XY shaded waterfalls
@@ -401,6 +424,18 @@ python3 correlation_scripts/validate_complete_formal_composite_waterfalls.py \
 
 This validator writes index and validation files into the suite root; do not
 run it against a frozen result directory unless that write is intended.
+
+Generate the 275 single-crystal original-XY waterfalls from the all-peak run:
+
+```bash
+python3 correlation_scripts/generate_single_crystal_all_peak_correlation_waterfalls.py \
+  --analysis-root /path/to/work/single_crystal_log_squared/single_crystal/all_peak_log_squared \
+  --xy-root /path/to/single_crystal/Masked \
+  --out-dir /path/to/results/single_crystal_waterfall_original_xy
+```
+
+The script writes `WATERFALL_INDEX.csv` and `SUITE_VALIDATION.json` and refuses
+to finish if any cross-frame peak lacks a correlation value.
 
 ## Running the correlation explorer
 
@@ -456,11 +491,11 @@ python -m pytest
 The result set committed here was prepared after these gates passed:
 
 - correlation code-integrity check: PASS;
-- correlation unit tests: 117 passed;
+- correlation unit tests: 119 passed;
 - package-validator self-test: PASS;
 - real Log² package validation: PASS;
-- frontend index: 1,547 records, 0 errors, 0 warnings;
-- frontend tests: 14 passed;
+- frontend index: 1,942 records, 0 errors, 0 warnings;
+- frontend tests: 15 passed;
 - frontend production build: PASS;
 - full SeriesXRD suite: 168 passed, 2 skipped.
 

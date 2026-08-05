@@ -5,9 +5,9 @@ their recursive local dependencies, and direct regression coverage.
 
 ## Retained scope
 
-There are 42 top-level Python files:
+There are 43 top-level Python files:
 
-- 8 latest-result generation or validation entrypoints;
+- 9 latest-result generation or validation entrypoints;
 - 18 imported runtime dependencies;
 - 1 additional uniform output validator used by retained tests;
 - 14 regression-test modules;
@@ -26,14 +26,16 @@ in `CODE_INVENTORY.csv`.
 | Package assembly | `assemble_denoised_core_science_root.py` |
 | Package validation | `validate_package_denoised_correlation_suites.py` |
 | Powder waterfalls | `generate_denoised_peak_correlation_waterfall.py` |
+| Single-crystal all-peak waterfalls | `generate_single_crystal_all_peak_correlation_waterfalls.py` |
 | Waterfall validation | `validate_complete_formal_composite_waterfalls.py` |
 | Powder support audit | `audit_powder_qwidth_support_all_frames.py` |
 
-The current frontend indexes only the Log² portion of the formal c=0.75 package
-and two Log² powder waterfall displays. Alternative denoise experiments and
+The current frontend indexes only the Log² portion of the formal c=0.75 package,
+the 275-anchor single-crystal all-peak run, and original-XY waterfall displays.
+Alternative denoise experiments and
 their cross-transform transition suite were removed together with the
-Streamlit dashboard, single-crystal waterfall experiment, unshaded waterfall
-branch, generic BulkXRD adapters, workbook builders, and historical
+Streamlit dashboard, old 75-track single-crystal gallery, transformed-profile
+waterfalls, unshaded waterfall branch, generic BulkXRD adapters, workbook builders, and historical
 visualizations.
 
 ## Why older-looking modules remain
@@ -45,7 +47,7 @@ powder v8
 
 single-crystal ROI
   ├─ refinement helpers
-  ├─ global-per-peak helpers
+  ├─ all-peak frame-slot helpers
   └─ UOTe XY handoff helpers
 
 transformed integer windows
@@ -53,15 +55,18 @@ transformed integer windows
   └─ uniform v2/v2.1 core and input adapters
 ```
 
-These files are imported by current entrypoints. Their names reflect algorithm
-history, but they are runtime dependencies, not unused legacy code.
+`single_global_per_peak.py` remains only because the retained legacy
+refinement helper imports it; the active single-crystal runner does not use it
+for peak selection or scoring. Other older-looking files are current runtime
+dependencies whose names reflect algorithm history.
 
 ## Commands
 
 Run from the parent `correlation_mapping/` directory:
 
 ```bash
-python3 correlation_scripts/correlation_workspace.py status
+CORRELATION_RESULTS_ROOT=/path/to/correlation/results \
+  python3 correlation_scripts/correlation_workspace.py status
 python3 correlation_scripts/correlation_workspace.py catalog
 python3 correlation_scripts/correlation_workspace.py check-code
 python3 correlation_scripts/correlation_workspace.py commands

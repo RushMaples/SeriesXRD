@@ -11,6 +11,7 @@
         "assemble_denoised_core_science_root.py",
         "audit_powder_qwidth_support_all_frames.py",
         "generate_denoised_peak_correlation_waterfall.py",
+        "generate_single_crystal_all_peak_correlation_waterfalls.py",
         "pressure_level_peak_spots_absolute_anchor_iou_correlations_v8.py",
         "run_single_crystal_transformed_roi_correlations.py",
         "run_transformed_integer_window_correlations.py",

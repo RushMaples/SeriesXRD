@@ -22,28 +22,29 @@
     "assemble": "correlation_scripts/assemble_denoised_core_science_root.py",
     "package_validation": "correlation_scripts/validate_package_denoised_correlation_suites.py",
     "powder_waterfall": "correlation_scripts/generate_denoised_peak_correlation_waterfall.py",
+    "single_crystal_waterfall": "correlation_scripts/generate_single_crystal_all_peak_correlation_waterfalls.py",
     "waterfall_validation": "correlation_scripts/validate_complete_formal_composite_waterfalls.py",
     "support_audit": "correlation_scripts/audit_powder_qwidth_support_all_frames.py"
   },
   "required_legacy_dependencies": {
     "powder_v7_helpers": "correlation_scripts/pressure_level_peak_spots_qwidth_correlations_v7.py",
     "powder_v6_helpers": "correlation_scripts/pressure_level_peak_correlations_v6.py",
-    "single_track_core": "correlation_scripts/single_global_per_peak.py",
+    "legacy_single_track_core_not_used_by_all_peak_runner": "correlation_scripts/single_global_per_peak.py",
     "single_refinement_helpers": "correlation_scripts/run_refinement_legacy_correlations.py",
     "uniform_v2_runner": "correlation_scripts/run_uniform_xy_correlations.py",
     "uniform_v2_core": "correlation_scripts/uniform_peak_core.py",
     "uniform_window_core": "correlation_scripts/uniform_window_core.py"
   },
   "validated_results": {
-    "formal_comparison_root": "results/uote_nonlinear_squared_qwidth075_comparison_20260803",
-    "formal_log_suite": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/log_squared",
+    "powder_and_window_source_root": "results/uote_nonlinear_squared_qwidth075_comparison_20260803",
     "baseline_package": "results/uote_pressure_level_peak_spots_absolute_anchor_iou_integer_window_suite_20260730_v8/peak_maps/complete_correlation_results_by_sample",
-    "formal_completion": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/log_squared/RUN_COMPLETE.json",
-    "formal_validation": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/log_validation/VALIDATION_REPORT.json",
-    "transformed_waterfalls": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/waterfall_complete_formal_composite_qwidth075_20260803",
-    "transformed_waterfall_validation": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/waterfall_complete_formal_composite_qwidth075_20260803/MASTER_VALIDATION.json",
+    "all_peak_formal_suite": "results/uote_log_squared_all_peak_formal_20260805",
+    "all_peak_formal_validation": "results/uote_log_squared_all_peak_formal_validation_20260805/VALIDATION_REPORT.json",
     "log_original_profile_waterfalls": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/waterfall_log_correlation_on_original_profiles_qwidth075_20260804",
-    "log_original_profile_validation": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/waterfall_log_correlation_on_original_profiles_qwidth075_20260804/MASTER_VALIDATION.json"
+    "log_original_profile_validation": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/waterfall_log_correlation_on_original_profiles_qwidth075_20260804/MASTER_VALIDATION.json",
+    "single_crystal_all_peak_log_suite": "results/uote_single_crystal_all_peak_log_squared_20260805",
+    "single_crystal_all_peak_validation": "results/uote_single_crystal_all_peak_log_squared_20260805/single_crystal/all_peak_log_squared/validation_report.json",
+    "single_crystal_original_xy_waterfalls": "results/uote_single_crystal_all_peak_log_squared_20260805/waterfall_original_xy"
   },
   "expected_counts_per_transform": {
     "powder": {
@@ -53,8 +54,8 @@
       "window_to_window_within_same_frame": 40
     },
     "single_crystal": {
-      "roi_area": 75,
-      "location": 75,
+      "roi_area": 275,
+      "location": 275,
       "window_to_window_across_frames": 57,
       "window_to_window_within_same_frame": 12
     }
@@ -72,6 +73,7 @@
   "immutability_notes": [
     "Retained v6/v7 and uniform-v2 files are runtime dependencies of the Log² pipeline.",
     "Do not edit assembled result payloads in place: many files are hardlinked across result roots.",
-    "The previous untransformed package remains the location-matrix baseline."
+    "The previous untransformed package remains the powder location-matrix baseline.",
+    "Single-crystal source track IDs are provenance only; all 275 curated peaks are independent anchors."
   ]
 }

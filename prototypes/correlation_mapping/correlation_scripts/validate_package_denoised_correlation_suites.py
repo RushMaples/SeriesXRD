@@ -13,7 +13,8 @@ It verifies:
 * strict-lower-triangle window presentation;
 * one-to-one CSV/PNG pairing;
 * exclusion of supplementary one-minus-ACF diagnostic renderings;
-* byte and numerical equality of location matrices to the baseline.
+* byte and numerical equality of powder location matrices to the baseline;
+  single-crystal all-peak location is validated by its own Cartesian contract.
 
 With ``--output-dir`` it also writes a SHA256 package index, a JSON validation
 report, and a completion marker.  ``--dry-run`` performs every validation but
@@ -64,8 +65,8 @@ FORMAL_EXPECTATIONS = ExpectedCounts(
     peak_maps={
         ("powder", "roi_area"): 280,
         ("powder", "location"): 280,
-        ("single_crystal", "roi_area"): 75,
-        ("single_crystal", "location"): 75,
+        ("single_crystal", "roi_area"): 275,
+        ("single_crystal", "location"): 275,
     },
     # Powder has 84 spots + 84 fit-control primary across maps.  The separate
     # 28 one-minus-ACF renderings are supplementary diagnostics, not a fourth
@@ -125,7 +126,7 @@ def read_csv(path: Path) -> list[list[str]]:
 
 def peak_data_start_column(sample: str) -> int:
     # Powder anchor maps have pressure and peak-count metadata columns.
-    # Single-crystal square track maps have only the row-label column.
+    # Single-crystal all-peak rectangular maps have only the row-label column.
     return 2 if sample == "powder" else 1
 
 
@@ -695,11 +696,12 @@ def validate_location_against_baseline(
     label: str,
     abs_tolerance: float,
     rel_tolerance: float,
+    samples: Sequence[str] = SCIENCE_SAMPLES,
 ) -> dict[str, object]:
     mismatches: list[dict[str, object]] = []
     checked = 0
     expected_total = 0
-    for sample in SCIENCE_SAMPLES:
+    for sample in samples:
         suite_csvs, _ = collect_peak_files(suite_root, sample, "location")
         baseline_csvs, _ = collect_peak_files(baseline_root, sample, "location")
         suite_category = suite_root / sample / "location"
@@ -860,6 +862,7 @@ def run_validation(
         label="log_square_vs_baseline",
         abs_tolerance=comparison_abs_tolerance,
         rel_tolerance=comparison_rel_tolerance,
+        samples=("powder",),
     )
     checks = {
         "log_suite_passes": log_report["status"] == "PASS",
@@ -1068,10 +1071,10 @@ def run_self_test() -> None:
             raise AssertionError("nonblank diagonal was not rejected")
         synthetic_lower_matrix(bad_triangle, 0.5)
 
-        # A changed location value must be rejected even if its shape is valid.
+        # A changed powder location value must be rejected even if its shape is valid.
         bad_location = (
             log_root
-            / "single_crystal"
+            / "powder"
             / "location"
             / "matrices"
             / "map_000.csv"
@@ -1093,7 +1096,7 @@ def run_self_test() -> None:
         # A score outside its scientific range must be rejected.
         baseline_location = (
             baseline
-            / "single_crystal"
+            / "powder"
             / "location"
             / "matrices"
             / "map_000.csv"

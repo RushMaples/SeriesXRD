@@ -41,14 +41,14 @@ async function json(path, options) {
 test("metadata and default page expose the full audited index", async () => {
   const meta = await json("/api/meta");
   assert.equal(meta.response.status, 200);
-  assert.equal(meta.body.summary.plot_records, 1_547);
-  assert.equal(meta.body.summary.assets, 1_547);
+  assert.equal(meta.body.summary.plot_records, 1_942);
+  assert.equal(meta.body.summary.assets, 1_942);
   assert.equal(meta.body.audit_status, "PASS");
 
   const plots = await json("/api/plots?page_size=2");
   assert.equal(plots.response.status, 200);
-  assert.equal(plots.body.total, 1_547);
-  assert.equal(plots.body.index_total, 1_547);
+  assert.equal(plots.body.total, 1_942);
+  assert.equal(plots.body.index_total, 1_942);
   assert.equal(plots.body.items.length, 2);
   assert.ok(plots.body.items[0].image_url.startsWith("/api/plots/"));
 });
@@ -79,19 +79,19 @@ test("facet filters and scientific sorts operate on indexed fields", async () =>
   assert.deepEqual(peaks, [...peaks].sort((a, b) => a - b));
 });
 
-test("Log waterfall API exposes denoised and original-domain shading", async () => {
+test("Log waterfall API exposes only original-domain shading", async () => {
   const denoised = await json(
     "/api/plots?correlation_transform=log_squared&visualization_type=waterfall_shaded&display_profile_domain=correlation_transform&page_size=100",
   );
   assert.equal(denoised.response.status, 200);
-  assert.equal(denoised.body.total, 280);
+  assert.equal(denoised.body.total, 0);
   assert.ok(denoised.body.items.every((item) => item.display_profile_domain === "correlation_transform"));
 
   const original = await json(
     "/api/plots?correlation_transform=log_squared&visualization_type=waterfall_shaded&display_profile_domain=original_positive&page_size=100",
   );
   assert.equal(original.response.status, 200);
-  assert.equal(original.body.total, 280);
+  assert.equal(original.body.total, 555);
   assert.ok(original.body.items.every((item) => item.display_profile_domain === "original_positive"));
 });
 

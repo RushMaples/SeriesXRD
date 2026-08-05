@@ -14,11 +14,15 @@ The v8 runner imports v7 helpers, and v7 imports v6 helpers.
 
 ## Single-crystal dependency chain
 
+- `all_peak_frame_correlations.py`
 - `run_refinement_legacy_correlations.py`
 - `single_global_per_peak.py`
 - `run_uote_xy_handoff_correlations.py`
 
-These modules supply active single-crystal tracking and refinement functions.
+The active single-crystal runner uses the all-peak frame-slot functions and
+the refinement module's raw-data helpers. `single_global_per_peak.py` remains
+only as a dependency of the legacy refinement module; its track collapse is
+not used by the current 275-anchor result.
 
 ## Uniform compatibility layer
 

@@ -13,6 +13,7 @@ import ast
 import csv
 import hashlib
 import json
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -41,7 +42,12 @@ def sha256(path: Path) -> str:
 
 def resolve_correlations_path(value: str) -> Path:
     path = Path(value)
-    return path if path.is_absolute() else CORRELATIONS_ROOT / path
+    if path.is_absolute():
+        return path
+    results_override = os.environ.get("CORRELATION_RESULTS_ROOT")
+    if results_override and path.parts and path.parts[0] == "results":
+        return Path(results_override).expanduser() / Path(*path.parts[1:])
+    return CORRELATIONS_ROOT / path
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -120,7 +126,7 @@ def _formal_completion_matches(value: dict[str, Any], config: dict[str, Any]) ->
 def _formal_validation_matches(value: dict[str, Any], config: dict[str, Any]) -> bool:
     result_paths = config["validated_results"]
     expected_roots = {
-        "log_square": resolve_correlations_path(result_paths["formal_log_suite"]),
+        "log_square": resolve_correlations_path(result_paths["all_peak_formal_suite"]),
         "baseline": resolve_correlations_path(result_paths["baseline_package"]),
     }
     expected_counts = _expected_primary_counts(config)
@@ -188,7 +194,7 @@ def _waterfall_validation_matches(
         value.get("status") == "PASS"
         and _same_path(
             value.get("comparison_root"),
-            resolve_correlations_path(result_paths["formal_comparison_root"]),
+            resolve_correlations_path(result_paths["powder_and_window_source_root"]),
         )
         and _same_path(
             value.get("suite_root"), resolve_correlations_path(result_paths[suite_key])
@@ -259,21 +265,21 @@ def _completion_checks(config: dict[str, Any]) -> list[dict[str, Any]]:
             "required compatibility dependencies", config["required_legacy_dependencies"]
         ),
         _marker_check(
-            "formal Log² package (powder + single crystal)",
-            result_paths["formal_completion"],
-            lambda value: _formal_completion_matches(value, config),
+            "formal Log² all-peak package validation",
+            result_paths["all_peak_formal_validation"],
+            lambda value: value.get("status") == "PASS",
         ),
         _marker_check(
-            "formal package validation (exact counts and roots)",
-            result_paths["formal_validation"],
-            lambda value: _formal_validation_matches(value, config),
+            "single-crystal 275-anchor Log² run",
+            str(Path(result_paths["single_crystal_all_peak_log_suite"]) / "RUN_COMPLETE.json"),
+            lambda value: value.get("status") == "PASS"
+            and value.get("downstream_analysis", {}).get("peaks") == 275,
         ),
         _marker_check(
-            "Log² transformed-profile powder waterfalls",
-            result_paths["transformed_waterfall_validation"],
-            lambda value: _waterfall_validation_matches(
-                value, config, original_profile=False
-            ),
+            "single-crystal original-XY waterfalls (Log² colors)",
+            str(Path(result_paths["single_crystal_original_xy_waterfalls"]) / "SUITE_VALIDATION.json"),
+            lambda value: value.get("status") == "PASS"
+            and value.get("anchor_maps") == 275,
         ),
         _marker_check(
             "original-profile powder waterfalls (Log colors)",
@@ -390,34 +396,22 @@ def command_check_code(args: argparse.Namespace) -> int:
 def command_commands(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     result_paths = config["validated_results"]
-    comparison = resolve_correlations_path(result_paths["formal_comparison_root"])
-    transformed = resolve_correlations_path(result_paths["transformed_waterfalls"])
+    comparison = resolve_correlations_path(result_paths["powder_and_window_source_root"])
     original = resolve_correlations_path(
         result_paths["log_original_profile_waterfalls"]
     )
-    package_validation = resolve_correlations_path(result_paths["formal_validation"])
+    package_validation = resolve_correlations_path(result_paths["all_peak_formal_validation"])
     commands = [
         [
             sys.executable,
             str(SCRIPT_DIR / "validate_package_denoised_correlation_suites.py"),
             "--log-root",
-            str(resolve_correlations_path(result_paths["formal_log_suite"])),
+            str(resolve_correlations_path(result_paths["all_peak_formal_suite"])),
             "--baseline-root",
             str(resolve_correlations_path(result_paths["baseline_package"])),
             "--output-dir",
             str(package_validation.parent),
             "--dry-run",
-        ],
-        [
-            sys.executable,
-            str(SCRIPT_DIR / "validate_complete_formal_composite_waterfalls.py"),
-            "--comparison-root",
-            str(comparison),
-            "--suite-root",
-            str(transformed),
-            "--powder-only",
-            "--modes",
-            "log_squared",
         ],
         [
             sys.executable,

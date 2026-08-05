@@ -29,10 +29,10 @@ The media server can serve only these indexed paths.
 The default gallery contains:
 
 ```text
-formal correlation plots, Log²                         987
-Log-denoised transformed-profile powder waterfalls     280
-pre-denoise XY-derived powder waterfalls, Log²         280
-total                                                  1547
+formal heatmaps, including 275 all-peak single anchors 1387
+original-positive powder waterfalls, Log² colors       280
+original-positive single-crystal waterfalls, Log²      275
+total                                                  1942
 ```
 
 The formal root's `_sources/` tree is metadata/provenance input and is not a
@@ -42,24 +42,19 @@ gallery source.
 
 - `result_status` and `validation_status` are independent.
 - `correlation_transform` and `display_profile_domain` are independent.
-- Log² shaded waterfalls are available in two explicit display domains.
-  `correlation_transform` shows the Log-denoised profile used by the ROI
-  calculation. `original_positive` keeps the same Log² correlation color
-  while reconstructing height from source spots-channel XY signal before the
-  nonlinear transform.
-- `original_positive` is not an untouched representative raw scan. It is the
-  previously approved pressure-level composite: positive-clipped and
-  measurement-normalized source XY components are summed within frame,
-  averaged across distinct frames per peak, and the 12–22 formal peaks are
-  summed at each pressure. This preserves one curve per GPa and one visible
-  support for every formal correlation cell.
+- Log² shaded waterfalls use the `original_positive` display domain only.
+  Powder height uses the approved pressure-level composite; single-crystal
+  height uses each original spot-masked XY trace divided by TIFF exposure.
+  In both samples, Log² ROI correlation supplies color but does not alter the
+  displayed curve.
 - Location plots remain part of the single Log² formal package.
 - Powder c=0.75 applies to powder ROI/waterfall support, not single-crystal
   ellipses or integer window products.
 - A pressure-level point has no single natural scalar q-width. Store support
   bounds and, when available, observation q-width min/median/max; otherwise use
   null rather than inventing a value.
-- Powder point UIDs and single-crystal track IDs are different namespaces.
+- Powder point UIDs and single-crystal frame-local peak IDs are different
+  namespaces. A single-crystal source track is provenance only.
 - Formal counts are checked on PlotRecords; storage deduplication is checked on
   Assets.
 

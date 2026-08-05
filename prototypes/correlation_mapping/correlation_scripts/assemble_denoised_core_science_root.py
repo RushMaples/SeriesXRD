@@ -9,7 +9,9 @@ Only the validator-visible core is assembled:
 * window-to-window within-frame by-pressure and aggregate heatmaps/matrices.
 
 No supplementary galleries, trajectories, confidence maps, or full symmetric
-audit payloads are copied.  Location comes from the previous formal package.
+audit payloads are copied. Powder location comes from the previous formal
+package. Single-crystal ROI area and location come from the current 275-anchor
+all-peak run.
 All science payloads are hardlinks, so a same-filesystem assembly consumes no
 additional data blocks.  A source/hash/inode manifest and completion marker
 provide provenance.
@@ -92,6 +94,7 @@ def immediate_files(directory: Path, suffix: str) -> list[Path]:
 def find_peak_pair_directories(
     source: Path,
     *,
+    category: str,
     single_crystal: bool,
 ) -> tuple[Path, Path]:
     candidates: list[tuple[Path, Path]] = [
@@ -99,8 +102,19 @@ def find_peak_pair_directories(
         (source / "roi_area" / "matrices", source / "roi_area" / "heatmaps"),
     ]
     if single_crystal:
+        metric = "area" if category == "roi_area" else "location"
         candidates.extend(
             [
+                (
+                    source / "per_anchor_peak_matrices" / metric,
+                    source / "per_anchor_peak_heatmaps" / metric,
+                ),
+                (
+                    source / "single_crystal" / "all_peak_log_squared"
+                    / "per_anchor_peak_matrices" / metric,
+                    source / "single_crystal" / "all_peak_log_squared"
+                    / "per_anchor_peak_heatmaps" / metric,
+                ),
                 (
                     source / "normalized_area_matrices",
                     source / "normalized_area_heatmaps",
@@ -129,10 +143,10 @@ def peak_specs(
     single_crystal_source: bool = False,
 ) -> list[LinkSpec]:
     matrices_dir, heatmaps_dir = find_peak_pair_directories(
-        source, single_crystal=single_crystal_source
+        source, category=category, single_crystal=single_crystal_source
     )
-    matrices = immediate_files(matrices_dir, ".csv")
-    heatmaps = immediate_files(heatmaps_dir, ".png")
+    matrices = sorted(path for path in matrices_dir.rglob("*.csv") if path.is_file())
+    heatmaps = sorted(path for path in heatmaps_dir.rglob("*.png") if path.is_file())
     if len(matrices) != expected_count or len(heatmaps) != expected_count:
         raise ValueError(
             f"{sample}/{category}: source has {len(matrices)} CSV and "
@@ -338,14 +352,23 @@ def build_specs(
             single_crystal_source=True,
         )
     )
-    for sample in SCIENCE_SAMPLES:
-        specs.extend(
-            baseline_location_specs(
-                baseline_root,
-                sample=sample,
-                expected_count=expected.peak_maps[(sample, "location")],
-            )
+    specs.extend(
+        baseline_location_specs(
+            baseline_root,
+            sample="powder",
+            expected_count=expected.peak_maps[("powder", "location")],
         )
+    )
+    specs.extend(
+        peak_specs(
+            single_roi_source,
+            sample="single_crystal",
+            category="location",
+            expected_count=expected.peak_maps[("single_crystal", "location")],
+            single_crystal_source=True,
+        )
+    )
+    for sample in SCIENCE_SAMPLES:
         specs.extend(
             window_specs(
                 window_root,
@@ -554,6 +577,7 @@ def assemble(
             label=f"{transform_label}_location_vs_baseline",
             abs_tolerance=1e-12,
             rel_tolerance=1e-10,
+            samples=("powder",),
         )
         validation = {
             "status": (
