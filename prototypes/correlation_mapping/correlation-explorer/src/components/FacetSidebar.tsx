@@ -28,7 +28,7 @@ const FACET_SPECS: FacetSpec[] = [
   {
     field: "correlation_transform",
     label: "Correlation calculation",
-    preferred: ["log_squared", "exp_squared", "original", "not_applicable"],
+    preferred: ["log_squared", "original", "not_applicable"],
   },
   {
     field: "correlation_family",

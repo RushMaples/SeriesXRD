@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Validate and manifest paired denoised UOTe correlation result suites.
+"""Validate and manifest the Log²-denoised UOTe correlation result suite.
 
 The computation pipelines are intentionally not imported.  This program is an
-independent delivery gate for two already-produced roots (log-square and
-exp-square) and the previous formal, untransformed package used as the
-location oracle.
+independent delivery gate for one already-produced Log² root and the previous
+formal, untransformed package used as the location oracle.
 
 It verifies:
 
@@ -14,8 +13,7 @@ It verifies:
 * strict-lower-triangle window presentation;
 * one-to-one CSV/PNG pairing;
 * exclusion of supplementary one-minus-ACF diagnostic renderings;
-* byte and numerical equality of location matrices to the baseline; and
-* numerical differences between log-square and exp-square ROI/window data.
+* byte and numerical equality of location matrices to the baseline.
 
 With ``--output-dir`` it also writes a SHA256 package index, a JSON validation
 report, and a completion marker.  ``--dry-run`` performs every validation but
@@ -30,7 +28,6 @@ import csv
 import hashlib
 import json
 import math
-import os
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -766,75 +763,6 @@ def validate_location_against_baseline(
     }
 
 
-def compare_transform_outputs(
-    log_root: Path,
-    exp_root: Path,
-    *,
-    abs_tolerance: float,
-    rel_tolerance: float,
-) -> dict[str, object]:
-    categories: dict[str, dict[str, object]] = {}
-    failures: list[str] = []
-    for sample in SCIENCE_SAMPLES:
-        for category in INTENSITY_CATEGORIES:
-            log_csvs, _ = core_files(log_root, sample, category)
-            exp_csvs, _ = core_files(exp_root, sample, category)
-            log_category = log_root / sample / category
-            exp_category = exp_root / sample / category
-            log_by_relative = {
-                path.relative_to(log_category).as_posix(): path for path in log_csvs
-            }
-            exp_by_relative = {
-                path.relative_to(exp_category).as_posix(): path for path in exp_csvs
-            }
-            same_file_set = set(log_by_relative) == set(exp_by_relative)
-            common = sorted(set(log_by_relative) & set(exp_by_relative))
-            differing_files = 0
-            differing_values = 0
-            for relative in common:
-                start_column = core_start_column(sample, category)
-                left = numeric_tokens(
-                    log_by_relative[relative], start_column=start_column
-                )
-                right = numeric_tokens(
-                    exp_by_relative[relative], start_column=start_column
-                )
-                difference_count = count_token_differences(
-                    left,
-                    right,
-                    abs_tolerance=abs_tolerance,
-                    rel_tolerance=rel_tolerance,
-                )
-                if difference_count:
-                    differing_files += 1
-                    differing_values += difference_count
-            key = f"{sample}/{category}"
-            passed = same_file_set and bool(common) and differing_values > 0
-            categories[key] = {
-                "same_relative_file_set": same_file_set,
-                "common_files": len(common),
-                "differing_files": differing_files,
-                "differing_numeric_or_blank_cells": differing_values,
-                "passed": passed,
-                "log_only_examples": sorted(
-                    set(log_by_relative) - set(exp_by_relative)
-                )[:20],
-                "exp_only_examples": sorted(
-                    set(exp_by_relative) - set(log_by_relative)
-                )[:20],
-            }
-            if not passed:
-                failures.append(
-                    f"{key}: transform outputs do not have matching files with a "
-                    "real numerical difference"
-                )
-    return {
-        "all_roi_and_window_categories_differ": not failures,
-        "categories": categories,
-        "failures": failures,
-    }
-
-
 def build_package_index(roots: dict[str, Path]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for label, root in roots.items():
@@ -859,9 +787,8 @@ def build_package_index(roots: dict[str, Path]) -> list[dict[str, object]]:
     return rows
 
 
-def default_output_dir(log_root: Path, exp_root: Path) -> Path:
-    common = Path(os.path.commonpath([str(log_root), str(exp_root)]))
-    return common / "denoised_validation_package"
+def default_output_dir(log_root: Path) -> Path:
+    return log_root.parent / "log_denoised_validation_package"
 
 
 def is_within(path: Path, parent: Path) -> bool:
@@ -918,7 +845,6 @@ def write_package(
 def run_validation(
     *,
     log_root: Path,
-    exp_root: Path,
     baseline_root: Path,
     expected: ExpectedCounts,
     tolerance: float,
@@ -928,9 +854,6 @@ def run_validation(
     log_report = validate_one_suite(
         log_root, label="log_square", expected=expected, tolerance=tolerance
     )
-    exp_report = validate_one_suite(
-        exp_root, label="exp_square", expected=expected, tolerance=tolerance
-    )
     log_location = validate_location_against_baseline(
         log_root,
         baseline_root,
@@ -938,30 +861,10 @@ def run_validation(
         abs_tolerance=comparison_abs_tolerance,
         rel_tolerance=comparison_rel_tolerance,
     )
-    exp_location = validate_location_against_baseline(
-        exp_root,
-        baseline_root,
-        label="exp_square_vs_baseline",
-        abs_tolerance=comparison_abs_tolerance,
-        rel_tolerance=comparison_rel_tolerance,
-    )
-    transform_comparison = compare_transform_outputs(
-        log_root,
-        exp_root,
-        abs_tolerance=comparison_abs_tolerance,
-        rel_tolerance=comparison_rel_tolerance,
-    )
     checks = {
         "log_suite_passes": log_report["status"] == "PASS",
-        "exp_suite_passes": exp_report["status"] == "PASS",
         "log_location_hashes_and_numerics_equal_baseline": log_location[
             "all_hashes_and_numerics_equal"
-        ],
-        "exp_location_hashes_and_numerics_equal_baseline": exp_location[
-            "all_hashes_and_numerics_equal"
-        ],
-        "log_and_exp_roi_window_outputs_differ": transform_comparison[
-            "all_roi_and_window_categories_differ"
         ],
     }
     return {
@@ -969,7 +872,6 @@ def run_validation(
         "validated_at_utc": utc_now(),
         "roots": {
             "log_square": str(log_root),
-            "exp_square": str(exp_root),
             "baseline": str(baseline_root),
         },
         "formal_expected_counts_per_transform": {
@@ -989,12 +891,10 @@ def run_validation(
             + sum(expected.within.values()),
         },
         "checks": checks,
-        "suites": {"log_square": log_report, "exp_square": exp_report},
+        "suites": {"log_square": log_report},
         "location_baseline_comparisons": {
             "log_square": log_location,
-            "exp_square": exp_location,
         },
-        "transform_output_comparison": transform_comparison,
     }
 
 
@@ -1091,7 +991,6 @@ def run_self_test() -> None:
         base = Path(temporary)
         baseline = base / "baseline"
         log_root = base / "log"
-        exp_root = base / "exp"
         build_synthetic_suite(baseline, roi_value=0.2, window_value=0.1)
         build_synthetic_suite(
             log_root,
@@ -1099,15 +998,8 @@ def run_self_test() -> None:
             window_value=0.2,
             location_source=baseline,
         )
-        build_synthetic_suite(
-            exp_root,
-            roi_value=0.6,
-            window_value=0.5,
-            location_source=baseline,
-        )
         passing = run_validation(
             log_root=log_root,
-            exp_root=exp_root,
             baseline_root=baseline,
             expected=synthetic_expected,
             tolerance=1e-12,
@@ -1123,7 +1015,7 @@ def run_self_test() -> None:
         # A supplementary 1-r rendering must not be accepted as part of the
         # compact across-frame science category.
         diagnostic = (
-            exp_root
+            log_root
             / "powder"
             / "window_to_window_across_frames"
             / "fit_control"
@@ -1136,7 +1028,6 @@ def run_self_test() -> None:
         write_png_placeholder(expected_png_for_csv(diagnostic))
         failing_diagnostic = run_validation(
             log_root=log_root,
-            exp_root=exp_root,
             baseline_root=baseline,
             expected=synthetic_expected,
             tolerance=1e-12,
@@ -1145,7 +1036,7 @@ def run_self_test() -> None:
         )
         if (
             failing_diagnostic["status"] != "FAIL"
-            or failing_diagnostic["suites"]["exp_square"]["checks"][
+            or failing_diagnostic["suites"]["log_square"]["checks"][
                 "no_supplementary_one_minus_acf_diagnostics"
             ]
         ):
@@ -1154,7 +1045,7 @@ def run_self_test() -> None:
 
         # A nonblank diagonal must be rejected.
         bad_triangle = (
-            exp_root
+            log_root
             / "powder"
             / "window_to_window_across_frames"
             / "spots"
@@ -1167,7 +1058,6 @@ def run_self_test() -> None:
         write_table(bad_triangle, rows)
         failing_triangle = run_validation(
             log_root=log_root,
-            exp_root=exp_root,
             baseline_root=baseline,
             expected=synthetic_expected,
             tolerance=1e-12,
@@ -1180,7 +1070,7 @@ def run_self_test() -> None:
 
         # A changed location value must be rejected even if its shape is valid.
         bad_location = (
-            exp_root
+            log_root
             / "single_crystal"
             / "location"
             / "matrices"
@@ -1191,7 +1081,6 @@ def run_self_test() -> None:
         write_table(bad_location, rows)
         failing_location = run_validation(
             log_root=log_root,
-            exp_root=exp_root,
             baseline_root=baseline,
             expected=synthetic_expected,
             tolerance=1e-12,
@@ -1210,13 +1099,12 @@ def run_self_test() -> None:
             / "map_000.csv"
         )
         shutil.copy2(baseline_location, bad_location)
-        bad_roi = exp_root / "powder" / "roi_area" / "matrices" / "map_000.csv"
+        bad_roi = log_root / "powder" / "roi_area" / "matrices" / "map_000.csv"
         rows = read_csv(bad_roi)
         rows[1][2] = "1.5"
         write_table(bad_roi, rows)
         failing_range = run_validation(
             log_root=log_root,
-            exp_root=exp_root,
             baseline_root=baseline,
             expected=synthetic_expected,
             tolerance=1e-12,
@@ -1228,36 +1116,9 @@ def run_self_test() -> None:
         rows[1][2] = "0.6"
         write_table(bad_roi, rows)
 
-        # Two numerically identical transform suites must be rejected.
-        same_as_log = base / "same_as_log"
-        build_synthetic_suite(
-            same_as_log,
-            roi_value=0.3,
-            window_value=0.2,
-            location_source=baseline,
-        )
-        failing_identity = run_validation(
-            log_root=log_root,
-            exp_root=same_as_log,
-            baseline_root=baseline,
-            expected=synthetic_expected,
-            tolerance=1e-12,
-            comparison_abs_tolerance=1e-12,
-            comparison_rel_tolerance=1e-10,
-        )
-        if (
-            failing_identity["status"] != "FAIL"
-            or failing_identity["checks"][
-                "log_and_exp_roi_window_outputs_differ"
-            ]
-        ):
-            raise AssertionError("identical transform outputs were not rejected")
-
-        # Exercise the manifest writer on the known-good pair.
+        # Exercise the manifest writer on the known-good Log² suite.
         package_dir = base / "validation_package"
-        package_index = build_package_index(
-            {"log_square": log_root, "exp_square": exp_root}
-        )
+        package_index = build_package_index({"log_square": log_root})
         write_package(package_dir, passing, package_index)
         for expected_file in (
             "VALIDATION_REPORT.json",
@@ -1269,16 +1130,15 @@ def run_self_test() -> None:
 
     print(
         "SELF-TEST PASS: valid fixture/package accepted; triangle, location, "
-        "range, supplementary 1-r, and identical-transform failures rejected"
+        "range, and supplementary 1-r failures rejected"
     )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate and manifest log-square and exp-square UOTe suites."
+        description="Validate and manifest the Log² UOTe suite."
     )
     parser.add_argument("--log-root", type=Path, help="log-square result root")
-    parser.add_argument("--exp-root", type=Path, help="exp-square result root")
     parser.add_argument(
         "--baseline-root", type=Path, help="previous formal untransformed package root"
     )
@@ -1318,7 +1178,6 @@ def main() -> None:
         name
         for name, value in (
             ("--log-root", args.log_root),
-            ("--exp-root", args.exp_root),
             ("--baseline-root", args.baseline_root),
         )
         if value is None
@@ -1328,11 +1187,9 @@ def main() -> None:
             "required unless --self-test: " + ", ".join(missing_arguments)
         )
     log_root = args.log_root.resolve()
-    exp_root = args.exp_root.resolve()
     baseline_root = args.baseline_root.resolve()
     report = run_validation(
         log_root=log_root,
-        exp_root=exp_root,
         baseline_root=baseline_root,
         expected=FORMAL_EXPECTATIONS,
         tolerance=args.range_tolerance,
@@ -1343,15 +1200,11 @@ def main() -> None:
         output_dir = (
             args.output_dir.resolve()
             if args.output_dir is not None
-            else default_output_dir(log_root, exp_root)
+            else default_output_dir(log_root)
         )
-        if is_within(output_dir, log_root) or is_within(output_dir, exp_root):
-            raise SystemExit(
-                "--output-dir must be outside both science result roots"
-            )
-        index_rows = build_package_index(
-            {"log_square": log_root, "exp_square": exp_root}
-        )
+        if is_within(output_dir, log_root):
+            raise SystemExit("--output-dir must be outside the science result root")
+        index_rows = build_package_index({"log_square": log_root})
         write_package(output_dir, report, index_rows)
         print(f"Validation package written to: {output_dir}")
     print(json.dumps(report, indent=2, ensure_ascii=False))

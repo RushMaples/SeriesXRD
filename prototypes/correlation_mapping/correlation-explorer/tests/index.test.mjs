@@ -10,16 +10,16 @@ const audit = JSON.parse(
 );
 
 test("curated gallery has the audited logical and physical counts", () => {
-  assert.equal(index.records.length, 2_538);
-  assert.equal(index.assets.length, 2_140);
-  assert.equal(index.summary.plot_records, 2_538);
-  assert.equal(index.summary.assets, 2_140);
+  assert.equal(index.records.length, 1_547);
+  assert.equal(index.assets.length, 1_547);
+  assert.equal(index.summary.plot_records, 1_547);
+  assert.equal(index.summary.assets, 1_547);
   assert.equal(audit.status, "PASS");
   assert.equal(audit.errors.length, 0);
   assert.equal(audit.warnings.length, 0);
 });
 
-test("formal, waterfall, and exploratory composition stays exact", () => {
+test("formal and waterfall composition stays exact", () => {
   const counts = index.records.reduce((result, record) => {
     const kind = record.result_status === "exploratory"
       ? "exploratory"
@@ -30,34 +30,26 @@ test("formal, waterfall, and exploratory composition stays exact", () => {
     return result;
   }, {});
   assert.deepEqual(counts, {
-    formal: 1_974,
-    exploratory: 4,
+    formal: 987,
     transformedWaterfall: 280,
     originalWaterfall: 280,
   });
 });
 
-test("Log-squared shading is available only on the pre-denoise XY-derived display", () => {
+test("Log-squared waterfalls include denoised and original-profile displays", () => {
   const logWaterfalls = index.records.filter(
     (record) => record.visualization_type === "waterfall_shaded" && record.correlation_transform === "log_squared",
   );
-  assert.equal(logWaterfalls.length, 280);
-  assert.ok(logWaterfalls.every((record) => record.display_profile_domain === "original_positive"));
+  assert.equal(logWaterfalls.length, 560);
   assert.equal(
-    index.records.some(
-      (record) => record.visualization_type === "waterfall_shaded"
-        && record.correlation_transform === "log_squared"
-        && record.display_profile_domain === "correlation_transform",
-    ),
-    false,
+    logWaterfalls.filter((record) => record.display_profile_domain === "correlation_transform").length,
+    280,
   );
-
-  const expTransformed = index.records.filter(
-    (record) => record.visualization_type === "waterfall_shaded"
-      && record.correlation_transform === "exp_squared"
-      && record.display_profile_domain === "correlation_transform",
+  assert.equal(
+    logWaterfalls.filter((record) => record.display_profile_domain === "original_positive").length,
+    280,
   );
-  assert.equal(expTransformed.length, 280);
+  assert.ok(index.records.every((record) => record.correlation_transform === "log_squared"));
 });
 
 test("gallery excludes provenance-only source images and keeps companion targets", () => {

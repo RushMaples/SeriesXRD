@@ -130,7 +130,6 @@ function normalizeSearch(value) {
   return value
     .toLowerCase()
     .replaceAll("log²", "log squared")
-    .replaceAll("exp²", "exp squared")
     .replaceAll("q-width", "qwidth")
     .replaceAll("single-crystal", "single crystal")
     .trim();
@@ -139,7 +138,6 @@ function normalizeSearch(value) {
 function searchHaystack(record) {
   const aliases = {
     log_squared: "log log2 log squared logarithmic",
-    exp_squared: "exp exp2 exp squared exponential",
     roi_area: "roi roi area integrated iou peak shape intensity",
     location: "location peak center 2theta",
     window_to_window_across_frames: "window across frames same 2theta window",

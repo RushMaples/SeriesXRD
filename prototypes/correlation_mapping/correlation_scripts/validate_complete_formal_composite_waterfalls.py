@@ -26,7 +26,7 @@ DEFAULT_SUITE_ROOT = (
     DEFAULT_COMPARISON_ROOT
     / "waterfall_complete_formal_composite_qwidth075_20260803"
 )
-MODES = ("log_squared", "exp_squared")
+MODES = ("log_squared",)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -43,7 +43,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         nargs="+",
         choices=MODES,
         default=list(MODES),
-        help="Transform mode(s) to validate (default: both).",
+        help="Transform mode to validate (Log² only).",
     )
     return parser.parse_args(argv)
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Run one transformed integer-window suite and write strict-lower outputs.
+"""Run the Log² integer-window suite and write strict-lower outputs.
 
 This driver intentionally covers only window-to-window correlations.  It
-applies ``log_squared`` or ``exp_squared`` to pooled-scale, bounded residuals
-after the unchanged AsLS baseline and then reuses the unchanged fixed-window,
-ACF, Pearson, aggregation, and plotting code.  ROI-area and location
-calculations are outside this driver.
+applies ``log_squared`` to pooled-scale, bounded residuals after the unchanged
+AsLS baseline and then reuses the unchanged fixed-window, ACF, Pearson,
+aggregation, and plotting code. ROI-area and location calculations are outside
+this driver.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from integer_window_correlations import (
 from uniform_correlation_io import json_ready, write_json
 
 
-TRANSFORMED_MODES = ("log_squared", "exp_squared")
+TRANSFORMED_MODES = ("log_squared",)
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--transform-mode",
         choices=TRANSFORMED_MODES,
-        required=True,
+        default="log_squared",
     )
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument("--max-scans", type=int, default=None)

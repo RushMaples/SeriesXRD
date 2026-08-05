@@ -1,13 +1,12 @@
 {
-  "schema_version": "uotexrd-correlation-workspace-v2",
+  "schema_version": "uotexrd-correlation-workspace-v3",
   "status": "active",
-  "description": "Latest indexed UOTe formal, waterfall, and robust-transition correlation results.",
+  "description": "Latest indexed Log²-only UOTe formal and waterfall correlation results.",
   "parameters": {
     "powder_half_width_factor": 0.75,
     "powder_support_formula": "[qi-0.75*q_width, qi+0.75*q_width]",
     "transform_modes": [
-      "log_squared",
-      "exp_squared"
+      "log_squared"
     ],
     "transform_scale_quantile": 0.995,
     "powder_fixed_pooled_scale": 178.0838325514805,
@@ -24,8 +23,7 @@
     "package_validation": "correlation_scripts/validate_package_denoised_correlation_suites.py",
     "powder_waterfall": "correlation_scripts/generate_denoised_peak_correlation_waterfall.py",
     "waterfall_validation": "correlation_scripts/validate_complete_formal_composite_waterfalls.py",
-    "support_audit": "correlation_scripts/audit_powder_qwidth_support_all_frames.py",
-    "robust_transition": "correlation_scripts/build_robust_tracks_transition_suite.py"
+    "support_audit": "correlation_scripts/audit_powder_qwidth_support_all_frames.py"
   },
   "required_legacy_dependencies": {
     "powder_v7_helpers": "correlation_scripts/pressure_level_peak_spots_qwidth_correlations_v7.py",
@@ -39,16 +37,13 @@
   "validated_results": {
     "formal_comparison_root": "results/uote_nonlinear_squared_qwidth075_comparison_20260803",
     "formal_log_suite": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/log_squared",
-    "formal_exp_suite": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/exp_squared",
     "baseline_package": "results/uote_pressure_level_peak_spots_absolute_anchor_iou_integer_window_suite_20260730_v8/peak_maps/complete_correlation_results_by_sample",
-    "formal_completion": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/RUN_COMPLETE.json",
-    "formal_validation": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/validation/VALIDATION_REPORT.json",
+    "formal_completion": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/log_squared/RUN_COMPLETE.json",
+    "formal_validation": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/log_validation/VALIDATION_REPORT.json",
     "transformed_waterfalls": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/waterfall_complete_formal_composite_qwidth075_20260803",
     "transformed_waterfall_validation": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/waterfall_complete_formal_composite_qwidth075_20260803/MASTER_VALIDATION.json",
     "log_original_profile_waterfalls": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/waterfall_log_correlation_on_original_profiles_qwidth075_20260804",
-    "log_original_profile_validation": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/waterfall_log_correlation_on_original_profiles_qwidth075_20260804/MASTER_VALIDATION.json",
-    "robust_transition_analysis": "results/uote_robust_peak_tracks_transition_analysis_20260804",
-    "robust_transition_validation": "results/uote_robust_peak_tracks_transition_analysis_20260804/VALIDATION_REPORT.json"
+    "log_original_profile_validation": "results/uote_nonlinear_squared_qwidth075_comparison_20260803/waterfall_log_correlation_on_original_profiles_qwidth075_20260804/MASTER_VALIDATION.json"
   },
   "expected_counts_per_transform": {
     "powder": {
@@ -75,8 +70,8 @@
     "exact_zero_roi_cells": 64852
   },
   "immutability_notes": [
-    "Retained v6/v7 and uniform-v2 files are runtime dependencies of the latest pipeline.",
+    "Retained v6/v7 and uniform-v2 files are runtime dependencies of the Log² pipeline.",
     "Do not edit assembled result payloads in place: many files are hardlinked across result roots.",
-    "The c=0.60 roots remain scientific baselines and provenance inputs for robust-transition analysis."
+    "The previous untransformed package remains the location-matrix baseline."
   ]
 }

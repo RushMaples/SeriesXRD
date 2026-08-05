@@ -1,16 +1,15 @@
 {
   "schema_version": "uotexrd-correlation-code-catalog-v2",
-  "scope": "Top-level Python files required by the latest indexed correlation results",
+  "scope": "Top-level Python files required by the latest indexed Log² correlation results",
   "retention_policy": "Keep latest result entrypoints, their recursive local dependencies, validators, direct regression tests, and workspace integrity tooling.",
   "groups": [
     {
       "id": "latest_result_pipeline",
-      "label": "Latest formal, waterfall, and robust-transition result entrypoints",
+      "label": "Latest Log² formal and waterfall result entrypoints",
       "status": "ACTIVE",
       "files": [
         "assemble_denoised_core_science_root.py",
         "audit_powder_qwidth_support_all_frames.py",
-        "build_robust_tracks_transition_suite.py",
         "generate_denoised_peak_correlation_waterfall.py",
         "pressure_level_peak_spots_absolute_anchor_iou_correlations_v8.py",
         "run_single_crystal_transformed_roi_correlations.py",

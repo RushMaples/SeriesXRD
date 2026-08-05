@@ -8,7 +8,6 @@ The active result mapping is
 - `results/uote_nonlinear_squared_qwidth075_comparison_20260803`;
 - its transformed-profile powder waterfall suite;
 - its Log-correlation/original-positive-profile powder waterfall suite;
-- `results/uote_robust_peak_tracks_transition_analysis_20260804`.
 
 For a powder peak centered at (q_i), the formal support is
 
@@ -34,13 +33,13 @@ zero denominators therefore produce the finite correlation value 0.
   ├─ positive piecewise-linear clipping
   ├─ frame measurement normalization
   ├─ fixed pooled Q99.5 scaling
-  ├─ Log² or Exp² transform
+  ├─ Log² transform
   ├─ same-frame observation sum
   └─ distinct-frame mean per pressure-level peak
        └─ 280 anchor maps over 19 pressure levels
 
 curated single-crystal observations
-  └─ 2D ellipse extraction + exposure normalization + Log²/Exp²
+  └─ 2D ellipse extraction + exposure normalization + Log²
 
 1,060 accepted powder frames + single-crystal frame set
   └─ fixed windows 0–5, 1–6, ..., 27–32 degrees
@@ -90,30 +89,21 @@ products may be hardlinked from validated sources; reuse is recorded by
 SHA-256 and inode provenance.
 
 `validate_package_denoised_correlation_suites.py` checks hierarchy, counts,
-score ranges, CSV/PNG pairing, strict-lower matrices, location invariance, and
-numerical Log/Exp differences.
+score ranges, CSV/PNG pairing, strict-lower matrices, and location invariance.
 
 ### Powder waterfalls
 
 Entrypoint: `generate_denoised_peak_correlation_waterfall.py`.
 
 - `correlation_transform`: curve and fill height use the transformed profile.
-- `original_positive`: color remains the Log/Exp correlation value, while
+- `original_positive`: color remains the Log² correlation value, while
   height uses measurement-normalized positive spots signal before transform.
 
 `validate_complete_formal_composite_waterfalls.py` audits plot, score,
 support, mapping, and master-index contracts. The current indexed waterfall
 deliverables are powder-only.
 
-### Robust transition analysis
-
-Entrypoint: `build_robust_tracks_transition_suite.py`.
-
-It compares retained peak tracks across the c=0.60/c=0.75 and Log²/Exp² result
-families, produces transition candidates and four summary plots, and writes an
-independent validation report.
-
-## Expected formal output counts per transform
+## Expected Log² formal output counts
 
 | Sample/category | CSV | PNG |
 |---|---:|---:|

@@ -40,29 +40,25 @@ class NonlinearIntensityPreprocessingTests(unittest.TestCase):
         self.assertEqual(result[4], 1.0)
         self.assertTrue(np.isnan(result[5]))
 
-    def test_exp_transform_uses_zero_preserving_expm1(self) -> None:
-        spec = preprocessing.make_roi_transform_spec(
-            preprocessing.EXP_SQUARED,
-            scale=4.0,
+    def test_log_squared_is_the_only_supported_denoise_transform(self) -> None:
+        self.assertEqual(
+            preprocessing.SUPPORTED_METHODS,
+            (preprocessing.LOG_SQUARED,),
         )
-        values = np.asarray([0.0, 2.0, 4.0, 40.0])
-        result = np.asarray(spec.transform(values))
-
-        self.assertEqual(result[0], 0.0)
-        self.assertAlmostEqual(
-            result[1],
-            np.expm1(0.25) / np.expm1(1.0),
-            places=15,
-        )
-        self.assertEqual(result[2], 1.0)
-        self.assertEqual(result[3], 1.0)
+        with self.assertRaisesRegex(ValueError, "unsupported transform"):
+            preprocessing.make_roi_transform_spec(
+                "unsupported",  # type: ignore[arg-type]
+                scale=4.0,
+                noise_floor=1.0,
+            )
 
     def test_signed_window_input_is_clipped_then_squared(self) -> None:
         values = np.asarray([-3.0, -0.5, 0.0, 0.5, 3.0])
         result = np.asarray(
             preprocessing.transform_bounded_squared(
                 values,
-                method=preprocessing.EXP_SQUARED,
+                method=preprocessing.LOG_SQUARED,
+                epsilon=0.01,
             )
         )
 
@@ -77,8 +73,9 @@ class NonlinearIntensityPreprocessingTests(unittest.TestCase):
             mask=[False, True, False, False],
         )
         spec = preprocessing.make_roi_transform_spec(
-            preprocessing.EXP_SQUARED,
+            preprocessing.LOG_SQUARED,
             scale=8.0,
+            noise_floor=1.0,
         )
         result = spec.transform(values)
 
@@ -127,13 +124,13 @@ class NonlinearIntensityPreprocessingTests(unittest.TestCase):
             [-100.0, 0.0, 1.0, 100.0, np.nan, np.inf, -np.inf]
         )
         spec = preprocessing.make_roi_transform_spec(
-            preprocessing.EXP_SQUARED,
+            preprocessing.LOG_SQUARED,
             scale=10.0,
+            noise_floor=1.0,
         )
         audit = spec.audit(values)
 
         self.assertEqual(audit["literal_log_zero_to_negative_infinity_slots"], 1)
-        self.assertEqual(audit["literal_exp_float64_overflow_slots"], 2)
         self.assertEqual(audit["negative_slots_clipped_to_z_zero"], 1)
         self.assertEqual(audit["above_fixed_scale_slots_clipped_to_z_one"], 1)
         self.assertEqual(audit["output_below_zero_slots"], 0)
@@ -169,8 +166,9 @@ class NonlinearIntensityPreprocessingTests(unittest.TestCase):
 
     def test_standalone_audit_writer_accepts_numpy_context(self) -> None:
         spec = preprocessing.make_roi_transform_spec(
-            preprocessing.EXP_SQUARED,
+            preprocessing.LOG_SQUARED,
             scale=2.0,
+            noise_floor=0.2,
         )
         audit = spec.audit(np.asarray([0.0, 1.0, 2.0]))
         with tempfile.TemporaryDirectory() as directory:

@@ -95,9 +95,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--comparison-root", type=Path, default=DEFAULT_COMPARISON_ROOT
     )
-    parser.add_argument(
-        "--mode", choices=("log_squared", "exp_squared"), default="log_squared"
-    )
+    parser.add_argument("--mode", choices=("log_squared",), default="log_squared")
     parser.add_argument("--anchor", default=DEFAULT_ANCHOR)
     parser.add_argument(
         "--all-anchors",
@@ -128,7 +126,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="correlation_transform",
         help=(
             "Choose only the vertical waterfall profile. "
-            "correlation_transform shows the same Log/Exp-transformed profiles "
+            "correlation_transform shows the same Log²-transformed profiles "
             "used to calculate the ROI scores. original_positive keeps those "
             "scores unchanged but draws the measurement-normalized positive "
             "spots-channel signal before the nonlinear transform."
@@ -378,7 +376,7 @@ def reconstruct_formal_pressure_profiles(
     ``correlation_transform`` exactly reproduces the profiles used by the ROI
     calculation.  ``original_positive`` uses the same observations, supports,
     positive clipping, and measurement normalization, but deliberately omits
-    the nonlinear Log/Exp transform so the waterfall amplitude is shown in the
+    the nonlinear Log² transform so the waterfall amplitude is shown in the
     original pre-denoise signal domain.
     """
 
@@ -829,7 +827,7 @@ def plot_waterfall(
     ax.grid(axis="x", color="#e5e5e5", linewidth=0.6, zorder=0)
     ax.spines[["top", "right"]].set_visible(False)
 
-    mode_label = "Log-squared" if mode == "log_squared" else "Exp-squared"
+    mode_label = "Log-squared"
     half_width_factor = (
         None
         if correlation_reconstruction_audit is None

@@ -46,7 +46,7 @@ def resolve_correlations_path(value: str) -> Path:
 
 def load_config(path: Path) -> dict[str, Any]:
     config = read_json(path)
-    if config.get("schema_version") != "uotexrd-correlation-workspace-v1":
+    if config.get("schema_version") != "uotexrd-correlation-workspace-v3":
         raise ValueError(f"unsupported workspace config: {path}")
     return config
 
@@ -103,34 +103,17 @@ def _expected_primary_counts(config: dict[str, Any]) -> dict[str, int]:
 
 
 def _formal_completion_matches(value: dict[str, Any], config: dict[str, Any]) -> bool:
-    parameters = config["parameters"]
-    scope = config["powder_scope"]
-    counts = config["expected_counts_per_transform"]["powder"]
-    expected = {
-        "powder_half_width_factor": parameters["powder_half_width_factor"],
-        "powder_support_formula": parameters["powder_support_formula"],
-        "transform_modes": parameters["transform_modes"],
-        "powder_formal_observations": scope["formal_observations"],
-        "powder_observation_source_frames": scope["source_xy_frames"],
-        "powder_accepted_window_frames": scope["accepted_window_frames"],
-        "powder_roi_anchors_per_transform": counts["roi_area"],
-        "powder_location_maps_per_transform": counts["location"],
-        "powder_window_across_maps_per_transform": counts[
-            "window_to_window_across_frames"
-        ],
-        "powder_window_within_maps_per_transform": counts[
-            "window_to_window_within_same_frame"
-        ],
-        "directed_cross_pressure_roi_cells_per_transform": scope[
-            "directed_cross_pressure_cells"
-        ],
-        "positive_roi_cells_per_transform": scope["positive_roi_cells"],
-        "exact_zero_roi_cells_per_transform": scope["exact_zero_roi_cells"],
-    }
+    counts = config["expected_counts_per_transform"]
+    expected_science_files = 2 * sum(
+        category_count
+        for sample_counts in counts.values()
+        for category_count in sample_counts.values()
+    )
     return (
         value.get("status") == "complete"
-        and value.get("all_validation_checks_passed") is True
-        and all(value.get(key) == expected_value for key, expected_value in expected.items())
+        and str(value.get("transform_label", "")).startswith("log_squared")
+        and value.get("science_files") == expected_science_files
+        and value.get("all_science_files_same_inode_as_source") is True
     )
 
 
@@ -138,7 +121,6 @@ def _formal_validation_matches(value: dict[str, Any], config: dict[str, Any]) ->
     result_paths = config["validated_results"]
     expected_roots = {
         "log_square": resolve_correlations_path(result_paths["formal_log_suite"]),
-        "exp_square": resolve_correlations_path(result_paths["formal_exp_suite"]),
         "baseline": resolve_correlations_path(result_paths["baseline_package"]),
     }
     expected_counts = _expected_primary_counts(config)
@@ -150,7 +132,7 @@ def _formal_validation_matches(value: dict[str, Any], config: dict[str, Any]) ->
         and value.get("formal_expected_counts_per_transform") == expected_counts
         and bool(checks)
         and all(checks.values())
-        and set(suites) == {"log_square", "exp_square"}
+        and set(suites) == {"log_square"}
         and all(suites[name].get("status") == "PASS" for name in suites)
         and all(
             _same_path(report_roots.get(name), expected)
@@ -224,19 +206,6 @@ def _waterfall_validation_matches(
     )
 
 
-def _robust_transition_matches(value: dict[str, Any], config: dict[str, Any]) -> bool:
-    checks = value.get("checks", {})
-    counts = value.get("counts", {})
-    scope = config["powder_scope"]
-    return (
-        value.get("status") == "PASS"
-        and bool(checks)
-        and all(checks.values())
-        and counts.get("catalog_peaks") == scope["pressure_level_peaks"]
-        and checks.get("nineteen_powder_pressures") is True
-    )
-
-
 def _marker_check(
     label: str,
     raw_path: str,
@@ -290,7 +259,7 @@ def _completion_checks(config: dict[str, Any]) -> list[dict[str, Any]]:
             "required compatibility dependencies", config["required_legacy_dependencies"]
         ),
         _marker_check(
-            "formal Log/Exp package (powder + single crystal)",
+            "formal Log² package (powder + single crystal)",
             result_paths["formal_completion"],
             lambda value: _formal_completion_matches(value, config),
         ),
@@ -300,7 +269,7 @@ def _completion_checks(config: dict[str, Any]) -> list[dict[str, Any]]:
             lambda value: _formal_validation_matches(value, config),
         ),
         _marker_check(
-            "transformed-profile powder waterfalls (Log + Exp)",
+            "Log² transformed-profile powder waterfalls",
             result_paths["transformed_waterfall_validation"],
             lambda value: _waterfall_validation_matches(
                 value, config, original_profile=False
@@ -312,11 +281,6 @@ def _completion_checks(config: dict[str, Any]) -> list[dict[str, Any]]:
             lambda value: _waterfall_validation_matches(
                 value, config, original_profile=True
             ),
-        ),
-        _marker_check(
-            "robust peak-track transition analysis",
-            result_paths["robust_transition_validation"],
-            lambda value: _robust_transition_matches(value, config),
         ),
     ]
 
@@ -438,8 +402,6 @@ def command_commands(args: argparse.Namespace) -> int:
             str(SCRIPT_DIR / "validate_package_denoised_correlation_suites.py"),
             "--log-root",
             str(resolve_correlations_path(result_paths["formal_log_suite"])),
-            "--exp-root",
-            str(resolve_correlations_path(result_paths["formal_exp_suite"])),
             "--baseline-root",
             str(resolve_correlations_path(result_paths["baseline_package"])),
             "--output-dir",
@@ -456,7 +418,6 @@ def command_commands(args: argparse.Namespace) -> int:
             "--powder-only",
             "--modes",
             "log_squared",
-            "exp_squared",
         ],
         [
             sys.executable,

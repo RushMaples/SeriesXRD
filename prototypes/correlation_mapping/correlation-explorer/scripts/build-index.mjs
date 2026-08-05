@@ -29,10 +29,7 @@ const TRANSFORMED_WATERFALL_RUN_ID = 'waterfall_complete_formal_composite_qwidth
 const TRANSFORMED_WATERFALL_ROOT = path.join(FORMAL_ROOT, TRANSFORMED_WATERFALL_RUN_ID);
 const ORIGINAL_WATERFALL_RUN_ID = 'waterfall_log_correlation_on_original_profiles_qwidth075_20260804';
 const ORIGINAL_WATERFALL_ROOT = path.join(FORMAL_ROOT, ORIGINAL_WATERFALL_RUN_ID);
-const ROBUST_RUN_ID = 'uote_robust_peak_tracks_transition_analysis_20260804';
-const ROBUST_ROOT = path.join(RESULTS_ROOT, ROBUST_RUN_ID);
-
-const MODES = ['log_squared', 'exp_squared'];
+const MODES = ['log_squared'];
 const SAMPLES = ['powder', 'single_crystal'];
 const FAMILIES = [
   'location',
@@ -42,11 +39,10 @@ const FAMILIES = [
 ];
 
 const EXPECTED = {
-  curated_total: 2538,
-  formal_main_total: 1974,
+  curated_total: 1547,
+  formal_main_total: 987,
   transformed_waterfalls: 280,
   original_profile_waterfalls: 280,
-  robust_transition_plots: 4,
   per_transform: {
     powder: {
       location: 280,
@@ -68,10 +64,6 @@ const COMPANION_EXTENSIONS = new Map([
   ['peak_color_mapping_csv_gz', '.csv.gz'],
   ['collection_index_csv', '.csv'],
   ['validation_json', '.json'],
-  ['metrics_csv', '.csv'],
-  ['track_nodes_csv', '.csv'],
-  ['track_edges_csv', '.csv'],
-  ['robustness_audit_json', '.json'],
 ]);
 
 const records = [];
@@ -171,7 +163,7 @@ function addRecord(record) {
 }
 
 function transformLabel(mode) {
-  return mode === 'log_squared' ? 'Log-squared' : mode === 'exp_squared' ? 'Exp-squared' : 'Multi-definition';
+  return mode === 'log_squared' ? 'Log-squared' : 'Unsupported transform';
 }
 
 function sampleLabel(sample) {
@@ -587,100 +579,6 @@ function buildWaterfallSuite({ suiteRoot, suiteRunId, expected, displayProfileDo
   }
 }
 
-function buildRobustPlots() {
-  const validationPath = path.join(ROBUST_ROOT, 'VALIDATION_REPORT.json');
-  const validation = readJson(validationPath);
-  invariant(validation.status === 'PASS', `Robust transition validation is not PASS: ${validation.status}`);
-  const descriptors = [
-    {
-      file: 'pressure_transition_summary.png',
-      title: 'Powder pressure-transition summary',
-      sample: 'powder',
-      family: 'transition_tracking',
-      visualization: 'transition_plot',
-      companions: [
-        ['metrics_csv', 'powder/pressure_transition_metrics.csv'],
-        ['metrics_csv', 'powder/candidate_phase_transitions.csv'],
-        ['metrics_csv', 'powder/peak_birth_death_by_transition.csv'],
-      ],
-    },
-    {
-      file: 'reliable_peak_tracks.png',
-      title: 'Reliable powder peak tracks',
-      sample: 'powder',
-      family: 'transition_tracking',
-      visualization: 'track_plot',
-      companions: [
-        ['track_nodes_csv', 'powder/reliable_peak_tracks.csv'],
-        ['track_edges_csv', 'powder/reliable_track_edges.csv'],
-        ['metrics_csv', 'powder/track_summary.csv'],
-      ],
-    },
-    {
-      file: 'robustness_definition_comparison.png',
-      title: 'Correlation-definition robustness comparison',
-      sample: 'powder',
-      family: 'validation_diagnostic',
-      visualization: 'comparison_plot',
-      companions: [
-        ['metrics_csv', 'robustness/adjacent_candidate_scores.csv'],
-        ['metrics_csv', 'robustness/matching_threshold_summary.csv'],
-        ['robustness_audit_json', 'robustness/ROBUSTNESS_AUDIT.json'],
-      ],
-    },
-    {
-      file: 'powder_single_cross_evidence.png',
-      title: 'Powder and single-crystal cross evidence',
-      sample: 'mixed',
-      family: 'transition_tracking',
-      visualization: 'evidence_plot',
-      companions: [
-        ['metrics_csv', 'cross_sample/powder_single_cross_evidence.csv'],
-        ['metrics_csv', 'cross_sample/candidate_intervals_with_cross_evidence.csv'],
-        ['metrics_csv', 'single_crystal/single_transition_metrics.csv'],
-      ],
-    },
-  ];
-
-  for (const descriptor of descriptors) {
-    const imagePath = path.join(ROBUST_ROOT, 'plots', descriptor.file);
-    const assetId = addAsset(imagePath, { hash_source: 'computed' });
-    addRecord({
-      id: `robust:${path.basename(descriptor.file, '.png')}`,
-      title: descriptor.title,
-      asset_id: assetId,
-      image_path: imagePath,
-      image_path_relative: relativeToCorrelations(imagePath),
-      companion_paths: [
-        ...descriptor.companions.map(([kind, relative]) => addCompanion(kind, path.join(ROBUST_ROOT, relative))),
-        addCompanion('validation_json', validationPath),
-      ],
-      run_id: ROBUST_RUN_ID,
-      result_status: 'exploratory',
-      validation_status: validation.status,
-      sample: descriptor.sample,
-      correlation_transform: 'multi_definition',
-      metric_transform_dependency: true,
-      correlation_family: descriptor.family,
-      visualization_type: descriptor.visualization,
-      display_profile_domain: 'not_applicable',
-      entity_type: descriptor.family === 'transition_tracking' ? 'pressure_transition_analysis' : 'robustness_audit',
-      anchor: null,
-      track: null,
-      window: null,
-      channel: null,
-      method: 'robust_minimum_across_c60_c75_log_exp',
-      scope: descriptor.sample === 'mixed' ? 'cross_sample' : 'adjacent_pressures',
-      pressure_gpa: null,
-      half_width_factor: null,
-      analysis_counts: validation.counts,
-      interpretation_limit: 'Exploratory candidate evidence; PASS validates invariants and does not confirm a phase transition.',
-      tags: makeTags([descriptor.sample, descriptor.family, descriptor.visualization, 'robust', 'c60', 'c75', 'log_squared', 'exp_squared']),
-      classification_warnings: [],
-    });
-  }
-}
-
 function nestedCounts(items, fields) {
   const output = {};
   for (const item of items) {
@@ -708,7 +606,6 @@ function buildAudit(assets) {
   const formalMain = records.filter((record) => record.run_id === FORMAL_RUN_ID).length;
   const transformedWaterfalls = records.filter((record) => record.run_id === TRANSFORMED_WATERFALL_RUN_ID).length;
   const originalWaterfalls = records.filter((record) => record.run_id === ORIGINAL_WATERFALL_RUN_ID).length;
-  const robustPlots = records.filter((record) => record.run_id === ROBUST_RUN_ID).length;
   const exactCountChecks = {};
   for (const mode of MODES) {
     for (const sample of SAMPLES) {
@@ -739,14 +636,9 @@ function buildAudit(assets) {
     formal_main_total: { expected: EXPECTED.formal_main_total, actual: formalMain, pass: formalMain === EXPECTED.formal_main_total },
     transformed_waterfalls: { expected: EXPECTED.transformed_waterfalls, actual: transformedWaterfalls, pass: transformedWaterfalls === EXPECTED.transformed_waterfalls },
     original_profile_waterfalls: { expected: EXPECTED.original_profile_waterfalls, actual: originalWaterfalls, pass: originalWaterfalls === EXPECTED.original_profile_waterfalls },
-    no_log_denoised_profile_waterfalls: {
-      pass: records.every((record) => !(
-        record.visualization_type === 'waterfall_shaded'
-        && record.correlation_transform === 'log_squared'
-        && record.display_profile_domain === 'correlation_transform'
-      )),
+    log_squared_only: {
+      pass: records.every((record) => record.correlation_transform === 'log_squared'),
     },
-    robust_transition_plots: { expected: EXPECTED.robust_transition_plots, actual: robustPlots, pass: robustPlots === EXPECTED.robust_transition_plots },
     exact_formal_breakdown: { pass: Object.values(exactCountChecks).every((check) => check.pass), groups: exactCountChecks },
     unique_record_ids: { pass: recordIds.size === records.length, count: recordIds.size },
     unique_image_paths: { pass: new Set(imagePaths).size === imagePaths.length, count: new Set(imagePaths).size },
@@ -763,10 +655,8 @@ function buildAudit(assets) {
     all_gallery_images_under_allowlist: {
       pass: records.every((record) =>
         under(path.join(FORMAL_ROOT, 'log_squared'), record.image_path)
-        || under(path.join(FORMAL_ROOT, 'exp_squared'), record.image_path)
         || under(TRANSFORMED_WATERFALL_ROOT, record.image_path)
-        || under(ORIGINAL_WATERFALL_ROOT, record.image_path)
-        || under(path.join(ROBUST_ROOT, 'plots'), record.image_path)),
+        || under(ORIGINAL_WATERFALL_ROOT, record.image_path)),
     },
   };
   const allChecksPass = Object.values(checks).every((check) => check.pass);
@@ -803,7 +693,7 @@ function writeJsonAtomic(filePath, value) {
 }
 
 function main() {
-  for (const requiredRoot of [FORMAL_ROOT, TRANSFORMED_WATERFALL_ROOT, ORIGINAL_WATERFALL_ROOT, ROBUST_ROOT]) {
+  for (const requiredRoot of [FORMAL_ROOT, TRANSFORMED_WATERFALL_ROOT, ORIGINAL_WATERFALL_ROOT]) {
     if (!existsSync(requiredRoot)) throw new Error(`Required result root does not exist: ${requiredRoot}`);
   }
   buildFormalMain();
@@ -812,7 +702,7 @@ function main() {
     suiteRunId: TRANSFORMED_WATERFALL_RUN_ID,
     expected: EXPECTED.transformed_waterfalls,
     displayProfileDomain: 'correlation_transform',
-    allowedModes: ['exp_squared'],
+    allowedModes: ['log_squared'],
   });
   buildWaterfallSuite({
     suiteRoot: ORIGINAL_WATERFALL_ROOT,
@@ -820,7 +710,6 @@ function main() {
     expected: EXPECTED.original_profile_waterfalls,
     displayProfileDomain: 'original_positive',
   });
-  buildRobustPlots();
 
   records.sort((a, b) => a.id.localeCompare(b.id));
   const assets = finaliseAssets();
@@ -834,7 +723,6 @@ function main() {
       current_formal: FORMAL_ROOT,
       transformed_waterfalls: TRANSFORMED_WATERFALL_ROOT,
       original_profile_waterfalls: ORIGINAL_WATERFALL_ROOT,
-      robust_transition: ROBUST_ROOT,
     },
     scope: {
       policy: 'curated_allowlist',
@@ -842,9 +730,8 @@ function main() {
         'results/**/_sources/**',
         'validation files as standalone plots',
         'intermediate quicklooks',
-        'Log-squared shaded waterfalls drawn on correlation-transform (denoised) profiles',
       ],
-      note: 'Log-squared waterfall colors are indexed only on the pre-denoise original-positive XY-derived composite. Exp-squared transformed waterfalls remain available. Companion files may come from whitelisted result metadata, but no _sources PNG is a gallery record.',
+      note: 'Only Log-squared results are indexed. Both the Log-denoised transformed-profile waterfall and the Log correlation shown on original-positive profiles are available. Companion files may come from whitelisted result metadata, but no _sources PNG is a gallery record.',
     },
     summary: {
       plot_records: records.length,

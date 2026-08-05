@@ -3,11 +3,10 @@
 Local, read-only search and comparison UI for curated UOTe correlation plots.
 The application never writes to the selected correlation results directory.
 
-The audited gallery currently exposes **2,538 logical plots** backed by
-**2,140 deduplicated image assets**. It includes formal Log²/Exp² correlation
-plots, Exp² transformed-profile waterfalls, Log² correlations shaded only on
-pre-denoise XY-derived composites, and the allowlisted robust-transition
-exploratory figures.
+The audited gallery currently exposes **1,547 Log²-only plots** backed by
+**1,547 image assets**. It includes formal Log² correlation plots, Log²
+denoised transformed-profile waterfalls, and Log² correlations shaded on
+pre-denoise XY-derived composites.
 
 ## Run
 
@@ -39,13 +38,12 @@ the read-only API boundary.
 
 ## Data boundary
 
-- `scripts/build-index.mjs` reads only the curated formal, waterfall, and
-  robust-transition allowlist.
+- `scripts/build-index.mjs` reads only the curated Log² formal and waterfall
+  allowlist.
 - `CORRELATION_RESULTS_ROOT` may point to a results directory outside the Git
   checkout. If it is omitted, the explorer looks for `../results`.
-- Log² waterfalls drawn on Log-denoised profiles are intentionally excluded;
-  their result files remain untouched. Log² waterfall colors are exposed only
-  on the pre-denoise XY-derived display suite.
+- The gallery includes both Log-denoised transformed-profile waterfalls and
+  the approved pre-denoise XY-derived display suite.
 - `data/plot-index.json` and `data/classification-audit.json` are reproducible
   local artifacts and are ignored by Git because they contain local paths.
 - The API serves media only by indexed `plot_id`; arbitrary filesystem paths

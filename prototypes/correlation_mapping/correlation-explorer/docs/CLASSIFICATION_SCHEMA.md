@@ -1,7 +1,7 @@
 # Classification schema
 
 The explorer keeps logical scientific records separate from physical image
-assets. This preserves Log²/Exp² and run semantics even when images are
+assets. This preserves run and display-profile semantics even when images are
 hardlinks or have identical SHA-256 values.
 
 ## Primary entities
@@ -30,11 +30,9 @@ The default gallery contains:
 
 ```text
 formal correlation plots, Log²                         987
-formal correlation plots, Exp²                         987
-transformed-profile powder waterfalls, Exp²            280
+Log-denoised transformed-profile powder waterfalls     280
 pre-denoise XY-derived powder waterfalls, Log²         280
-robust transition exploratory plots                      4
-total                                                  2538
+total                                                  1547
 ```
 
 The formal root's `_sources/` tree is metadata/provenance input and is not a
@@ -44,25 +42,24 @@ gallery source.
 
 - `result_status` and `validation_status` are independent.
 - `correlation_transform` and `display_profile_domain` are independent.
-- Log² shaded waterfalls with `display_profile_domain=correlation_transform`
-  are deliberately excluded from the gallery. The retained Log² waterfalls
-  use `display_profile_domain=original_positive`: correlation color still
-  comes from the Log² matrix, while displayed height is reconstructed from the
-  source spots-channel XY signal before the nonlinear transform.
+- Log² shaded waterfalls are available in two explicit display domains.
+  `correlation_transform` shows the Log-denoised profile used by the ROI
+  calculation. `original_positive` keeps the same Log² correlation color
+  while reconstructing height from source spots-channel XY signal before the
+  nonlinear transform.
 - `original_positive` is not an untouched representative raw scan. It is the
   previously approved pressure-level composite: positive-clipped and
   measurement-normalized source XY components are summed within frame,
   averaged across distinct frames per peak, and the 12–22 formal peaks are
   summed at each pressure. This preserves one curve per GPa and one visible
   support for every formal correlation cell.
-- Location plots are transform-invariant even when packaged under both runs.
+- Location plots remain part of the single Log² formal package.
 - Powder c=0.75 applies to powder ROI/waterfall support, not single-crystal
   ellipses or integer window products.
 - A pressure-level point has no single natural scalar q-width. Store support
   bounds and, when available, observation q-width min/median/max; otherwise use
   null rather than inventing a value.
-- Powder point UIDs, single-crystal track IDs, and robust-track IDs are
-  different namespaces.
+- Powder point UIDs and single-crystal track IDs are different namespaces.
 - Formal counts are checked on PlotRecords; storage deduplication is checked on
   Assets.
 

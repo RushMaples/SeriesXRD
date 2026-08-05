@@ -17,9 +17,8 @@ removed so the branch has one clear research workflow.
 
 The retained code reproduces and validates:
 
-1. the c=0.75 Log²/Exp² formal correlation package;
-2. the transformed-profile and original-positive powder waterfalls;
-3. the robust peak-track transition analysis displayed by the frontend.
+1. the c=0.75 Log² formal correlation package;
+2. the Log-denoised and original-positive-profile powder waterfalls.
 
 The frozen result/config mapping is in
 `correlation_scripts/configs/uote-formal-qwidth075.json`.
@@ -53,5 +52,5 @@ Do not commit experimental data, generated plots, or machine-specific indexes.
 ## Integration direction
 
 The next production step is to extract dataset-neutral numerical kernels and
-HDF5 adapters into `seriesxrd.analysis`. UOTe dataset binding, historical
-result assembly, and transition interpretation should remain optional layers.
+HDF5 adapters into `seriesxrd.analysis`. UOTe dataset binding and historical
+result assembly should remain optional layers.

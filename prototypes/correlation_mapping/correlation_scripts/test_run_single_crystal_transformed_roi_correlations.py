@@ -213,7 +213,7 @@ class TransformedSingleCrystalROITests(unittest.TestCase):
                 )
             )
         spec = nonlinear.make_roi_transform_spec(
-            nonlinear.EXP_SQUARED,
+            nonlinear.LOG_SQUARED,
             scale=1.0,
             noise_floor=1.0,
         )
@@ -234,21 +234,20 @@ class TransformedSingleCrystalROITests(unittest.TestCase):
         )
         self.assertEqual(matrix[0, 1], 0.5)
 
-    def test_cli_requires_explicit_mode_and_output(self) -> None:
+    def test_cli_accepts_log_mode_and_output(self) -> None:
         parsed = runner.parse_args(
             [
                 "--mode",
-                nonlinear.EXP_SQUARED,
+                nonlinear.LOG_SQUARED,
                 "--out-dir",
                 "result",
                 "--no-plots",
             ]
         )
-        self.assertEqual(parsed.mode, nonlinear.EXP_SQUARED)
+        self.assertEqual(parsed.mode, nonlinear.LOG_SQUARED)
         self.assertEqual(parsed.out_dir, Path("result"))
         self.assertTrue(parsed.no_plots)
 
 
 if __name__ == "__main__":
     unittest.main()
-

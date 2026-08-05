@@ -140,7 +140,7 @@ def parse_args() -> argparse.Namespace:
         "--transform-noise-floor",
         type=float,
         default=None,
-        help="Required physical noise floor for log_squared; unused by exp_squared.",
+        help="Required physical noise floor for log_squared.",
     )
     return parser.parse_args()
 

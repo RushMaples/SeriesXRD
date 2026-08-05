@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
-"""Stable squared-intensity preprocessing for the UOTe correlations.
+"""Stable Log² intensity preprocessing for the UOTe correlations.
 
-The literal mappings ``log(f**2)`` and ``exp(f**2)`` are not safe on the
-measured data: the former is singular at zero and the latter overflows for
-raw float64 values with ``abs(f) > 26.641747...``.  This module implements the
-agreed dimensionless, bounded counterparts without changing any downstream
-ROI-IoU, location, or window-correlation algorithm.
+The literal mapping ``log(f**2)`` is singular at zero. This module implements
+the agreed dimensionless, bounded Log² transform without changing any
+downstream ROI-IoU, location, or window-correlation algorithm.
 
 For physically normalized, nonnegative ROI intensity ``f`` and one fixed
 pooled scale ``a`` shared by every compared frame,
 
     z = clip(max(f, 0) / a, 0, 1).
 
-The two transforms are
+The transform is
 
-    log: [ln(z**2 + eps) - ln(eps)]
-         / [ln(1 + eps) - ln(eps)]
-
-    exp: expm1(z**2) / expm1(1).
+    [ln(z**2 + eps) - ln(eps)]
+    / [ln(1 + eps) - ln(eps)].
 
 For the logarithmic transform, ``eps`` is derived from a documented physical
 noise floor ``sigma`` as ``max((sigma/a)**2, epsilon_floor)``.  Masked values
@@ -39,17 +35,13 @@ from typing import Any, Iterable, Literal, Mapping, Sequence
 import numpy as np
 
 
-TransformMethod = Literal["log_squared", "exp_squared"]
+TransformMethod = Literal["log_squared"]
 
 LOG_SQUARED: TransformMethod = "log_squared"
-EXP_SQUARED: TransformMethod = "exp_squared"
-SUPPORTED_METHODS: tuple[TransformMethod, ...] = (LOG_SQUARED, EXP_SQUARED)
+SUPPORTED_METHODS: tuple[TransformMethod, ...] = (LOG_SQUARED,)
 DEFAULT_SCALE_QUANTILE = 0.995
 DEFAULT_EPSILON_FLOOR = 1.0e-12
-SCHEMA_VERSION = "uotexrd-nonlinear-intensity-preprocessing-v1"
-FLOAT64_EXP_SQUARED_ABS_LIMIT = float(
-    np.sqrt(np.log(np.finfo(np.float64).max))
-)
+SCHEMA_VERSION = "uotexrd-log-squared-intensity-preprocessing-v2"
 
 
 ArrayLike = np.ndarray | np.ma.MaskedArray | Sequence[float]
@@ -57,8 +49,6 @@ ArrayLike = np.ndarray | np.ma.MaskedArray | Sequence[float]
 __all__ = [
     "DEFAULT_EPSILON_FLOOR",
     "DEFAULT_SCALE_QUANTILE",
-    "EXP_SQUARED",
-    "FLOAT64_EXP_SQUARED_ABS_LIMIT",
     "LOG_SQUARED",
     "PooledScaleEstimate",
     "ROITransformSpec",
@@ -131,13 +121,10 @@ class ROITransformSpec:
             0.0 < self.scale_quantile <= 1.0
         ):
             raise ValueError("scale_quantile must be in (0, 1]")
-        if self.method == LOG_SQUARED:
-            if self.epsilon is None or not np.isfinite(self.epsilon):
-                raise ValueError("log_squared requires a finite epsilon")
-            if self.epsilon <= 0.0:
-                raise ValueError("epsilon must be strictly positive")
-        elif self.epsilon is not None:
-            raise ValueError("exp_squared does not use epsilon")
+        if self.epsilon is None or not np.isfinite(self.epsilon):
+            raise ValueError("log_squared requires a finite epsilon")
+        if self.epsilon <= 0.0:
+            raise ValueError("epsilon must be strictly positive")
 
     def transform(self, values: ArrayLike) -> np.ndarray | np.ma.MaskedArray:
         """Apply this specification to physically normalized ROI intensity."""
@@ -288,17 +275,15 @@ def make_roi_transform_spec(
 ) -> ROITransformSpec:
     """Freeze validated parameters for one ROI transform."""
 
-    epsilon: float | None = None
-    if method == LOG_SQUARED:
-        if noise_floor is None:
-            raise ValueError(
-                "log_squared requires a documented physical noise_floor"
-            )
-        epsilon = epsilon_from_noise_floor(
-            noise_floor,
-            scale,
-            epsilon_floor=epsilon_floor,
+    if noise_floor is None:
+        raise ValueError(
+            "log_squared requires a documented physical noise_floor"
         )
+    epsilon = epsilon_from_noise_floor(
+        noise_floor,
+        scale,
+        epsilon_floor=epsilon_floor,
+    )
     return ROITransformSpec(
         method=method,
         scale=float(scale),
@@ -363,25 +348,19 @@ def transform_bounded_squared(
         raise ValueError(
             f"unsupported transform method {method!r}; expected {SUPPORTED_METHODS}"
         )
-    if method == LOG_SQUARED:
-        if epsilon is None or not np.isfinite(epsilon) or epsilon <= 0.0:
-            raise ValueError("log_squared requires finite epsilon > 0")
-    elif epsilon is not None:
-        raise ValueError("exp_squared does not use epsilon")
+    if epsilon is None or not np.isfinite(epsilon) or epsilon <= 0.0:
+        raise ValueError("log_squared requires finite epsilon > 0")
 
     data, mask, was_masked = _data_and_mask(normalized_values)
     output = np.full(data.shape, np.nan, dtype=np.float64)
     valid = (~mask) & np.isfinite(data)
     bounded = np.clip(data[valid], -1.0, 1.0)
     squared = bounded * bounded
-    if method == LOG_SQUARED:
-        assert epsilon is not None
-        # Algebraically identical to the documented difference-of-logs form,
-        # but log1p is more accurate for small squared values.
-        denominator = math.log1p(1.0 / epsilon)
-        output[valid] = np.log1p(squared / epsilon) / denominator
-    else:
-        output[valid] = np.expm1(squared) / math.expm1(1.0)
+    assert epsilon is not None
+    # Algebraically identical to the documented difference-of-logs form,
+    # but log1p is more accurate for small squared values.
+    denominator = math.log1p(1.0 / epsilon)
+    output[valid] = np.log1p(squared / epsilon) / denominator
     # Roundoff cannot materially escape the declared output domain, but this
     # clip gives downstream contracts an exact [0, 1] guarantee.
     output[valid] = np.clip(output[valid], 0.0, 1.0)
@@ -448,10 +427,6 @@ def audit_roi_transform(
         "literal_log_zero_to_negative_infinity_slots": int(
             np.count_nonzero(finite & (data == 0.0))
         ),
-        "literal_exp_float64_abs_limit": FLOAT64_EXP_SQUARED_ABS_LIMIT,
-        "literal_exp_float64_overflow_slots": int(
-            np.count_nonzero(finite & (np.abs(data) > FLOAT64_EXP_SQUARED_ABS_LIMIT))
-        ),
         "negative_slots_clipped_to_z_zero": int(
             np.count_nonzero(finite & (data < 0.0))
         ),
@@ -494,13 +469,10 @@ def build_transform_provenance(
 ) -> dict[str, Any]:
     """Build a complete JSON-safe provenance record."""
 
-    if spec.method == LOG_SQUARED:
-        formula = (
-            "[ln(z^2+epsilon)-ln(epsilon)]/"
-            "[ln(1+epsilon)-ln(epsilon)]"
-        )
-    else:
-        formula = "expm1(z^2)/expm1(1)"
+    formula = (
+        "[ln(z^2+epsilon)-ln(epsilon)]/"
+        "[ln(1+epsilon)-ln(epsilon)]"
+    )
     record = {
         "schema_version": SCHEMA_VERSION,
         "transform": spec.to_dict(),
@@ -521,11 +493,7 @@ def build_transform_provenance(
         },
         "numerical_safety": {
             "output_range": [0.0, 1.0],
-            "float64_literal_exp_squared_abs_limit": (
-                FLOAT64_EXP_SQUARED_ABS_LIMIT
-            ),
             "zero_background_preserved": True,
-            "uses_expm1_for_exponential_transform": True,
         },
         "fixed_pooled_scale_estimate": (
             None if scale_estimate is None else scale_estimate.to_dict()
@@ -629,19 +597,17 @@ def _self_check() -> None:
         scale=10.0,
         noise_floor=1.0,
     )
-    exp_spec = make_roi_transform_spec(EXP_SQUARED, scale=10.0)
     values = np.asarray([-5.0, 0.0, 5.0, 10.0, 20.0, np.nan])
-    for spec in (log_spec, exp_spec):
-        result = np.asarray(spec.transform(values))
-        assert result[0] == 0.0
-        assert result[1] == 0.0
-        assert 0.0 < result[2] < 1.0
-        assert result[3] == 1.0
-        assert result[4] == 1.0
-        assert np.isnan(result[5])
-        audit = spec.audit(values)
-        assert audit["output_below_zero_slots"] == 0
-        assert audit["output_above_one_slots"] == 0
+    result = np.asarray(log_spec.transform(values))
+    assert result[0] == 0.0
+    assert result[1] == 0.0
+    assert 0.0 < result[2] < 1.0
+    assert result[3] == 1.0
+    assert result[4] == 1.0
+    assert np.isnan(result[5])
+    audit = log_spec.audit(values)
+    assert audit["output_below_zero_slots"] == 0
+    assert audit["output_above_one_slots"] == 0
 
 
 if __name__ == "__main__":

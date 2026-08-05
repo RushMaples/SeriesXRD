@@ -20,7 +20,6 @@ const LABELS: Record<string, string> = {
   not_applicable: "N/A",
   original: "Original",
   log_squared: "Log² (Log-squared)",
-  exp_squared: "Exp² (Exp-squared)",
   roi_area: "ROI area",
   location: "Peak location",
   window_across_frames: "Across frames — same 2θ window",

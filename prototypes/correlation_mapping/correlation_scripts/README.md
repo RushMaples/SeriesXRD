@@ -5,9 +5,9 @@ their recursive local dependencies, and direct regression coverage.
 
 ## Retained scope
 
-There are 43 top-level Python files:
+There are 42 top-level Python files:
 
-- 9 latest-result generation or validation entrypoints;
+- 8 latest-result generation or validation entrypoints;
 - 18 imported runtime dependencies;
 - 1 additional uniform output validator used by retained tests;
 - 14 regression-test modules;
@@ -28,13 +28,13 @@ in `CODE_INVENTORY.csv`.
 | Powder waterfalls | `generate_denoised_peak_correlation_waterfall.py` |
 | Waterfall validation | `validate_complete_formal_composite_waterfalls.py` |
 | Powder support audit | `audit_powder_qwidth_support_all_frames.py` |
-| Robust transition suite | `build_robust_tracks_transition_suite.py` |
 
-The current frontend indexes the formal c=0.75 package, two powder waterfall
-suites, and the robust transition suite. The former Streamlit dashboard,
-single-crystal waterfall experiment, unshaded waterfall branch, generic
-BulkXRD adapters, workbook builders, and historical visualization scripts are
-not part of that deliverable and were removed.
+The current frontend indexes only the Log² portion of the formal c=0.75 package
+and two Log² powder waterfall displays. Alternative denoise experiments and
+their cross-transform transition suite were removed together with the
+Streamlit dashboard, single-crystal waterfall experiment, unshaded waterfall
+branch, generic BulkXRD adapters, workbook builders, and historical
+visualizations.
 
 ## Why older-looking modules remain
 

@@ -41,21 +41,21 @@ async function json(path, options) {
 test("metadata and default page expose the full audited index", async () => {
   const meta = await json("/api/meta");
   assert.equal(meta.response.status, 200);
-  assert.equal(meta.body.summary.plot_records, 2_538);
-  assert.equal(meta.body.summary.assets, 2_140);
+  assert.equal(meta.body.summary.plot_records, 1_547);
+  assert.equal(meta.body.summary.assets, 1_547);
   assert.equal(meta.body.audit_status, "PASS");
 
   const plots = await json("/api/plots?page_size=2");
   assert.equal(plots.response.status, 200);
-  assert.equal(plots.body.total, 2_538);
-  assert.equal(plots.body.index_total, 2_538);
+  assert.equal(plots.body.total, 1_547);
+  assert.equal(plots.body.index_total, 1_547);
   assert.equal(plots.body.items.length, 2);
   assert.ok(plots.body.items[0].image_url.startsWith("/api/plots/"));
 });
 
 const searches = [
   ["powder 3.75 GPa peak 16 log ROI", (item) => item.sample === "powder" && item.anchor_pressure_gpa === 3.75 && item.anchor_peak_number === 16],
-  ["single crystal exp within frame", (item) => item.sample === "single_crystal" && item.correlation_transform === "exp_squared" && item.correlation_family === "window_to_window_within_same_frame"],
+  ["single crystal log within frame", (item) => item.sample === "single_crystal" && item.correlation_transform === "log_squared" && item.correlation_family === "window_to_window_within_same_frame"],
   ["original xy waterfall log colors", (item) => item.display_profile_domain === "original_positive" && item.visualization_type === "waterfall_shaded"],
   ["qwidth 0.75", (item) => item.half_width_factor === 0.75],
   ["window 0-5 across frames", (item) => item.window_start_deg === 0 && item.window_end_deg === 5 && item.correlation_family === "window_to_window_across_frames"],
@@ -79,13 +79,20 @@ test("facet filters and scientific sorts operate on indexed fields", async () =>
   assert.deepEqual(peaks, [...peaks].sort((a, b) => a - b));
 });
 
-test("Log waterfall API exposes only original-domain shading", async () => {
-  const result = await json(
-    "/api/plots?correlation_transform=log_squared&visualization_type=waterfall_shaded&page_size=100",
+test("Log waterfall API exposes denoised and original-domain shading", async () => {
+  const denoised = await json(
+    "/api/plots?correlation_transform=log_squared&visualization_type=waterfall_shaded&display_profile_domain=correlation_transform&page_size=100",
   );
-  assert.equal(result.response.status, 200);
-  assert.equal(result.body.total, 280);
-  assert.ok(result.body.items.every((item) => item.display_profile_domain === "original_positive"));
+  assert.equal(denoised.response.status, 200);
+  assert.equal(denoised.body.total, 280);
+  assert.ok(denoised.body.items.every((item) => item.display_profile_domain === "correlation_transform"));
+
+  const original = await json(
+    "/api/plots?correlation_transform=log_squared&visualization_type=waterfall_shaded&display_profile_domain=original_positive&page_size=100",
+  );
+  assert.equal(original.response.status, 200);
+  assert.equal(original.body.total, 280);
+  assert.ok(original.body.items.every((item) => item.display_profile_domain === "original_positive"));
 });
 
 test("image and companion routes serve only indexed files", async () => {

@@ -63,23 +63,6 @@ class IntensityTransformTests(unittest.TestCase):
         self.assertEqual(transformed[0][1], 0.0)
         self.assertTrue(all(row["role_scale_a"] == 1.5 for row in frame_audits))
 
-    def test_exp_squared_is_zero_preserving_bounded_and_sign_erasing(self) -> None:
-        config = iw.IntensityTransformConfig(
-            mode="exp_squared",
-            scale_quantile=0.5,
-        )
-        transformed, audit, _ = iw._transform_preprocessed_residuals(
-            self._processed_pool(),
-            config,
-        )
-        self.assertIsNone(audit["derived_epsilon"])
-        self.assertEqual(transformed[0][0], transformed[1][2])
-        self.assertEqual(transformed[0][1], 0.0)
-        all_values = np.concatenate(transformed)
-        self.assertTrue(np.all(np.isfinite(all_values)))
-        self.assertGreaterEqual(float(np.min(all_values)), 0.0)
-        self.assertLessEqual(float(np.max(all_values)), 1.0)
-
     def test_transform_parameter_validation(self) -> None:
         with self.assertRaises(ValueError):
             iw.IntensityTransformConfig(mode="unknown")
@@ -135,7 +118,7 @@ class WindowPipelineSmokeTests(unittest.TestCase):
             self.assertTrue(np.array_equal(result["x"], expected.x))
             self.assertTrue(np.array_equal(result["residual"], expected.residual))
 
-    def test_both_transforms_feed_unchanged_window_acf_pearson_pipeline(self) -> None:
+    def test_log_transform_feeds_unchanged_window_acf_pearson_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = self._xy_fixture(Path(temporary))
             result = iw._preprocess_window_profile(self._payload(path))
@@ -154,40 +137,34 @@ class WindowPipelineSmokeTests(unittest.TestCase):
                 step_deg=iw.WINDOW_STEP_DEG,
                 start_deg=iw.WINDOW_START_DEG,
             )
-            outputs = {}
-            for mode in ("log_squared", "exp_squared"):
-                transformed, audit, _ = iw._transform_preprocessed_residuals(
-                    processed,
-                    iw.IntensityTransformConfig(mode=mode),
-                )
-                features = uw.build_window_features(
-                    result["x"],
-                    np.stack(transformed),
-                    spec,
-                    config=self.bound.window_config,
-                )
-                across = uw.compute_across_frame_correlations(
-                    features,
-                    ["scan", "scan"],
-                    [1.0, 2.0],
-                    config=self.bound.window_config,
-                )
-                within = uw.compute_within_frame_correlations(
-                    features.fingerprints,
-                    ["scan", "scan"],
-                    [1.0, 2.0],
-                    nonoverlap_indices=spec.nonoverlap_indices,
-                    config=self.bound.window_config,
-                )
-                self.assertTrue(np.all(features.signal_valid), mode)
-                self.assertTrue(np.all(features.fingerprint_valid), mode)
-                self.assertEqual(across.acf_strict_by_scan.shape, (1, 28, 2, 2))
-                self.assertEqual(within.by_frame.shape, (2, 28, 28))
-                self.assertTrue(audit["output_bounded_0_1"])
-                outputs[mode] = np.stack(transformed)
-            self.assertFalse(
-                np.array_equal(outputs["log_squared"], outputs["exp_squared"])
+            transformed, audit, _ = iw._transform_preprocessed_residuals(
+                processed,
+                iw.IntensityTransformConfig(mode="log_squared"),
             )
+            features = uw.build_window_features(
+                result["x"],
+                np.stack(transformed),
+                spec,
+                config=self.bound.window_config,
+            )
+            across = uw.compute_across_frame_correlations(
+                features,
+                ["scan", "scan"],
+                [1.0, 2.0],
+                config=self.bound.window_config,
+            )
+            within = uw.compute_within_frame_correlations(
+                features.fingerprints,
+                ["scan", "scan"],
+                [1.0, 2.0],
+                nonoverlap_indices=spec.nonoverlap_indices,
+                config=self.bound.window_config,
+            )
+            self.assertTrue(np.all(features.signal_valid))
+            self.assertTrue(np.all(features.fingerprint_valid))
+            self.assertEqual(across.acf_strict_by_scan.shape, (1, 28, 2, 2))
+            self.assertEqual(within.by_frame.shape, (2, 28, 28))
+            self.assertTrue(audit["output_bounded_0_1"])
 
     def test_integer_window_geometry_remains_zero_to_five_then_one_to_six(self) -> None:
         spec = uw.make_fixed_sliding_window_spec(

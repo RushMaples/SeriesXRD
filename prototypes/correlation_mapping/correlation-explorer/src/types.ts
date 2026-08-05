@@ -11,7 +11,6 @@ export type SampleType = "powder" | "single_crystal" | "mixed" | "not_applicable
 export type CorrelationTransform =
   | "original"
   | "log_squared"
-  | "exp_squared"
   | "not_applicable"
   | string;
 export type CorrelationFamily =

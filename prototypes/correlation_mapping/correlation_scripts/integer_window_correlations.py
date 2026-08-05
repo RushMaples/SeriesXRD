@@ -30,7 +30,6 @@ import numpy as np
 from nonlinear_intensity_preprocessing import (
     DEFAULT_EPSILON_FLOOR,
     DEFAULT_SCALE_QUANTILE,
-    EXP_SQUARED,
     LOG_SQUARED,
     epsilon_from_noise_floor,
     transform_bounded_squared,
@@ -65,7 +64,7 @@ WINDOW_WIDTH_DEG = 5.0
 WINDOW_STEP_DEG = 1.0
 WINDOW_START_DEG = 0.0
 EDGE_POLICY = "observed_support_no_extrapolation_resampled_on_normalized_coordinate"
-INTENSITY_TRANSFORM_MODES = ("none", LOG_SQUARED, EXP_SQUARED)
+INTENSITY_TRANSFORM_MODES = ("none", LOG_SQUARED)
 DEFAULT_TRANSFORM_SCALE_QUANTILE = DEFAULT_SCALE_QUANTILE
 DEFAULT_TRANSFORM_EPSILON_FLOOR = DEFAULT_EPSILON_FLOOR
 
@@ -142,14 +141,10 @@ def _transform_preprocessed_residuals(
     if finite_noises.size != len(processed):
         raise ValueError("every preprocessed frame must have finite nonnegative noise")
     sigma = float(np.median(finite_noises))
-    epsilon = (
-        epsilon_from_noise_floor(
-            sigma,
-            scale,
-            epsilon_floor=config.epsilon_floor,
-        )
-        if config.mode == LOG_SQUARED
-        else None
+    epsilon = epsilon_from_noise_floor(
+        sigma,
+        scale,
+        epsilon_floor=config.epsilon_floor,
     )
 
     transformed_residuals: list[np.ndarray] = []
@@ -862,7 +857,6 @@ def generate_integer_window_sources(
                     "log1p(z^2/epsilon)/log1p(1/epsilon), "
                     "epsilon=max((sigma/a)^2,epsilon_floor)"
                 ),
-                "exp_squared_formula": "expm1(z^2)/expm1(1)",
                 "output_contract": "zero->0; finite output in [0,1]",
                 "derived_role_parameters": "recorded under every roles[] entry",
             },

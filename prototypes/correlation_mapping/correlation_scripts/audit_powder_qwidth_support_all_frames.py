@@ -227,7 +227,7 @@ def finite_mean(values: Sequence[float]) -> float:
 
 def load_specs(comparison_root: Path) -> dict[str, nonlinear.ROITransformSpec]:
     specs: dict[str, nonlinear.ROITransformSpec] = {}
-    for mode in ("log_squared", "exp_squared"):
+    for mode in ("log_squared",):
         path = (
             comparison_root
             / "_sources"
@@ -245,7 +245,7 @@ def verify_waterfall_mappings(
     expected: Mapping[str, Sequence[tuple[float, float]]],
 ) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for mode in ("log_squared", "exp_squared"):
+    for mode in ("log_squared",):
         path = waterfall_root / "powder" / mode / "PEAK_COLOR_MAPPING.csv.gz"
         row_count = 0
         anchors: set[str] = set()
@@ -490,10 +490,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     spec=spec,
                 )
                 metrics_by_mode_factor[(mode, factor)] = metrics
-                prefix = "log" if mode == "log_squared" else "exp"
                 detailed[f"native_points_c{tag}"] = metrics["native_points"]
                 detailed[f"theta_width_deg_c{tag}"] = metrics["theta_width"]
-                detailed[f"{prefix}_integral_c{tag}"] = metrics["integral"]
+                detailed[f"log_integral_c{tag}"] = metrics["integral"]
 
         current_native = int(
             metrics_by_mode_factor[("log_squared", PRIMARY_FACTOR)]["native_points"]
@@ -501,8 +500,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         native_count_mismatches += int(
             current_native != int(row["native_points_in_interval"])
         )
-        for mode in ("log_squared", "exp_squared"):
-            prefix = "log" if mode == "log_squared" else "exp"
+        for mode in ("log_squared",):
             reference = metrics_by_mode_factor[(mode, REFERENCE_FACTOR)]
             reference_integral = float(reference["integral"])
             reference_max = float(reference["maximum"])
@@ -521,8 +519,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if reference_max > 0.0
                     else math.nan
                 )
-                detailed[f"{prefix}_capture_vs_c1_c{tag}"] = capture
-                detailed[f"{prefix}_boundary_to_c1_max_c{tag}"] = boundary_ratio
+                detailed[f"log_capture_vs_c1_c{tag}"] = capture
+                detailed[f"log_boundary_to_c1_max_c{tag}"] = boundary_ratio
         detailed_rows.append(detailed)
 
     write_rows(args.out_dir / "observation_support_audit.csv", detailed_rows)
@@ -555,7 +553,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 safe_at_reference
             ),
         }
-        for prefix in ("log", "exp"):
+        for prefix in ("log",):
             captures = [
                 float(row[f"{prefix}_capture_vs_c1_c{tag}"])
                 for row in safe_at_reference
@@ -629,7 +627,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "formal_observations_checked": len(detailed_rows),
             "unique_formal_observation_source_frames": len(observations_by_frame),
             "formal_pressure_level_points": len(merged_supports),
-            "transform_modes_checked": ["log_squared", "exp_squared"],
+            "transform_modes_checked": ["log_squared"],
             "candidate_half_width_factors": list(FACTORS),
         },
         "implementation_checks": {
