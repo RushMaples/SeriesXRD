@@ -1,7 +1,7 @@
 {
-  "schema_version": "uotexrd-correlation-workspace-v1",
+  "schema_version": "uotexrd-correlation-workspace-v2",
   "status": "active",
-  "description": "Current formal UOTe correlation workflow and validated result roots.",
+  "description": "Latest indexed UOTe formal, waterfall, and robust-transition correlation results.",
   "parameters": {
     "powder_half_width_factor": 0.75,
     "powder_support_formula": "[qi-0.75*q_width, qi+0.75*q_width]",
@@ -23,16 +23,16 @@
     "assemble": "correlation_scripts/assemble_denoised_core_science_root.py",
     "package_validation": "correlation_scripts/validate_package_denoised_correlation_suites.py",
     "powder_waterfall": "correlation_scripts/generate_denoised_peak_correlation_waterfall.py",
-    "single_crystal_waterfall": "correlation_scripts/generate_single_crystal_denoised_correlation_waterfall.py",
     "waterfall_validation": "correlation_scripts/validate_complete_formal_composite_waterfalls.py",
     "support_audit": "correlation_scripts/audit_powder_qwidth_support_all_frames.py",
-    "dashboard": "correlation_scripts/xrd_results_dashboard.py"
+    "robust_transition": "correlation_scripts/build_robust_tracks_transition_suite.py"
   },
   "required_legacy_dependencies": {
     "powder_v7_helpers": "correlation_scripts/pressure_level_peak_spots_qwidth_correlations_v7.py",
     "powder_v6_helpers": "correlation_scripts/pressure_level_peak_correlations_v6.py",
     "single_track_core": "correlation_scripts/single_global_per_peak.py",
     "single_refinement_helpers": "correlation_scripts/run_refinement_legacy_correlations.py",
+    "uniform_v2_runner": "correlation_scripts/run_uniform_xy_correlations.py",
     "uniform_v2_core": "correlation_scripts/uniform_peak_core.py",
     "uniform_window_core": "correlation_scripts/uniform_window_core.py"
   },
@@ -75,8 +75,8 @@
     "exact_zero_roi_cells": 64852
   },
   "immutability_notes": [
-    "Do not move v6/v7 or uniform-v2 files: active modules import them by sibling name.",
+    "Retained v6/v7 and uniform-v2 files are runtime dependencies of the latest pipeline.",
     "Do not edit assembled result payloads in place: many files are hardlinked across result roots.",
-    "The c=0.60 roots remain required as scientific baselines and provenance dependencies."
+    "The c=0.60 roots remain scientific baselines and provenance inputs for robust-transition analysis."
   ]
 }

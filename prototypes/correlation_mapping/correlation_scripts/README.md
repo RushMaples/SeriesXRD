@@ -1,91 +1,83 @@
-# Correlation code
+# Correlation scripts
 
-This directory is the canonical source location for UOTe correlation work in
-this workspace. It currently contains 104 top-level Python files: active
-science entrypoints, required historical dependencies, generic BulkXRD/four-map
-adapters, visualization branches, validators, exploratory analyses, and 20
-contract/regression tests.
+This folder is intentionally limited to the latest correlation deliverables,
+their recursive local dependencies, and direct regression coverage.
 
-Files remain physically flat for reproducibility. Moving them now would break
-bare sibling imports, frozen v2 hash guards, and historical result provenance.
-Logical organization is provided by:
+## Retained scope
 
-- [`CODE_CATALOG.json`](CODE_CATALOG.json): exact one-group-per-file ownership;
-- [`CODE_INVENTORY.csv`](CODE_INVENTORY.csv): SHA-256 snapshot of code/configs;
-- [`docs/CODE_CATALOG.md`](docs/CODE_CATALOG.md): readable category guide;
-- [`correlation_workspace.py`](correlation_workspace.py): read-only navigator
-  and integrity checker.
+There are 43 top-level Python files:
 
-## Active formal entrypoints
+- 9 latest-result generation or validation entrypoints;
+- 18 imported runtime dependencies;
+- 1 additional uniform output validator used by retained tests;
+- 14 regression-test modules;
+- 1 read-only workspace/integrity tool.
 
-| Stage | Entrypoint | Notes |
-|---|---|---|
-| Intensity transform | `nonlinear_intensity_preprocessing.py` | Bounded Log²/Exp² preprocessing |
-| Powder ROI | `pressure_level_peak_spots_absolute_anchor_iou_correlations_v8.py` | Absolute-q directional integrated IoU; pass `--half-width-factor 0.75` |
-| Single-crystal ROI | `run_single_crystal_transformed_roi_correlations.py` | Curated 2D ellipse observations |
-| Across/within windows | `run_transformed_integer_window_correlations.py` | Fixed integer windows; strict-lower presentation |
-| Package assembly | `assemble_denoised_core_science_root.py` | Hardlink assembly with provenance |
-| Package validation | `validate_package_denoised_correlation_suites.py` | Independent delivery gate |
-| Powder waterfall | `generate_denoised_peak_correlation_waterfall.py` | Transformed or `original_positive` height domain |
-| Single waterfall | `generate_single_crystal_denoised_correlation_waterfall.py` | Formal single-crystal composite |
-| Waterfall validation | `validate_complete_formal_composite_waterfalls.py` | PNG, score, support, and mapping audit |
+The authoritative list is `CODE_CATALOG.json`; exact file hashes are recorded
+in `CODE_INVENTORY.csv`.
 
-The full dependency and aggregation semantics are in
-[`docs/CURRENT_UOTE_PIPELINE.md`](docs/CURRENT_UOTE_PIPELINE.md).
+## Latest result entrypoints
 
-## Read-only workspace commands
+| Stage | Entrypoint |
+|---|---|
+| Powder ROI | `pressure_level_peak_spots_absolute_anchor_iou_correlations_v8.py` |
+| Single-crystal ROI | `run_single_crystal_transformed_roi_correlations.py` |
+| Across/within windows | `run_transformed_integer_window_correlations.py` |
+| Package assembly | `assemble_denoised_core_science_root.py` |
+| Package validation | `validate_package_denoised_correlation_suites.py` |
+| Powder waterfalls | `generate_denoised_peak_correlation_waterfall.py` |
+| Waterfall validation | `validate_complete_formal_composite_waterfalls.py` |
+| Powder support audit | `audit_powder_qwidth_support_all_frames.py` |
+| Robust transition suite | `build_robust_tracks_transition_suite.py` |
 
-Run these from `correlations/`:
+The current frontend indexes the formal c=0.75 package, two powder waterfall
+suites, and the robust transition suite. The former Streamlit dashboard,
+single-crystal waterfall experiment, unshaded waterfall branch, generic
+BulkXRD adapters, workbook builders, and historical visualization scripts are
+not part of that deliverable and were removed.
+
+## Why older-looking modules remain
+
+```text
+powder v8
+  └─ v7 helpers
+       └─ v6 helpers
+
+single-crystal ROI
+  ├─ refinement helpers
+  ├─ global-per-peak helpers
+  └─ UOTe XY handoff helpers
+
+transformed integer windows
+  ├─ all-peak and integer-window modules
+  └─ uniform v2/v2.1 core and input adapters
+```
+
+These files are imported by current entrypoints. Their names reflect algorithm
+history, but they are runtime dependencies, not unused legacy code.
+
+## Commands
+
+Run from the parent `correlation_mapping/` directory:
 
 ```bash
 python3 correlation_scripts/correlation_workspace.py status
-python3 correlation_scripts/correlation_workspace.py catalog --group active_formal
+python3 correlation_scripts/correlation_workspace.py catalog
 python3 correlation_scripts/correlation_workspace.py check-code
 python3 correlation_scripts/correlation_workspace.py commands
-```
 
-`status` checks the current completion/validation markers against the configured
-roots, c=0.75 scope, transform modes, sample scope, and expected counts. It also
-checks that active entrypoints and required compatibility dependencies exist.
-`check-code` checks catalog coverage, Python syntax, and every frozen SHA in
-`CODE_INVENTORY.csv`. Neither command writes scientific results. `commands`
-only prints resolved validator invocations; its core-package command uses
-`--dry-run`, while the printed waterfall validators refresh validation index
-and report files if you execute them.
-
-## Version relationships that must remain visible
-
-```text
-powder v8 (ACTIVE)
-  └─ imports v7 helpers
-       └─ imports v6 helpers
-
-transformed integer windows (ACTIVE)
-  ├─ integer_window_correlations
-  ├─ all_peak_frame_correlations
-  └─ frozen uniform-v2 + additive v2.1 modules
-```
-
-`v6`, `v7`, and uniform-v2 are therefore `REQUIRED_DEPENDENCY` or
-`FROZEN_COMPATIBILITY`, not deletion candidates.
-
-## Requirements
-
-- `requirements-core.txt`: numerical/plotting/data basics plus Pillow.
-- `requirements-uote.txt`: current formal UOTe workflow, including pyFAI.
-- `requirements-optional.txt`: Plotly legacy 3D and Streamlit dashboard.
-- `requirements-dev.txt`: development/test environment.
-
-The four `.mjs` workbook builders additionally require the external
-`@oai/artifact-tool` runtime; they are not needed for numerical correlations.
-
-## Tests
-
-```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s correlation_scripts -p 'test_*.py'
 ```
 
-The legacy 3D module now imports without Plotly; only inline HTML generation
-requires the optional package. Real-data integration checks remain local, while
-unit tests use deterministic fixtures.
+Commands that inspect completed research runs need a local `results/` tree.
+The unit tests and code-integrity check do not.
+
+## Requirements
+
+- `requirements-core.txt`: NumPy, SciPy, Matplotlib, pandas, h5py, Pillow.
+- `requirements-uote.txt`: core plus pyFAI and tifffile for the formal UOTe workflow.
+- `requirements-dev.txt`: UOTe requirements plus pytest.
+
+The React correlation explorer has its own dependencies in
+`../correlation-explorer/package.json`.

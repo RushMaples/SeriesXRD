@@ -1,5 +1,0 @@
-# Historical interactive 3D waterfall export.
-plotly
-
-# Local result browser; not required for numerical correlation computation.
-streamlit
