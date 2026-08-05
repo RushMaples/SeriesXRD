@@ -1,56 +1,491 @@
-# Correlation mapping prototype
+# UOTe Log² correlation mapping
 
-This directory contains the scripts and browser used by the latest indexed
-UOTe correlation results. Historical experiments, obsolete dashboards,
-workbook builders, unused plot branches, and unrelated BulkXRD adapters were
-removed so the branch has one clear research workflow.
+This prototype computes, validates, visualizes, and serves the current UOTe
+XRD correlation results. The retained workflow is **Log²-only**: the former
+Exp² comparison branch and historical experimental dashboards are not part of
+this deliverable.
 
-## Layout
+The repository contains both the reproducible analysis code and a curated
+PNG-only result set:
 
-| Path | Purpose |
+- [`correlation_scripts/`](correlation_scripts/) — numerical pipeline,
+  validators, tests, frozen configs, and provenance tools;
+- [`correlation-explorer/`](correlation-explorer/) — read-only React/Vite
+  browser for a complete local result tree;
+- [`manifests/`](manifests/) — retained input and cross-check documentation;
+- [`latest_log_squared_heatmaps_organized_20260805/`](latest_log_squared_heatmaps_organized_20260805/)
+  — the latest heatmaps arranged by sample, result family, and pressure.
+
+## What the system does
+
+The pipeline performs five scientific tasks for powder and single-crystal
+measurements:
+
+1. **ROI-area correlation** — compares peak intensity profiles or transformed
+   ROI-area features between pressures.
+2. **Peak-location correlation** — compares the positions of matched peaks;
+   it is intentionally independent of the intensity transform.
+3. **Original-XY shaded waterfalls** — draws the original-positive powder XY
+   profile while using the Log² ROI correlation as the peak color.
+4. **Window-to-window correlation across frames** — compares the same angular
+   window between pressure frames using direct and ACF-based fingerprints.
+5. **Window-to-window correlation within a frame** — compares different
+   angular windows inside the same frame.
+
+The current formal configuration is
+[`correlation_scripts/configs/uote-formal-qwidth075.json`](correlation_scripts/configs/uote-formal-qwidth075.json).
+It freezes the transform, q-width, output-count, entrypoint, and validation
+contracts described below.
+
+## Scientific workflow
+
+```text
+raw powder XY / raw single-crystal TIFF
+                   │
+                   ▼
+       masks, baseline, normalization,
+       peak registry and physical support
+                   │
+                   ▼
+        fixed-scale bounded Log² transform
+                   │
+          ┌────────┼─────────┐
+          ▼        ▼         ▼
+       ROI area  location   fixed windows
+          │        │         │
+          └────────┼─────────┘
+                   ▼
+       validated matrices and heatmaps
+                   │
+          ┌────────┴────────┐
+          ▼                 ▼
+ original-XY waterfalls   read-only explorer
+```
+
+### 1. Stable Log² intensity preprocessing
+
+The literal expression `log(f²)` is singular at zero and is not used. For a
+physically normalized non-negative intensity `f`, the code first defines one
+fixed pooled scale `a` for the complete comparison family:
+
+```text
+z = clip(max(f, 0) / a, 0, 1)
+epsilon = max((noise_floor / a)², epsilon_floor)
+Log²(z) = log1p(z² / epsilon) / log1p(1 / epsilon)
+```
+
+Important properties:
+
+- `a` is shared across frames, so per-frame scaling cannot erase real
+  amplitude differences;
+- the formal scale is the pooled positive Q99.5 value;
+- output is exactly bounded to `[0, 1]`;
+- zero remains zero and negative residuals are clipped to zero for ROI work;
+- masks remain masks and unmasked NaNs remain NaNs;
+- for signed window residuals, input is clipped to `[-1, 1]` before squaring;
+- this is a nonlinear dynamic-range/noise-suppression transform, not a spatial
+  blur or a temporal smoothing operation.
+
+The frozen powder parameters are:
+
+| Parameter | Value |
+|---|---:|
+| Pooled scale quantile | `0.995` |
+| Fixed pooled scale | `178.0838325514805` |
+| Physical noise floor | `0.060889165620339095` |
+| Epsilon | `1.1690445418573338e-07` |
+| Epsilon floor | `1e-12` |
+
+Implementation: [`nonlinear_intensity_preprocessing.py`](correlation_scripts/nonlinear_intensity_preprocessing.py).
+
+### 2. Powder ROI-area correlation
+
+The powder analysis uses 280 registered pressure-level peaks across 19
+pressures. The formal registry is built from 519 observations and 360
+spots-channel XY source files.
+
+For each peak centered at `qᵢ` with detected width `q_widthᵢ`, the physical ROI
+support is:
+
+```text
+[qᵢ - 0.75 × q_widthᵢ, qᵢ + 0.75 × q_widthᵢ]
+```
+
+The q bounds are converted to absolute 2θ because integration is performed in
+`d(2θ)`. Profiles are never recentered or width-normalized. After positive
+clipping, measurement normalization, and Log² preprocessing, observations in
+the same physical frame are summed and distinct frames are averaged.
+
+For anchor profile `A` and target profile `B`, the directional score is an
+integrated intersection-over-union evaluated only on the anchor support:
+
+```text
+S(A → B) = ∫support(A) min(JA, JB) d(2θ)
+           ─────────────────────────────
+           ∫support(A) max(JA, JB) d(2θ)
+```
+
+`B` is exactly zero outside its physical support. Because the domain belongs
+to the anchor, `S(A → B)` need not equal `S(B → A)`. Disjoint supports, no
+positive overlap, and a zero denominator are represented by the finite value
+`0`; `NaN` is reserved for structurally missing cells and the omitted
+anchor-pressure row.
+
+Entrypoint:
+[`pressure_level_peak_spots_absolute_anchor_iou_correlations_v8.py`](correlation_scripts/pressure_level_peak_spots_absolute_anchor_iou_correlations_v8.py).
+
+### 3. Peak-location correlation
+
+Powder and the retained single-crystal track plots use the frozen 2θ location
+similarity:
+
+```text
+location_similarity = clip(1 - |2θᵢ - 2θⱼ| / 0.06°, 0, 1)
+```
+
+Location is not changed by Log² preprocessing. The validator therefore checks
+all 355 Log² location matrices against the previous formal untransformed
+baseline, including relative paths, hashes, and numerical values.
+
+### 4. Single-crystal ROI-area and location correlation
+
+The single-crystal runner starts from raw TIFF pixels for 275 curated spots.
+It applies the formal detector mask, frame mask, geometric peak ROI, and radial
+sideband. The sideband median is subtracted, positive excess is divided by the
+TIFF exposure, and all 90,398 valid ROI-pixel instances share one pooled Q99.5
+scale. Log² is applied per pixel, and the mean transformed pixel value becomes
+the observation's ROI-area feature.
+
+Duplicate observations are median-collapsed within a global track/frame. For
+two finite non-negative transformed area features, the symmetric score is:
+
+```text
+area_similarity = min(Aᵢ, Aⱼ) / max(Aᵢ, Aⱼ)
+```
+
+The 75 retained heatmaps represent global tracks, not one independent anchor
+per pressure. A track may contain several pressure frames and orientations.
+In the organized result folder, a track image is therefore copied into every
+GPa folder actually represented by that track; assigning it to only one
+pressure would be scientifically misleading.
+
+Entrypoint:
+[`run_single_crystal_transformed_roi_correlations.py`](correlation_scripts/run_single_crystal_transformed_roi_correlations.py).
+
+### 5. Window correlations
+
+Window analysis applies the unchanged asymmetric-least-squares baseline,
+forms bounded residuals, applies Log², and evaluates fixed integer windows:
+
+```text
+0–5°, 1–6°, 2–7°, ..., 27–32°
+```
+
+Three across-frame products are retained:
+
+| Method | Meaning |
 |---|---|
-| `correlation_scripts/` | Latest result entrypoints, recursive runtime dependencies, validators, tests, configs, and workflow notes |
-| `correlation-explorer/` | Read-only React/Vite search and comparison interface for the indexed plots |
-| `manifests/` | Small retained input/provenance manifests |
+| `acf_strict` | Pearson correlation between positive-lag FFT-ACF fingerprints for the same window |
+| `direct_strict` | Pearson correlation between standardized transformed residual vectors for the same window |
+| `shift_tolerant_secondary` | Symmetric maximum ACF score over the same window and its immediate ±1 neighbors; a secondary diagnostic |
 
-## Results represented here
+Across-frame comparisons use same-scan pressure pairs. Within-frame maps use
+Pearson correlation between the ACF fingerprints of different windows in the
+same frame and then apply the frozen scan-support aggregation rule. Powder
+contains `spots` and `fit_control` channels; single crystal contains the
+`spots` channel.
 
-The retained code reproduces and validates:
+Only the strict lower triangle is presented for square single-crystal and
+window matrices. The diagonal and upper triangle are blank by design, and a
+missing value is not the same as a computed zero.
 
-1. the c=0.75 Log² formal correlation package;
-2. the Log-denoised and original-positive-profile powder waterfalls.
+Entrypoint:
+[`run_transformed_integer_window_correlations.py`](correlation_scripts/run_transformed_integer_window_correlations.py).
 
-The frozen result/config mapping is in
-`correlation_scripts/configs/uote-formal-qwidth075.json`.
+### 6. Original-XY shaded powder waterfalls
 
-## Integrity checks
+The committed waterfall suite contains 280 powder plots, one for every anchor.
+Each plot deliberately separates two domains:
 
-From this directory:
+- **vertical profile height:** the measurement-normalized, positive-clipped
+  spots-channel signal before the nonlinear Log² transform;
+- **peak color:** the formal directional Log² ROI correlation for the selected
+  anchor.
+
+The two domains are joined exactly by `(pressure_gpa, local_peak_index)`. The
+profile reconstruction uses the same 519 formal observation components and
+the same q-width supports as the ROI calculation. Components are summed within
+a frame, averaged across distinct frames for each pressure-level peak, and the
+12–22 peak profiles at one pressure are summed into a common XY trace. All
+pressure traces share one display scale.
+
+Because azimuthally distinct spots can overlap after projection onto 1D 2θ,
+the colored fill alone is not lossless. A non-overlapping ribbon below each
+trace is the authoritative peak-to-correlation encoding.
+
+Only a powder original-XY waterfall has been validated. The repository does
+not fabricate a single-crystal waterfall.
+
+Entrypoint:
+[`generate_denoised_peak_correlation_waterfall.py`](correlation_scripts/generate_denoised_peak_correlation_waterfall.py).
+
+## Curated PNG result folder
+
+The committed folder contains only non-empty PNG files: no matrices, raw data,
+JSON, CSV, symlinks, or machine-specific paths.
+
+```text
+latest_log_squared_heatmaps_organized_20260805/
+├── powder/
+│   ├── roi_area_correlation/{pressure}_GPa/
+│   ├── location_correlation/{pressure}_GPa/
+│   ├── waterfall_original_xy_shaded/{pressure}_GPa/
+│   ├── window_to_window_across_frames/{channel}/{method}/
+│   └── window_to_window_within_frames/{channel}/{method}/
+└── single_crystal/
+    ├── roi_area_correlation/{pressure}_GPa/
+    ├── location_correlation/{pressure}_GPa/
+    ├── waterfall_original_xy_shaded/          # empty: no validated source
+    ├── window_to_window_across_frames/{channel}/{method}/
+    └── window_to_window_within_frames/{channel}/{method}/
+```
+
+| Sample / product | PNG files in organized folders | Unique scientific source images |
+|---|---:|---:|
+| Powder ROI area | 280 | 280 |
+| Powder location | 280 | 280 |
+| Powder original-XY waterfall | 280 | 280 |
+| Powder across frames | 168 | 168 |
+| Powder within frames | 40 | 40 |
+| Single-crystal ROI area | 263 | 75 |
+| Single-crystal location | 263 | 75 |
+| Single-crystal across frames | 57 | 57 |
+| Single-crystal within frames | 12 | 12 |
+| **Total** | **1,643** | **1,267** |
+
+The difference between physical files and unique sources is intentional: a
+single-crystal track is repeated in every pressure folder it spans. Powder
+ROI, location, and waterfall products cover 19 pressure folders;
+single-crystal ROI and location products cover 12 pressure folders.
+
+## Installation
+
+Run commands from `prototypes/correlation_mapping/` unless stated otherwise.
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r correlation_scripts/requirements-dev.txt
+```
+
+For the full formal UOTe workflow, `requirements-dev.txt` includes the core
+NumPy/SciPy/Matplotlib/pandas/h5py/Pillow stack plus pyFAI, tifffile, and
+pytest. The raw experimental files are intentionally not committed.
+
+Before a run, inspect the active contract and verify the retained source tree:
+
+```bash
+python3 correlation_scripts/correlation_workspace.py status
 python3 correlation_scripts/correlation_workspace.py catalog
+python3 correlation_scripts/correlation_workspace.py check-code
+```
+
+## Running the pipeline
+
+All output directories below must be new or empty. Replace `/path/to/...` with
+the experimental and manifest locations on the machine performing the run.
+
+### A. Generate powder ROI and location maps
+
+```bash
+python3 correlation_scripts/pressure_level_peak_spots_absolute_anchor_iou_correlations_v8.py \
+  --out-dir /path/to/work/powder_log_squared \
+  --spots-root /path/to/powder/spots_channel_xy \
+  --observations /path/to/spot_observations.csv \
+  --track-points /path/to/spot_track_points.csv \
+  --untracked-points /path/to/spot_untracked_points.csv \
+  --manifest /path/to/powder_manifest.csv \
+  --fit-root /path/to/powder/fit_channel_xy \
+  --half-width-factor 0.75 \
+  --intensity-transform log_squared \
+  --transform-scale-quantile 0.995 \
+  --transform-noise-floor 0.060889165620339095
+```
+
+### B. Generate single-crystal ROI and location maps
+
+```bash
+python3 correlation_scripts/run_single_crystal_transformed_roi_correlations.py \
+  --mode log_squared \
+  --out-dir /path/to/work/single_crystal_log_squared \
+  --data-root /path/to/curated/single_crystal_tables \
+  --single-manifest /path/to/single_crystal_manifest.csv \
+  --single-raw-root /path/to/single_crystal/raw_tiff \
+  --scale-quantile 0.995
+```
+
+### C. Generate across-frame and within-frame window maps
+
+```bash
+python3 correlation_scripts/run_transformed_integer_window_correlations.py \
+  --out-dir /path/to/work/log_squared_windows \
+  --transform-mode log_squared \
+  --workers 8 \
+  --transform-scale-quantile 0.995 \
+  --single-root /path/to/single_crystal/xy \
+  --single-manifest /path/to/single_crystal_manifest.csv \
+  --single-profile correlation_scripts/configs/uniform-correlation-v2.1.json \
+  --powder-root /path/to/powder/xy \
+  --powder-manifest /path/to/powder_manifest.csv \
+  --powder-profile correlation_scripts/configs/uniform-correlation-v2.1.json
+```
+
+Use `--max-scans` only for a development smoke test; it is not a formal run.
+
+### D. Assemble the compact formal package
+
+The assembler creates a validator-visible tree containing only primary
+ROI/location and window products. It uses hardlinks on the same filesystem and
+refuses unsafe source/destination layouts.
+
+```bash
+python3 correlation_scripts/assemble_denoised_core_science_root.py \
+  --output-root /path/to/results/log_squared \
+  --transform-label log_squared \
+  --powder-roi-source /path/to/work/powder_log_squared \
+  --single-roi-source /path/to/work/single_crystal_log_squared \
+  --window-root /path/to/work/log_squared_windows \
+  --baseline-root /path/to/previous/formal_baseline
+```
+
+Add `--dry-run` first to inspect the planned assembly without writing it.
+
+### E. Validate the formal package
+
+```bash
+python3 correlation_scripts/validate_package_denoised_correlation_suites.py \
+  --log-root /path/to/results/log_squared \
+  --baseline-root /path/to/previous/formal_baseline \
+  --output-dir /path/to/results/log_validation \
+  --dry-run
+```
+
+The validator checks hierarchy, exact counts, one-to-one PNG/CSV pairs,
+`[0,1]` score ranges, strict-lower matrix structure, absence of supplementary
+`1-r` diagnostics, and exact Log² location equivalence to the baseline.
+Remove `--dry-run` only when validation files should be written.
+
+### F. Generate the original-XY shaded waterfalls
+
+```bash
+python3 correlation_scripts/generate_denoised_peak_correlation_waterfall.py \
+  --comparison-root /path/to/results/comparison_root \
+  --mode log_squared \
+  --all-anchors \
+  --trace-source formal_composite \
+  --display-profile-domain original_positive \
+  --out-dir /path/to/results/waterfall_original_xy \
+  --compact-batch
+```
+
+Validate a newly generated waterfall suite with:
+
+```bash
+python3 correlation_scripts/validate_complete_formal_composite_waterfalls.py \
+  --comparison-root /path/to/results/comparison_root \
+  --suite-root /path/to/results/waterfall_original_xy \
+  --powder-only \
+  --modes log_squared
+```
+
+This validator writes index and validation files into the suite root; do not
+run it against a frozen result directory unless that write is intended.
+
+## Running the correlation explorer
+
+The committed PNG-only folder can be browsed directly on GitHub. The explorer
+requires the complete local result tree because it audits companion matrices
+and provenance metadata before exposing an image.
+
+```bash
+cd correlation-explorer
+npm install
+CORRELATION_RESULTS_ROOT=/path/to/correlation/results npm run index
+CORRELATION_RESULTS_ROOT=/path/to/correlation/results npm run dev
+```
+
+Open `http://127.0.0.1:4311`. For a production build:
+
+```bash
+npm run build
+CORRELATION_RESULTS_ROOT=/path/to/correlation/results npm start
+```
+
+Open `http://127.0.0.1:4312`. The server is read-only, serves only indexed
+assets, rejects arbitrary paths and non-GET methods, and stores favorites in
+browser local storage.
+
+## Tests and validation gates
+
+Code integrity and correlation unit tests:
+
+```bash
 python3 correlation_scripts/correlation_workspace.py check-code
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s correlation_scripts -p 'test_*.py'
+python3 correlation_scripts/validate_package_denoised_correlation_suites.py \
+  --self-test
 ```
 
-`check-code` verifies exact catalog coverage, Python syntax, and every SHA-256
-entry in `CODE_INVENTORY.csv`.
-
-## Data boundary
-
-Raw experimental data and generated results are excluded from Git. Put a local
-result tree in the ignored `results/` directory, or point the explorer to an
-external directory:
+Frontend index, API tests, and production build:
 
 ```bash
-CORRELATION_RESULTS_ROOT=/absolute/path/to/results npm run index
+cd correlation-explorer
+CORRELATION_RESULTS_ROOT=/path/to/correlation/results npm run index
+CORRELATION_RESULTS_ROOT=/path/to/correlation/results npm test
+npm run build
 ```
 
-Do not commit experimental data, generated plots, or machine-specific indexes.
+From the SeriesXRD repository root, run the full regression suite with:
 
-## Integration direction
+```bash
+python -m pytest
+```
 
-The next production step is to extract dataset-neutral numerical kernels and
-HDF5 adapters into `seriesxrd.analysis`. UOTe dataset binding and historical
-result assembly should remain optional layers.
+The result set committed here was prepared after these gates passed:
+
+- correlation code-integrity check: PASS;
+- correlation unit tests: 117 passed;
+- package-validator self-test: PASS;
+- real Log² package validation: PASS;
+- frontend index: 1,547 records, 0 errors, 0 warnings;
+- frontend tests: 14 passed;
+- frontend production build: PASS;
+- full SeriesXRD suite: 168 passed, 2 skipped.
+
+## Interpretation limits
+
+- A high similarity is evidence of signal/profile similarity under the stated
+  support and preprocessing rules; by itself it is not proof of a phase
+  transition.
+- Missing cells, structurally omitted cells, and computed zeros have different
+  meanings and must not be merged.
+- Powder ROI IoU is directional. Do not silently symmetrize it.
+- `fit_control` is a control channel and can be dominated by
+  tungsten/background behavior; it is not direct evidence for UOTe.
+- The original-XY waterfall changes only the displayed curve height. Its colors
+  remain the formal Log² ROI correlation values.
+
+## Data and provenance boundary
+
+Raw TIFF/XY data, full numerical matrices, and generated local indexes remain
+outside Git. They are selected by explicit command-line paths or
+`CORRELATION_RESULTS_ROOT`. Machine-specific explorer indexes are ignored
+because they contain absolute paths.
+
+The exact retained Python inventory is recorded in
+[`correlation_scripts/CODE_CATALOG.json`](correlation_scripts/CODE_CATALOG.json)
+and [`correlation_scripts/CODE_INVENTORY.csv`](correlation_scripts/CODE_INVENTORY.csv).
+`correlation_workspace.py check-code` verifies catalog coverage, syntax,
+imports, and the recorded SHA-256 hashes.
