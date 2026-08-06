@@ -1,9 +1,22 @@
 # UOTe Log² correlation mapping
 
+> **Research reference only.** The supported, facility-neutral implementation
+> now lives in `seriesxrd/correlations` and is available through the fourth
+> Correlations tab or `seriesxrd-correlate`. It consumes an Analysis HDF5 and
+> does not import this prototype's UOTe-specific paths, manifests, or frontend.
+> This directory remains as algorithm history and validation context.
+
+The supported MVP writes `correlations_powder.h5`/`manifest_powder.json` and
+`correlations_single_crystal.h5`/`manifest_single_crystal.json`, so both
+sample types can share one result directory; review images remain under
+`heatmaps/<sample_type>`. In single-crystal mode, the GUI and CLI
+select/recommend `spots`, and the supported ROI feature is explicitly a 1D
+radial approximation. It does not reproduce this prototype's raw-TIFF pixel
+ROI.
+
 This prototype computes, validates, visualizes, and serves the current UOTe
-XRD correlation results. The retained workflow is **Log²-only**: the former
-Exp² comparison branch and historical experimental dashboards are not part of
-this deliverable.
+XRD correlation results. The retained workflow is **Log²-only**; historical
+experimental dashboards are not part of this deliverable.
 
 The repository contains the reproducible analysis code. Generated result
 images and numerical artifacts are deliberately kept outside Git:
@@ -85,6 +98,8 @@ Important properties:
 - zero remains zero and negative residuals are clipped to zero for ROI work;
 - masks remain masks and unmasked NaNs remain NaNs;
 - for signed window residuals, input is clipped to `[-1, 1]` before squaring;
+- the supported stage uses the same pooled scale and epsilon for its positive
+  ROI transform and signed-residual window transform;
 - this is a nonlinear dynamic-range/noise-suppression transform, not a spatial
   blur or a temporal smoothing operation.
 
@@ -190,8 +205,9 @@ Entrypoint:
 
 ### 5. Window correlations
 
-Window analysis applies the unchanged asymmetric-least-squares baseline,
-forms bounded residuals, applies Log², and evaluates fixed integer windows:
+This historical prototype applies the unchanged asymmetric-least-squares
+baseline, forms bounded residuals, applies Log², and evaluates fixed integer
+windows:
 
 ```text
 0–5°, 1–6°, 2–7°, ..., 27–32°
@@ -210,6 +226,13 @@ Pearson correlation between the ACF fingerprints of different windows in the
 same frame and then apply the frozen scan-support aggregation rule. Powder
 contains `spots` and `fit_control` channels; single crystal contains the
 `spots` channel.
+
+These are prototype-only details. The supported SeriesXRD MVP retains direct
+and strict ACF products, standardizes positive-lag FFT-ACF fingerprints, and
+excludes lag zero. It does **not** migrate `shift_tolerant_secondary` or
+same-scan aggregation because the public Analysis HDF5 has no stable
+`scan_id`. In the supported stage, window width and step use the Analysis HDF5
+native radial unit, and width cannot exceed the selected radial span.
 
 Only the strict lower triangle is presented for square window matrices. The
 single-crystal peak maps are rectangular anchor-to-frame-slot maps and instead
