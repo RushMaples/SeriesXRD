@@ -5,16 +5,18 @@ XRD correlation results. The retained workflow is **Log²-only**: the former
 Exp² comparison branch and historical experimental dashboards are not part of
 this deliverable.
 
-The repository contains both the reproducible analysis code and a curated
-PNG-only result set:
+The repository contains the reproducible analysis code. Generated result
+images and numerical artifacts are deliberately kept outside Git:
 
 - [`correlation_scripts/`](correlation_scripts/) — numerical pipeline,
   validators, tests, frozen configs, and provenance tools;
 - [`correlation-explorer/`](correlation-explorer/) — read-only React/Vite
   browser for a complete local result tree;
-- [`manifests/`](manifests/) — retained input and cross-check documentation;
-- [`latest_log_squared_heatmaps_organized_20260805/`](latest_log_squared_heatmaps_organized_20260805/)
-  — the latest heatmaps arranged by sample, result family, and pressure.
+- [`manifests/`](manifests/) — retained input and cross-check documentation.
+
+Set `CORRELATION_RESULTS_ROOT` to the local result tree when running the
+validators or correlation explorer. The generated heatmaps are not committed
+to this repository.
 
 ## What the system does
 
@@ -219,7 +221,7 @@ Entrypoint:
 
 ### 6. Original-XY shaded waterfalls
 
-The committed waterfall suite contains 280 powder plots and 275
+The latest validated local waterfall suite contains 280 powder plots and 275
 single-crystal plots, one for every anchor. Each plot deliberately separates
 two domains:
 
@@ -248,10 +250,11 @@ Entrypoints:
 and
 [`generate_single_crystal_all_peak_correlation_waterfalls.py`](correlation_scripts/generate_single_crystal_all_peak_correlation_waterfalls.py).
 
-## Curated PNG result folder
+## Local generated PNG result folder
 
-The committed folder contains only non-empty PNG files: no matrices, raw data,
-JSON, CSV, symlinks, or machine-specific paths.
+The curated export is generated locally and is not tracked by Git. It contains
+only non-empty PNG files: no matrices, raw data, JSON, CSV, symlinks, or
+machine-specific paths. A typical local export has this layout:
 
 ```text
 latest_log_squared_heatmaps_organized_20260805/
@@ -283,10 +286,11 @@ latest_log_squared_heatmaps_organized_20260805/
 | Single-crystal within frames | 12 | 12 |
 | **Total** | **1,942** | **1,942** |
 
-Each scientific image occurs once. Powder ROI, location, and waterfall
-products cover 19 pressure folders; single-crystal ROI, location, and
-waterfall products cover 12 pressure folders. Single-crystal placement uses
-the anchor peak's pressure, not a multi-pressure track identity.
+In the latest validated local export, each scientific image occurs once.
+Powder ROI, location, and waterfall products cover 19 pressure folders;
+single-crystal ROI, location, and waterfall products cover 12 pressure
+folders. Single-crystal placement uses the anchor peak's pressure, not a
+multi-pressure track identity.
 
 ## Installation
 
@@ -439,9 +443,9 @@ to finish if any cross-frame peak lacks a correlation value.
 
 ## Running the correlation explorer
 
-The committed PNG-only folder can be browsed directly on GitHub. The explorer
-requires the complete local result tree because it audits companion matrices
-and provenance metadata before exposing an image.
+Generated PNG folders are not committed or browsable directly on GitHub. The
+explorer requires the complete local result tree because it audits companion
+matrices and provenance metadata before exposing an image.
 
 ```bash
 cd correlation-explorer
@@ -488,7 +492,7 @@ From the SeriesXRD repository root, run the full regression suite with:
 python -m pytest
 ```
 
-The result set committed here was prepared after these gates passed:
+The latest validated local result set was prepared after these gates passed:
 
 - correlation code-integrity check: PASS;
 - correlation unit tests: 119 passed;
@@ -514,10 +518,10 @@ The result set committed here was prepared after these gates passed:
 
 ## Data and provenance boundary
 
-Raw TIFF/XY data, full numerical matrices, and generated local indexes remain
-outside Git. They are selected by explicit command-line paths or
-`CORRELATION_RESULTS_ROOT`. Machine-specific explorer indexes are ignored
-because they contain absolute paths.
+Raw TIFF/XY data, full numerical matrices, generated PNG result folders, and
+generated local indexes remain outside Git. They are selected by explicit
+command-line paths or `CORRELATION_RESULTS_ROOT`. Machine-specific explorer
+indexes are ignored because they contain absolute paths.
 
 The exact retained Python inventory is recorded in
 [`correlation_scripts/CODE_CATALOG.json`](correlation_scripts/CODE_CATALOG.json)

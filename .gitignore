@@ -63,6 +63,7 @@ paper/
 
 # Correlation-mapping prototype: code is tracked, local research data is not.
 prototypes/correlation_mapping/results/
+prototypes/correlation_mapping/latest_log_squared_heatmaps_organized_*/
 prototypes/correlation_mapping/incoming/
 prototypes/correlation_mapping/UOTe*/
 prototypes/correlation_mapping/uote_xy_handoff*/
