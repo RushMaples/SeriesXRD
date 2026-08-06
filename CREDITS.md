@@ -14,7 +14,7 @@
 
 ## Acknowledgments
 
-- **Zack Rehfuss**
+- **Zackary Rehfuss**
   ([ORCID 0000-0003-4180-1106](https://orcid.org/0000-0003-4180-1106)) —
   scientific advisor and initial contributor.
 
