@@ -1,7 +1,0 @@
--r requirements-core.txt
-
-# Required by the current formal single-crystal ROI extraction.
-pyFAI
-
-# Used by geometry/raw-image helpers and supported local integrations.
-tifffile

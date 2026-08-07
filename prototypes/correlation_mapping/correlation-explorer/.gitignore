@@ -1,9 +1,0 @@
-node_modules/
-dist/
-.DS_Store
-*.log
-
-# The index is reproducible and may contain local absolute paths.
-data/plot-index.json
-data/classification-audit.json
-

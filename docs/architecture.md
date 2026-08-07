@@ -122,10 +122,9 @@ d-spacing fingerprint and candidate transition frames.
 ## Correlation pipeline
 
 `seriesxrd.correlations` is a separate fourth stage that consumes the public
-Analysis-HDF5 contract. It does not import or execute the historical
-`prototypes/correlation_mapping` scripts, which contain experiment-specific
-paths and contracts. The formal stage is headless at its core and is exposed
-through both `seriesxrd-correlate` and an embeddable Tk pane.
+Analysis-HDF5 contract. It does not import or execute external,
+experiment-specific research scripts. The formal stage is headless at its core
+and is exposed through both `seriesxrd-correlate` and an embeddable Tk pane.
 
 The numerical sequence is deliberately fixed:
 
